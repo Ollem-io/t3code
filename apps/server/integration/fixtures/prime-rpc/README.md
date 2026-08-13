@@ -54,12 +54,13 @@ rm -rf apps/server/integration/fixtures/prime-rpc/.bundle-tmp
 ./node_modules/.bin/vp pack apps/server/integration/fixtures/prime-rpc/review-prime-rpc-client.ts --out-dir apps/server/integration/fixtures/prime-rpc/.bundle-tmp --no-clean --no-sourcemap --platform node --format esm --target node24 --minify --no-report
 cp apps/server/integration/fixtures/prime-rpc/.bundle-tmp/review-prime-rpc-client.mjs apps/server/integration/fixtures/prime-rpc/review-prime-rpc-client.bundle.mjs
 rm -rf apps/server/integration/fixtures/prime-rpc/.bundle-tmp
+./node_modules/.bin/vp fmt apps/server/integration/fixtures/prime-rpc/review-prime-rpc-client.bundle.mjs
 sha256sum apps/server/integration/fixtures/prime-rpc/review-prime-rpc-client.bundle.mjs
 ```
 
 No source map, timestamp, or absolute repository path is emitted. Two consecutive
 regenerations must be byte-identical. The expected SHA-256 is
-`adbedb898fff5b3f4fde7796435550ed7bf3c1d386ba7583f0d8dc23aee6a50b`.
+`649766f5423df36a8929f9ea041df633a31a4725a32eb72481db7ab8e56f97f9`.
 
 ## PA-M02 portable framing conformance
 
