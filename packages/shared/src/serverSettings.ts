@@ -212,9 +212,15 @@ export function applyServerSettingsPatch(
 
   const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
   const model = selectionPatch.model ?? current.textGenerationModelSelection.model;
-  const nativeIdentity =
-    selectionPatch.nativeIdentity ?? current.textGenerationModelSelection.nativeIdentity;
-  const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
+  // Changing either routing key replaces the selection. Native identity is
+  // part of that selection, not an independent default: retaining the prior
+  // identity here can route an overlapping Prime model to the wrong upstream
+  // provider. Options-only patches are the sole merge case and keep it.
+  const replacesSelection = shouldReplaceTextGenerationModelSelection(selectionPatch);
+  const nativeIdentity = replacesSelection
+    ? selectionPatch.nativeIdentity
+    : (selectionPatch.nativeIdentity ?? current.textGenerationModelSelection.nativeIdentity);
+  const options = replacesSelection
     ? selectionPatch.options
     : mergeModelSelectionOptionsById({
         current: current.textGenerationModelSelection.options,

@@ -628,6 +628,31 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it("redacts sensitive provider environment values for externally materialized settings", () => {
+    const redacted = ServerSettingsModule.redactServerSettingsForClient({
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [ProviderInstanceId.make("prime-agent")]: {
+          driver: ProviderDriverKind.make("prime-agent"),
+          config: { binaryPath: "/opt/prime-agent" },
+          environment: [
+            { name: "PRIME_TOKEN", value: "fixture-secret", sensitive: true },
+            { name: "PRIME_ENDPOINT", value: "https://api.prime.example", sensitive: false },
+          ],
+        },
+      },
+    });
+
+    assert.deepEqual(
+      redacted.providerInstances[ProviderInstanceId.make("prime-agent")]?.environment,
+      [
+        { name: "PRIME_TOKEN", value: "", sensitive: true, valueRedacted: true },
+        { name: "PRIME_ENDPOINT", value: "https://api.prime.example", sensitive: false },
+      ],
+    );
+    assert.notInclude(JSON.stringify(redacted), "fixture-secret");
+  });
+
   it.effect("stores sensitive provider instance environment values outside settings.json", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;

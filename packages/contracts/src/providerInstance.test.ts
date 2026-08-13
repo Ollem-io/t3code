@@ -175,6 +175,15 @@ describe("ProviderInstanceConfig", () => {
     expect(() => decodeProviderInstanceConfig({ driver: "" })).toThrow();
     expect(() => decodeProviderInstanceConfig({ driver: "has spaces" })).toThrow();
   });
+
+  it("drops unknown envelope fields while preserving unknown-driver config", () => {
+    const decoded = decodeProviderInstanceConfig({
+      driver: "fork-driver",
+      config: { futureChoice: "kept" },
+      futureEnvelopeField: "not materialized by this build",
+    });
+    expect(decoded).toEqual({ driver: "fork-driver", config: { futureChoice: "kept" } });
+  });
 });
 
 describe("ProviderInstanceConfigMap", () => {
@@ -245,5 +254,18 @@ describe("Prime Agent instance bootstrap and typed config", () => {
       binaryPath: "prime-agent",
     });
     expect(() => decodePrimeAgentSettings({ binaryPath: "" })).toThrow();
+  });
+
+  it("drops Prime-owned launch overrides rather than materializing them", () => {
+    expect(
+      decodePrimeAgentSettings({
+        binaryPath: "prime-agent",
+        launchArgs: "--mode rpc",
+        mode: "interactive",
+        workspace: "/tmp/workspace",
+        model: "other-model",
+        session: "session-1",
+      }),
+    ).toEqual({ binaryPath: "prime-agent" });
   });
 });
