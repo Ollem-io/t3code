@@ -1,29 +1,99 @@
 #!/usr/bin/env node
-// Deterministic fixture peer. Contract documented in README.md.
+// Deterministic process peer for PA-M03. It contains no production launch policy.
+import { closeSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-if (process.argv.includes("--mode") && process.argv[process.argv.indexOf("--mode") + 1] !== "rpc") {
+const argument = (name, fallback) => {
+  const index = process.argv.indexOf(name);
+  return index === -1 ? fallback : process.argv[index + 1];
+};
+if (argument("--mode", "rpc") !== "rpc") {
   process.stderr.write("fake prime-agent only supports --mode rpc\n");
   process.exitCode = 2;
 } else {
-  const write = (record) => process.stdout.write(`${JSON.stringify(record)}\n`);
-  const model = {
-    id: "model-1", name: "Fixture model", api: "openai-completions", provider: "fixture-provider",
-    baseUrl: "https://example.invalid", reasoning: true, input: ["text", "image"], cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }, contextWindow: 1000, maxTokens: 100,
-    thinkingLevelMap: { off: null, minimal: "minimal", max: "max" },
+  const scenario = argument(
+    "--scenario",
+    process.argv.includes("--adversarial") ? "adversarial" : "normal",
+  );
+  const write = (record) => {
+    const line = `${JSON.stringify(record)}\n`;
+    if (scenario !== "adversarial") return process.stdout.write(line);
+    process.stderr.write("fixture diagnostic [redacted]\n");
+    process.stdout.write(line.slice(0, 5));
+    return process.stdout.write(line.slice(5));
   };
-  createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line) => {
-    let command;
-    try { command = JSON.parse(line); } catch { write({ type: "response", command: "unknown", success: false, error: "invalid JSON" }); return; }
-    if (command.type === "get_available_models") {
-      write({ type: "response", id: command.id, command: command.type, success: true, data: { models: [model] } });
-      return;
-    }
-    if (command.type === "get_state") {
-      write({ type: "response", id: command.id, command: command.type, success: true, data: { sessionId: "fixture-session", thinkingLevel: "medium", isStreaming: false, isCompacting: false, steeringMode: "one-at-a-time", followUpMode: "one-at-a-time", autoCompactionEnabled: true, messageCount: 0, sessionActions: {}, goal: {} } });
-      return;
-    }
-    if (command.type === "prompt") write({ type: "agent_start" });
-    write({ type: "response", id: command.id, command: command.type, success: true });
-  });
+  const response = (command, override = {}) =>
+    write({ type: "response", id: command.id, command: command.type, success: true, ...override });
+  const held = [];
+
+  if (scenario === "write-failure") {
+    closeSync(0);
+    write({ type: "fixture_stdin_closed" });
+    setInterval(() => undefined, 60_000);
+  } else if (scenario === "eof-live") {
+    process.stdout.end();
+    setInterval(() => undefined, 60_000);
+  } else {
+    const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    lines.on("line", (line) => {
+      let command;
+      try {
+        command = JSON.parse(line);
+      } catch {
+        write({ type: "response", command: "unknown", success: false, error: "invalid JSON" });
+        return;
+      }
+      if (scenario === "reverse-two" && command.type === "get_state") {
+        held.push(command);
+        write({ type: held.length === 1 ? "agent_start" : "turn_start" });
+        if (held.length === 2) {
+          response(held[1]);
+          response(held[0]);
+        }
+        return;
+      }
+      if (scenario === "duplicate") {
+        if (held.length === 0) {
+          held.push(command);
+          response(command);
+          return;
+        }
+        for (const pending of held.splice(0)) response(pending);
+        response(command);
+        return;
+      }
+      if (scenario === "mismatch") {
+        response(command, { command: command.type === "abort" ? "get_state" : "abort" });
+        return;
+      }
+      if (scenario === "late-after-abort") {
+        if (command.type === "get_state") {
+          held.push(command);
+          write({ type: "agent_start" });
+          return;
+        }
+        for (const pending of held.splice(0)) response(pending);
+        response(command);
+        return;
+      }
+      if (scenario === "timeout") return;
+      if (scenario === "corrupt") {
+        process.stdout.write("{not-json}\n");
+        return;
+      }
+      if (scenario === "exit") {
+        process.stderr.write("secret-that-must-not-escape:" + "x".repeat(256));
+        process.stdout.resume();
+        setImmediate(() => process.exit(17));
+        return;
+      }
+      if (scenario === "events") {
+        write({ type: "agent_start" });
+        write({ type: "turn_start" });
+      }
+      if (command.type === "get_state" && scenario === "adversarial")
+        write({ type: "agent_start" });
+      response(command);
+    });
+  }
 }
