@@ -514,6 +514,9 @@ function check(v, m) {
   checks++;
   if (!v) throw Error(m);
 }
+function equal(actual, expected) {
+  return actual === expected;
+}
 const homes = [
   await mkdtemp(join(tmpdir(), "t3-pa-m06-a-")),
   await mkdtemp(join(tmpdir(), "t3-pa-m06-b-")),
@@ -682,7 +685,7 @@ try {
     },
   );
   check(retryStops === 1, "retry did not duplicate stop");
-  check(retryRpc === 2, "failed rpc retried");
+  check(equal(retryRpc, 2), "failed rpc retried");
   await stat(retry.ownership).then(
     () => check(false, "retry record survived"),
     () => check(true, "retry record removed"),
