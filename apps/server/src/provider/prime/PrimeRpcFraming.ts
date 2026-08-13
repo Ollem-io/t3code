@@ -16,12 +16,13 @@ export type PrimeRpcFramingFailureReason =
 /** A transport-boundary error which deliberately never retains raw payloads. */
 export class PrimeRpcFramingError extends Error {
   readonly _tag = "PrimeRpcFramingError";
+  readonly reason: PrimeRpcFramingFailureReason;
+  readonly byteLength: number | undefined;
 
-  constructor(
-    readonly reason: PrimeRpcFramingFailureReason,
-    readonly byteLength?: number,
-  ) {
+  constructor(reason: PrimeRpcFramingFailureReason, byteLength?: number) {
     super(`Prime Agent RPC framing failed: ${reason}`);
+    this.reason = reason;
+    this.byteLength = byteLength;
   }
 }
 

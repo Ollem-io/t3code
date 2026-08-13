@@ -1,4 +1,4 @@
-import * as Either from "effect/Either";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 /**
@@ -8,7 +8,7 @@ import * as Schema from "effect/Schema";
 export const PRIME_RPC_VERSION = "0.7.2" as const;
 
 const RequestId = Schema.String;
-const ThinkingLevelMapValue = Schema.Union(Schema.String, Schema.Null);
+const ThinkingLevelMapValue = Schema.Union([Schema.String, Schema.Null]);
 const ThinkingLevelMap = Schema.Struct({
   off: Schema.optional(ThinkingLevelMapValue),
   minimal: Schema.optional(ThinkingLevelMapValue),
@@ -32,7 +32,7 @@ export const PrimeRpcModel = Schema.Struct({
   provider: Schema.String,
   baseUrl: Schema.String,
   reasoning: Schema.Boolean,
-  input: Schema.Array(Schema.Literal("text", "image")),
+  input: Schema.Array(Schema.Literals(["text", "image"])),
   cost: Schema.Struct({
     input: Schema.Number,
     output: Schema.Number,
@@ -49,27 +49,39 @@ export const PrimeRpcModel = Schema.Struct({
 });
 
 const CommandEnvelope = Schema.Struct({ id: Schema.optional(RequestId), type: Schema.String });
-export const PrimeRpcExtensionUiResponse = Schema.Union(
-  Schema.Struct({ type: Schema.Literal("extension_ui_response"), id: Schema.String, value: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_response"), id: Schema.String, confirmed: Schema.Boolean }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_response"), id: Schema.String, cancelled: Schema.Literal(true) }),
-);
+export const PrimeRpcExtensionUiResponse = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_response"),
+    id: Schema.String,
+    value: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_response"),
+    id: Schema.String,
+    confirmed: Schema.Boolean,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_response"),
+    id: Schema.String,
+    cancelled: Schema.Literal(true),
+  }),
+]);
 const PromptCommand = Schema.Struct({
   id: Schema.optional(RequestId),
   type: Schema.Literal("prompt"),
   message: Schema.String,
   images: Schema.optional(Schema.Array(PrimeRpcImageInput)),
-  streamingBehavior: Schema.optional(Schema.Literal("steer", "followUp")),
+  streamingBehavior: Schema.optional(Schema.Literals(["steer", "followUp"])),
 });
 const QueuedPromptCommand = Schema.Struct({
   id: Schema.optional(RequestId),
-  type: Schema.Literal("steer", "follow_up"),
+  type: Schema.Literals(["steer", "follow_up"]),
   message: Schema.String,
   images: Schema.optional(Schema.Array(PrimeRpcImageInput)),
 });
 const NoArgumentCommand = Schema.Struct({
   id: Schema.optional(RequestId),
-  type: Schema.Literal("abort", "get_state", "get_available_models"),
+  type: Schema.Literals(["abort", "get_state", "get_available_models"]),
 });
 const NewSessionCommand = Schema.Struct({
   id: Schema.optional(RequestId),
@@ -85,9 +97,9 @@ const SetModelCommand = Schema.Struct({
 const SetThinkingLevelCommand = Schema.Struct({
   id: Schema.optional(RequestId),
   type: Schema.Literal("set_thinking_level"),
-  level: Schema.Literal("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+  level: Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
 });
-export const PrimeRpcCommand = Schema.Union(
+export const PrimeRpcCommand = Schema.Union([
   PromptCommand,
   QueuedPromptCommand,
   NoArgumentCommand,
@@ -95,7 +107,7 @@ export const PrimeRpcCommand = Schema.Union(
   SetModelCommand,
   SetThinkingLevelCommand,
   PrimeRpcExtensionUiResponse,
-);
+]);
 
 export const PrimeRpcAvailableModelsResponse = Schema.Struct({
   id: Schema.optional(RequestId),
@@ -118,18 +130,21 @@ const FailureResponse = Schema.Struct({
   success: Schema.Literal(false),
   error: Schema.String,
 });
-const PrimeRpcAvailableModelsResult = Schema.Union(
+const PrimeRpcAvailableModelsResult = Schema.Union([
   PrimeRpcAvailableModelsResponse,
   FailureResponse,
-);
-export const PrimeRpcResponse = Schema.Union(
+]);
+export const PrimeRpcResponse = Schema.Union([
   PrimeRpcAvailableModelsResponse,
   SuccessResponse,
   FailureResponse,
-);
+]);
 
 const AgentStartEvent = Schema.Struct({ type: Schema.Literal("agent_start") });
-const AgentEndEvent = Schema.Struct({ type: Schema.Literal("agent_end"), messages: Schema.Array(Schema.Unknown) });
+const AgentEndEvent = Schema.Struct({
+  type: Schema.Literal("agent_end"),
+  messages: Schema.Array(Schema.Unknown),
+});
 const TurnStartEvent = Schema.Struct({ type: Schema.Literal("turn_start") });
 const TurnEndEvent = Schema.Struct({
   type: Schema.Literal("turn_end"),
@@ -149,21 +164,94 @@ const MessageEndEvent = Schema.Struct({
   type: Schema.Literal("message_end"),
   message: Schema.Unknown,
 });
-const ToolExecutionStart = Schema.Struct({ type: Schema.Literal("tool_execution_start"), toolCallId: Schema.String, toolName: Schema.String, args: Schema.Unknown });
-const ToolExecutionUpdate = Schema.Struct({ type: Schema.Literal("tool_execution_update"), toolCallId: Schema.String, toolName: Schema.String, args: Schema.Unknown, partialResult: Schema.Unknown });
-const ToolExecutionEnd = Schema.Struct({ type: Schema.Literal("tool_execution_end"), toolCallId: Schema.String, toolName: Schema.String, result: Schema.Unknown, isError: Schema.Boolean });
-const ExtensionUiRequest = Schema.Union(
-  Schema.Struct({ type: Schema.Literal("extension_ui_request"), id: Schema.String, method: Schema.Literal("select"), title: Schema.String, options: Schema.Array(Schema.String), timeout: Schema.optional(Schema.Number) }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_request"), id: Schema.String, method: Schema.Literal("confirm"), title: Schema.String, message: Schema.String, timeout: Schema.optional(Schema.Number) }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_request"), id: Schema.String, method: Schema.Literal("input"), title: Schema.String, placeholder: Schema.optional(Schema.String), timeout: Schema.optional(Schema.Number) }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_request"), id: Schema.String, method: Schema.Literal("editor"), title: Schema.String, prefill: Schema.optional(Schema.String) }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_request"), id: Schema.String, method: Schema.Literal("notify"), message: Schema.String, notifyType: Schema.optional(Schema.Literal("info", "warning", "error")) }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_request"), id: Schema.String, method: Schema.Literal("setStatus"), statusKey: Schema.String, statusText: Schema.optional(Schema.String) }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_request"), id: Schema.String, method: Schema.Literal("setWidget"), widgetKey: Schema.String, widgetLines: Schema.optional(Schema.Array(Schema.String)), widgetPlacement: Schema.optional(Schema.Literal("aboveEditor", "belowEditor")) }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_request"), id: Schema.String, method: Schema.Literal("setTitle"), title: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("extension_ui_request"), id: Schema.String, method: Schema.Literal("set_editor_text"), text: Schema.String }),
-);
-export const PrimeRpcKnownEvent = Schema.Union(
+const ToolExecutionStart = Schema.Struct({
+  type: Schema.Literal("tool_execution_start"),
+  toolCallId: Schema.String,
+  toolName: Schema.String,
+  args: Schema.Unknown,
+});
+const ToolExecutionUpdate = Schema.Struct({
+  type: Schema.Literal("tool_execution_update"),
+  toolCallId: Schema.String,
+  toolName: Schema.String,
+  args: Schema.Unknown,
+  partialResult: Schema.Unknown,
+});
+const ToolExecutionEnd = Schema.Struct({
+  type: Schema.Literal("tool_execution_end"),
+  toolCallId: Schema.String,
+  toolName: Schema.String,
+  result: Schema.Unknown,
+  isError: Schema.Boolean,
+});
+const ExtensionUiRequest = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("select"),
+    title: Schema.String,
+    options: Schema.Array(Schema.String),
+    timeout: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("confirm"),
+    title: Schema.String,
+    message: Schema.String,
+    timeout: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("input"),
+    title: Schema.String,
+    placeholder: Schema.optional(Schema.String),
+    timeout: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("editor"),
+    title: Schema.String,
+    prefill: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("notify"),
+    message: Schema.String,
+    notifyType: Schema.optional(Schema.Literals(["info", "warning", "error"])),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("setStatus"),
+    statusKey: Schema.String,
+    statusText: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("setWidget"),
+    widgetKey: Schema.String,
+    widgetLines: Schema.optional(Schema.Array(Schema.String)),
+    widgetPlacement: Schema.optional(Schema.Literals(["aboveEditor", "belowEditor"])),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("setTitle"),
+    title: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("set_editor_text"),
+    text: Schema.String,
+  }),
+]);
+export const PrimeRpcKnownEvent = Schema.Union([
   AgentStartEvent,
   AgentEndEvent,
   TurnStartEvent,
@@ -175,7 +263,7 @@ export const PrimeRpcKnownEvent = Schema.Union(
   ToolExecutionUpdate,
   ToolExecutionEnd,
   ExtensionUiRequest,
-);
+]);
 export type PrimeRpcCommand = typeof PrimeRpcCommand.Type;
 export type PrimeRpcResponse = typeof PrimeRpcResponse.Type;
 export type PrimeRpcKnownEvent = typeof PrimeRpcKnownEvent.Type;
@@ -186,20 +274,26 @@ export type PrimeRpcEnvelope =
   | { readonly _tag: "command"; readonly value: PrimeRpcCommand }
   | { readonly _tag: "response"; readonly value: PrimeRpcResponse }
   | { readonly _tag: "known-event"; readonly value: PrimeRpcKnownEvent }
-  | { readonly _tag: "unknown-event"; readonly type: string; readonly value: Record<string, unknown> }
+  | {
+      readonly _tag: "unknown-event";
+      readonly type: string;
+      readonly value: Record<string, unknown>;
+    }
   | { readonly _tag: "malformed"; readonly error: PrimeRpcCompatibilityError };
 
 /** A local protocol-boundary failure; raw records are intentionally not retained. */
 export class PrimeRpcCompatibilityError extends Error {
   readonly _tag = "PrimeRpcCompatibilityError";
-  constructor(readonly envelopeClass: "command" | "response" | "event" | "unknown") {
+  readonly envelopeClass: "command" | "response" | "event" | "unknown";
+  constructor(envelopeClass: "command" | "response" | "event" | "unknown") {
     super(`Prime Agent RPC ${PRIME_RPC_VERSION} ${envelopeClass} is incompatible`);
+    this.envelopeClass = envelopeClass;
   }
 }
 
-const decode = <A, I>(schema: Schema.Schema<A, I>, value: unknown): A | undefined => {
-  const result = Schema.decodeUnknownEither(schema)(value);
-  return Either.isRight(result) ? result.right : undefined;
+const decode = <A>(schema: Schema.ConstraintDecoder<A>, value: unknown): A | undefined => {
+  const result = Schema.decodeUnknownResult(schema)(value);
+  return Result.isSuccess(result) ? result.success : undefined;
 };
 
 /** JSON has no undefined: exactly one response payload form is required. */
@@ -221,9 +315,10 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
   const object = value as Record<string, unknown>;
   if (envelope.type === "response") {
     // Command-specific data is validated before the generic response envelope.
-    const response = object.command === "get_available_models"
-      ? decode(PrimeRpcAvailableModelsResult, value)
-      : decode(PrimeRpcResponse, value);
+    const response =
+      object.command === "get_available_models"
+        ? decode(PrimeRpcAvailableModelsResult, value)
+        : decode(PrimeRpcResponse, value);
     return response
       ? { _tag: "response", value: response }
       : { _tag: "malformed", error: new PrimeRpcCompatibilityError("response") };
@@ -239,13 +334,32 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
   const event = decode(PrimeRpcKnownEvent, value);
   if (event) return { _tag: "known-event", value: event };
   const knownCommandTypes = new Set([
-    "prompt", "steer", "follow_up", "abort", "get_state", "get_available_models", "new_session", "set_model", "set_thinking_level",
+    "prompt",
+    "steer",
+    "follow_up",
+    "abort",
+    "get_state",
+    "get_available_models",
+    "new_session",
+    "set_model",
+    "set_thinking_level",
   ]);
   const knownEventTypes = new Set([
-    "agent_start", "agent_end", "turn_start", "turn_end", "message_start", "message_update", "message_end",
-    "tool_execution_start", "tool_execution_update", "tool_execution_end", "extension_ui_request",
+    "agent_start",
+    "agent_end",
+    "turn_start",
+    "turn_end",
+    "message_start",
+    "message_update",
+    "message_end",
+    "tool_execution_start",
+    "tool_execution_update",
+    "tool_execution_end",
+    "extension_ui_request",
   ]);
-  if (knownCommandTypes.has(envelope.type)) return { _tag: "malformed", error: new PrimeRpcCompatibilityError("command") };
-  if (knownEventTypes.has(envelope.type)) return { _tag: "malformed", error: new PrimeRpcCompatibilityError("event") };
+  if (knownCommandTypes.has(envelope.type))
+    return { _tag: "malformed", error: new PrimeRpcCompatibilityError("command") };
+  if (knownEventTypes.has(envelope.type))
+    return { _tag: "malformed", error: new PrimeRpcCompatibilityError("event") };
   return { _tag: "unknown-event", type: envelope.type, value: object };
 };

@@ -24,10 +24,42 @@ node review-prime-rpc-fixtures.mjs
 
 It reads this directory's JSONL corpus and prints only each fixture name, decoded envelope class, and `pass`/`fail`. Its dependency-free validators mirror every supported command, model, image, core event/tool, and extension UI envelope in the production boundary. They visibly cover additive-field acceptance, missing-required-field compatibility failures, and unknown-event classification. The integration test locks its expected classifications to the same corpus.
 
-## Deterministic fake executable
+## PA-M03 source-derived client/process review artifact
 
-`fake-prime-agent.mjs` is a process-level fake whose contract is `prime-agent --mode rpc`: it accepts LF JSON command records on stdin and writes LF JSON responses/events on stdout. It ignores process flags other than accepting `--mode rpc`, has no network/auth/filesystem dependency, and only returns synthetic data. PA-M03 spawns it with `node <path>/fake-prime-agent.mjs --mode rpc --adversarial` through `PrimeRpcProcessTransport`: that mode splits every stdout record across writes, interleaves an event before each state response, emits stderr, and proves an unread bounded event queue cannot stop response draining.
+The three PA-M03 review files are `review-prime-rpc-client.bundle.mjs`,
+`fake-prime-agent.mjs`, and this README. The bundle is generated from
+`review-prime-rpc-client.ts`, which imports the production `PrimeRpcClient`,
+`PrimeRpcProcessTransport`, protocol decoder, and framing implementation before
+bundling all runtime dependencies. The fake remains a deterministic process peer
+only; it contains no production executable-discovery or launch policy.
 
+Copy only the bundle and fake into a fresh directory with Node, then run:
+
+```sh
+node review-prime-rpc-client.bundle.mjs
+```
+
+The runner copies the adjacent fake into its own temporary source-free directory,
+spawns that exact child through Node, and proves real stdin/stdout/stderr lifecycle:
+interleaved correlation; unread bounded events; duplicate, mismatch, abort-late,
+timeout, EOF, and nonzero-exit exact-once fanout; bounded redacted stderr; terminal
+write failure; and event drain/close. A missing/corrupt fake or failed assertion
+exits nonzero. Cleanup closes only transports/child processes created by the run.
+
+Regenerate from repository root (the committed source is reviewable, but is not
+needed at artifact runtime):
+
+```sh
+rm -rf apps/server/integration/fixtures/prime-rpc/.bundle-tmp
+./node_modules/.bin/vp pack apps/server/integration/fixtures/prime-rpc/review-prime-rpc-client.ts --out-dir apps/server/integration/fixtures/prime-rpc/.bundle-tmp --no-clean --no-sourcemap --platform node --format esm --target node24 --minify --no-report
+cp apps/server/integration/fixtures/prime-rpc/.bundle-tmp/review-prime-rpc-client.mjs apps/server/integration/fixtures/prime-rpc/review-prime-rpc-client.bundle.mjs
+rm -rf apps/server/integration/fixtures/prime-rpc/.bundle-tmp
+sha256sum apps/server/integration/fixtures/prime-rpc/review-prime-rpc-client.bundle.mjs
+```
+
+No source map, timestamp, or absolute repository path is emitted. Two consecutive
+regenerations must be byte-identical. The expected SHA-256 is
+`adbedb898fff5b3f4fde7796435550ed7bf3c1d386ba7583f0d8dc23aee6a50b`.
 
 ## PA-M02 portable framing conformance
 
