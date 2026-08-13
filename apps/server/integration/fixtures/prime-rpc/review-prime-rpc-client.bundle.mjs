@@ -176,8 +176,8 @@ const d = (e, t = {}) => {
     (e) => () =>
       e
   )(void 0),
-  ee = _;
-function v(e) {
+  v = _;
+function y(e) {
   let t = new WeakMap();
   return (n) => {
     if (t.has(n)) return t.get(n);
@@ -185,7 +185,7 @@ function v(e) {
     return (t.set(n, r), r);
   };
 }
-const y = (e) => (t, n) => t === n || e(t, n),
+const ee = (e) => (t, n) => t === n || e(t, n),
   b = (e) => {
     let t = new Set(Reflect.ownKeys(e));
     if (e.constructor === Object) return t;
@@ -609,10 +609,10 @@ const it = `~effect/Effect`,
   k = `${it}/args`,
   A = `${it}/evaluate`,
   j = `${it}/successCont`,
-  ct = `${it}/failureCont`,
-  lt = `${it}/ensureCont`,
-  ut = Symbol.for(`effect/Effect/Yield`),
-  dt = {
+  M = `${it}/failureCont`,
+  ct = `${it}/ensureCont`,
+  lt = Symbol.for(`effect/Effect/Yield`),
+  ut = {
     pipe() {
       return f(this, arguments);
     },
@@ -626,9 +626,9 @@ const it = `~effect/Effect`,
       return this.toJSON();
     },
   },
-  ft = {
+  dt = {
     [it]: ot,
-    ...dt,
+    ...ut,
     [Symbol.iterator]() {
       return new et(this);
     },
@@ -636,15 +636,15 @@ const it = `~effect/Effect`,
       return { _id: `Effect`, op: this[st], ...(k in this ? { args: this[k] } : void 0) };
     },
   },
-  pt = (e) => x(e, at),
-  mt = `~effect/Cause`,
-  ht = `~effect/Cause/Reason`,
-  gt = (e) => x(e, mt);
-var _t = class {
-  [mt];
+  ft = (e) => x(e, at),
+  pt = `~effect/Cause`,
+  mt = `~effect/Cause/Reason`,
+  ht = (e) => x(e, pt);
+var gt = class {
+  [pt];
   reasons;
   constructor(e) {
-    ((this[mt] = mt), (this.reasons = e));
+    ((this[pt] = pt), (this.reasons = e));
   }
   pipe() {
     return f(this, arguments);
@@ -660,7 +660,7 @@ var _t = class {
   }
   [E](e) {
     return (
-      gt(e) &&
+      ht(e) &&
       this.reasons.length === e.reasons.length &&
       this.reasons.every((t, n) => D(t, e.reasons[n]))
     );
@@ -669,15 +669,15 @@ var _t = class {
     return ve(this.reasons);
   }
 };
-const vt = new WeakMap();
-var yt = class {
-  [ht];
+const _t = new WeakMap();
+var vt = class {
+  [mt];
   annotations;
   _tag;
   constructor(e, t, n) {
-    if (((this[ht] = ht), (this._tag = e), t !== bt && typeof n == `object` && n && t.size > 0)) {
-      let e = vt.get(n);
-      (e && (t = new Map([...e, ...t])), vt.set(n, t));
+    if (((this[mt] = mt), (this._tag = e), t !== yt && typeof n == `object` && n && t.size > 0)) {
+      let e = _t.get(n);
+      (e && (t = new Map([...e, ...t])), _t.set(n, t));
     }
     this.annotations = t;
   }
@@ -700,10 +700,10 @@ var yt = class {
     return this.toString();
   }
 };
-const bt = new Map();
-var xt = class extends yt {
+const yt = new Map();
+var bt = class extends vt {
   error;
-  constructor(e, t = bt) {
+  constructor(e, t = yt) {
     (super(`Fail`, t, e), (this.error = e));
   }
   toString() {
@@ -713,17 +713,17 @@ var xt = class extends yt {
     return { _tag: `Fail`, error: this.error };
   }
   [E](e) {
-    return Dt(e) && D(this.error, e.error) && D(this.annotations, e.annotations);
+    return Et(e) && D(this.error, e.error) && D(this.annotations, e.annotations);
   }
   [S]() {
     return w(T(this._tag))(w(C(this.error))(C(this.annotations)));
   }
 };
-const St = (e) => new _t(e),
-  Ct = (e) => new _t([new xt(e)]);
-var wt = class extends yt {
+const xt = (e) => new gt(e),
+  St = (e) => new gt([new bt(e)]);
+var Ct = class extends vt {
   defect;
-  constructor(e, t = bt) {
+  constructor(e, t = yt) {
     (super(`Die`, t, e), (this.defect = e));
   }
   toString() {
@@ -733,39 +733,39 @@ var wt = class extends yt {
     return { _tag: `Die`, defect: this.defect };
   }
   [E](e) {
-    return Ot(e) && D(this.defect, e.defect) && D(this.annotations, e.annotations);
+    return Dt(e) && D(this.defect, e.defect) && D(this.annotations, e.annotations);
   }
   [S]() {
     return w(T(this._tag))(w(C(this.defect))(C(this.annotations)));
   }
 };
-const Tt = (e) => new _t([new wt(e)]),
-  Et = h(
-    (e) => gt(e[0]),
-    (e, t, n) => (t.mapUnsafe.size === 0 ? e : new _t(e.reasons.map((e) => e.annotate(t, n)))),
+const wt = (e) => new gt([new Ct(e)]),
+  Tt = h(
+    (e) => ht(e[0]),
+    (e, t, n) => (t.mapUnsafe.size === 0 ? e : new gt(e.reasons.map((e) => e.annotate(t, n)))),
   ),
-  Dt = (e) => e._tag === `Fail`,
-  Ot = (e) => e._tag === `Die`,
-  kt = (e) => e._tag === `Interrupt`;
-function At(e) {
+  Et = (e) => e._tag === `Fail`,
+  Dt = (e) => e._tag === `Die`,
+  Ot = (e) => e._tag === `Interrupt`;
+function kt(e) {
   return Rt(`Effect.evaluate: Not implemented`);
 }
-const jt = (e) => ({ ...ft, [st]: e.op, [A]: e[A] ?? At, [j]: e[j], [ct]: e[ct], [lt]: e[lt] }),
-  Mt = (e) => {
-    let t = jt(e);
+const At = (e) => ({ ...dt, [st]: e.op, [A]: e[A] ?? kt, [j]: e[j], [M]: e[M], [ct]: e[ct] }),
+  jt = (e) => {
+    let t = At(e);
     return function () {
       let n = Object.create(t);
       return ((n[k] = e.single === !1 ? arguments : arguments[0]), n);
     };
   },
-  Nt = (e) => {
+  Mt = (e) => {
     let t = {
       [at]: at,
       _tag: e.op,
       get [e.prop]() {
         return this[k];
       },
-      ...jt(e),
+      ...At(e),
       toString() {
         return `${e.op}(${O(this[k])})`;
       },
@@ -773,7 +773,7 @@ const jt = (e) => ({ ...ft, [st]: e.op, [A]: e[A] ?? At, [j]: e[j], [ct]: e[ct],
         return { _id: `Exit`, _tag: e.op, [e.prop]: this[k] };
       },
       [E](e) {
-        return pt(e) && e._tag === this._tag && D(this[k], e[k]);
+        return ft(e) && e._tag === this._tag && D(this[k], e[k]);
       },
       [S]() {
         return w(T(e.op), C(this[k]));
@@ -784,7 +784,7 @@ const jt = (e) => ({ ...ft, [st]: e.op, [A]: e[A] ?? At, [j]: e[j], [ct]: e[ct],
       return ((n[k] = e), n);
     };
   },
-  M = Nt({
+  Nt = Mt({
     op: `Success`,
     prop: `value`,
     [A](e) {
@@ -794,22 +794,22 @@ const jt = (e) => ({ ...ft, [st]: e.op, [A]: e[A] ?? At, [j]: e[j], [ct]: e[ct],
   }),
   Pt = { key: `effect/Cause/StackTrace` },
   Ft = { key: `effect/Cause/InterruptorStackTrace` },
-  It = Nt({
+  It = Mt({
     op: `Failure`,
     prop: `cause`,
     [A](e) {
       let t = this[k],
         n = !1;
       e.currentStackFrame &&
-        ((t = Et(t, { mapUnsafe: new Map([[Pt.key, e.currentStackFrame]]) })), (n = !0));
-      let r = e.getCont(ct);
-      for (; e.interruptible && e._interruptedCause && r; ) r = e.getCont(ct);
-      return r ? r[ct](t, e, n ? void 0 : this) : e.yieldWith(n ? It(t) : this);
+        ((t = Tt(t, { mapUnsafe: new Map([[Pt.key, e.currentStackFrame]]) })), (n = !0));
+      let r = e.getCont(M);
+      for (; e.interruptible && e._interruptedCause && r; ) r = e.getCont(M);
+      return r ? r[M](t, e, n ? void 0 : this) : e.yieldWith(n ? It(t) : this);
     },
   }),
-  Lt = (e) => It(Ct(e)),
-  Rt = (e) => It(Tt(e)),
-  zt = Mt({
+  Lt = (e) => It(St(e)),
+  Rt = (e) => It(wt(e)),
+  zt = jt({
     op: `WithFiber`,
     [A](e) {
       return this[k](e);
@@ -817,7 +817,7 @@ const jt = (e) => ({ ...ft, [st]: e.op, [A]: e[A] ?? At, [j]: e[j], [ct]: e[ct],
   }),
   Bt = (function () {
     class e extends globalThis.Error {}
-    let t = jt({
+    let t = At({
       op: `YieldableError`,
       [A]() {
         return Lt(this);
@@ -847,7 +847,7 @@ Ht(`NoSuchElementError`);
 const Ut = `~effect/data/Option`,
   Wt = {
     [Ut]: { _A: (e) => e },
-    ...dt,
+    ...ut,
     [Symbol.iterator]() {
       return new et(this);
     },
@@ -905,7 +905,7 @@ const Ut = `~effect/data/Option`,
   $t = `~effect/data/Result`,
   en = {
     [$t]: { _A: (e) => e, _E: (e) => e },
-    ...dt,
+    ...ut,
     [Symbol.iterator]() {
       return new et(this);
     },
@@ -1049,7 +1049,7 @@ const Sn = pn,
         : e,
   ),
   zn = (e) => (e.value < Pn ? Mn(-e.value, e.scale) : e),
-  Bn = y((e, t) =>
+  Bn = ee((e, t) =>
     e.scale > t.scale
       ? Rn(t, e.scale).value === e.value
       : e.scale < t.scale
@@ -1088,7 +1088,7 @@ const Sn = pn,
   },
   Wn = (e) => e.value === Pn,
   Gn = (e) => e.value < Pn,
-  Kn = (e) => jt({ op: e.label, [A]: e.evaluate }),
+  Kn = (e) => At({ op: e.label, [A]: e.evaluate }),
   qn = (() => {
     let e = Object.getOwnPropertyDescriptor(Error, `stackTraceLimit`);
     return e === void 0
@@ -1129,7 +1129,7 @@ const Sn = pn,
     ...Kn({
       label: `Service`,
       evaluate(e) {
-        return M(_r(e.context, this));
+        return Nt(_r(e.context, this));
       },
     }),
     toJSON() {
@@ -1145,7 +1145,7 @@ const Sn = pn,
       return zt((t) => e(_r(t.context, this)));
     },
     useSync(e) {
-      return zt((t) => M(e(_r(t.context, this))));
+      return zt((t) => Nt(e(_r(t.context, this))));
     },
   },
   $n = new Set(),
@@ -1184,7 +1184,7 @@ const Sn = pn,
   },
   sr = (e) => nr(void 0, e, void 0, 0),
   cr = {
-    ...dt,
+    ...ut,
     [tr]: { _Services: (e) => e },
     get mapUnsafe() {
       return ir(this);
@@ -1339,9 +1339,9 @@ Zn()(Ar, { fiberCached: !0 });
 const jr = xr(`effect/References/CurrentStackFrame`, { fiberCached: !0, defaultValue: _ }),
   Mr = xr(`effect/References/CurrentLogLevel`, { fiberCached: !0, defaultValue: () => `Info` }),
   Nr = xr(`effect/References/MinimumLogLevel`, { fiberCached: !0, defaultValue: () => `Info` });
-var Pr = class extends yt {
+var Pr = class extends vt {
   fiberId;
-  constructor(e, t = bt) {
+  constructor(e, t = yt) {
     (super(`Interrupt`, t, `Interrupted`), (this.fiberId = e));
   }
   toString() {
@@ -1351,24 +1351,24 @@ var Pr = class extends yt {
     return { _tag: `Interrupt`, fiberId: this.fiberId };
   }
   [E](e) {
-    return kt(e) && this.fiberId === e.fiberId && this.annotations === e.annotations;
+    return Ot(e) && this.fiberId === e.fiberId && this.annotations === e.annotations;
   }
   [S]() {
     return w(T(`${this._tag}:${this.fiberId}`))(de(this.annotations));
   }
 };
-const Fr = (e) => new _t([new Pr(e)]),
-  Ir = (e) => e.reasons.some(kt),
+const Fr = (e) => new gt([new Pr(e)]),
+  Ir = (e) => e.reasons.some(Ot),
   Lr = h(2, (e, t) => {
     if (e.reasons.length === 0) return t;
     if (t.reasons.length === 0) return e;
-    let n = new _t(Tn(e.reasons, t.reasons));
+    let n = new gt(Tn(e.reasons, t.reasons));
     return D(e, n) ? e : n;
   }),
   Rr = h(2, (e, t) => {
     let n = !1,
-      r = e.reasons.map((e) => (Dt(e) ? ((n = !0), new xt(t(e.error), e.annotations)) : e));
-    return n ? St(r) : e;
+      r = e.reasons.map((e) => (Et(e) ? ((n = !0), new bt(t(e.error), e.annotations)) : e));
+    return n ? xt(r) : e;
   }),
   zr = `~effect/Fiber`,
   Br = { _A: g, _E: g },
@@ -1422,7 +1422,7 @@ var Ur = class {
   }
   addObserver(e) {
     return this._exit
-      ? (e(this._exit), ee)
+      ? (e(this._exit), v)
       : (this._observers.push(e),
         () => {
           let t = this._observers.indexOf(e);
@@ -1432,8 +1432,8 @@ var Ur = class {
   interruptUnsafe(e, t) {
     if (this._exit) return;
     let n = Fr(e);
-    (this.currentStackFrame && (n = Et(n, mr(Pt, this.currentStackFrame))),
-      t && (n = Et(n, t)),
+    (this.currentStackFrame && (n = Tt(n, mr(Pt, this.currentStackFrame))),
+      t && (n = Tt(n, t)),
       (this._interruptedCause = this._interruptedCause ? Lr(this._interruptedCause, n) : n),
       this.interruptible &&
         (this._running
@@ -1450,7 +1450,7 @@ var Ur = class {
       ((this._yielded = void 0), e());
     }
     let t = this.runLoop(e);
-    if (t === ut) return;
+    if (t === lt) return;
     let n = Gr.interruptChildren && Gr.interruptChildren(this);
     if (n !== void 0) return this.evaluate(N(n, () => t));
     ((this._exit = t), this.runtimeMetrics?.recordFiberEnd(this.context, this._exit));
@@ -1482,7 +1482,7 @@ var Ur = class {
         }
         if (
           ((i = this.currentTracerContext ? this.currentTracerContext(i, this) : i[A](this)),
-          i === ut)
+          i === lt)
         ) {
           let e = this._yielded;
           if (at in e) return ((this._deferredInterrupt = !1), (this._yielded = void 0), e);
@@ -1490,7 +1490,7 @@ var Ur = class {
             ((this._yielded = void 0), e());
             continue;
           }
-          return ut;
+          return lt;
         }
       }
     } catch (e) {
@@ -1504,13 +1504,13 @@ var Ur = class {
     for (;;) {
       let t = this._stack.pop();
       if (!t) return;
-      let n = t[lt] && t[lt](this);
+      let n = t[ct] && t[ct](this);
       if (n) return ((n[e] = n), n);
       if (t[e]) return t;
     }
   }
   yieldWith(e) {
-    return ((this._yielded = e), ut);
+    return ((this._yielded = e), lt);
   }
   children() {
     return (this._children ??= new Set());
@@ -1541,7 +1541,7 @@ const Wr = {
     [j](e, t) {
       return Xr(t._interruptedCause);
     },
-    [ct](e, t) {
+    [M](e, t) {
       return Xr(t._interruptedCause);
     },
   },
@@ -1579,24 +1579,24 @@ const Wr = {
       for (let i of e) (i.interruptUnsafe(t.id, n), r.push(i));
       return di(qr(r));
     }),
-  Yr = M,
+  Yr = Nt,
   Xr = It,
   Zr = Lt,
-  Qr = Mt({
+  Qr = jt({
     op: `Sync`,
     [A](e) {
       let t = this[k](),
         n = e.getCont(j);
-      return n ? n[j](t, e) : e.yieldWith(M(t));
+      return n ? n[j](t, e) : e.yieldWith(Nt(t));
     },
   }),
-  $r = Mt({
+  $r = jt({
     op: `Suspend`,
     [A](e) {
       return this[k]();
     },
   }),
-  ei = Mt({
+  ei = jt({
     op: `Yield`,
     [A](e) {
       let t = !1;
@@ -1613,7 +1613,7 @@ const Wr = {
   ti = (e) => $r(() => Xr(tt(e))),
   ni = (e) => Rt(e),
   ri = Yr(void 0),
-  ii = Mt({
+  ii = jt({
     op: `Async`,
     single: !1,
     [A](e) {
@@ -1631,16 +1631,16 @@ const Wr = {
           }),
           (i === void 0 && a === void 0) ||
             e._stack.push(ai(() => ((n = !0), i?.abort(), a ?? _i))),
-          ut)
+          lt)
         : r;
     },
   }),
-  ai = Mt({
+  ai = jt({
     op: `AsyncFinalizer`,
-    [lt](e) {
+    [ct](e) {
       e.interruptible && ((e.interruptible = !1), e._stack.push(wi));
     },
-    [ct](e, t) {
+    [M](e, t) {
       return Ir(e) ? N(this[k](), () => Xr(e)) : Xr(e);
     },
   }),
@@ -1680,7 +1680,7 @@ const Wr = {
       return ni(e);
     }
   },
-  ui = Mt({
+  ui = jt({
     op: `Iterator`,
     single: !1,
     [j](e, t) {
@@ -1702,7 +1702,7 @@ const Wr = {
     let n = Object.create(fi);
     return ((n[k] = e), (n[j] = t.length === 1 ? t : (e) => t(e)), n);
   }),
-  fi = jt({
+  fi = At({
     op: `OnSuccess`,
     [A](e) {
       return (e._stack.push(this), this[k]);
@@ -1713,35 +1713,35 @@ const Wr = {
   mi = h(2, (e, t) => N(e, (e) => Yr(tt(() => t(e))))),
   hi = h(2, (e, t) => (P(e) ? vi(e, t) : mi(e, t))),
   gi = (e) => e._tag === `Success`,
-  _i = M(void 0),
-  vi = h(2, (e, t) => (e._tag === `Success` ? M(t(e.value)) : e)),
+  _i = Nt(void 0),
+  vi = h(2, (e, t) => (e._tag === `Success` ? Nt(t(e.value)) : e)),
   yi = h(2, (e, t) => {
     let n = Object.create(bi);
-    return ((n[k] = e), (n[ct] = t.length === 1 ? t : (e) => t(e)), n);
+    return ((n[k] = e), (n[M] = t.length === 1 ? t : (e) => t(e)), n);
   }),
-  bi = jt({
+  bi = At({
     op: `OnFailure`,
     [A](e) {
       return (e._stack.push(this), this[k]);
     },
   }),
-  xi = (e) => (P(e) ? M(e) : Si(e)),
-  Si = Mt({
+  xi = (e) => (P(e) ? Nt(e) : Si(e)),
+  Si = jt({
     op: `Exit`,
     [A](e) {
       return (e._stack.push(this), this[k]);
     },
     [j](e, t, n) {
-      return Yr(n ?? M(e));
+      return Yr(n ?? Nt(e));
     },
-    [ct](e, t, n) {
+    [M](e, t, n) {
       return Yr(n ?? It(e));
     },
   }),
   Ci = (e) => zt((t) => (t.interruptible ? ((t.interruptible = !1), t._stack.push(wi), e) : e)),
-  wi = Mt({
+  wi = jt({
     op: `SetInterruptible`,
-    [lt](e) {
+    [ct](e) {
       if (((e.interruptible = this[k]), e._interruptedCause && e.interruptible))
         return () => Xr(e._interruptedCause);
     },
@@ -1772,20 +1772,20 @@ const Wr = {
         h,
         g,
         _ = o,
-        ee = l ? Array(s) : void 0,
-        v = (e) => {
+        v = l ? Array(s) : void 0,
+        y = (e) => {
           let t = Rt(e);
           return (
             (h = t), (u = !0), (m = !0), f && f.size > 0 ? N(Ci(Jr(Array.from(f))), () => t) : t
           );
         },
-        y = (t, r, a) => {
+        ee = (t, r, a) => {
           if (!l) return n(e, t, r, a);
           if (h) return h;
-          for (ee[a] = r; _ < s; ) {
-            let t = ee[_];
+          for (v[a] = r; _ < s; ) {
+            let t = v[_];
             if (t === void 0) return;
-            ee[_] = void 0;
+            v[_] = void 0;
             let r = _++,
               a = n(e, i[r], t, r);
             if (a) return a;
@@ -1797,12 +1797,12 @@ const Wr = {
             let r = i[o],
               a = g ?? t(e, r, o);
             if (P(a)) {
-              if (((h = y(r, a, o)), h)) break;
+              if (((h = ee(r, a, o)), h)) break;
             } else if (d) {
               g = void 0;
               let e = Di(d, a, !0, !0, `inherit`);
               if (e._exit) {
-                if (((h = y(r, e._exit, o)), h)) break;
+                if (((h = ee(r, e._exit, o)), h)) break;
                 continue;
               }
               f.add(e);
@@ -1815,17 +1815,17 @@ const Wr = {
                       if (!m && i._tag === `Failure`)
                         for (let e of i.cause.reasons)
                           if (e._tag === `Interrupt`) continue;
-                          else h._tag === `Failure` ? h.cause.reasons.push(e) : (h = It(St([e])));
+                          else h._tag === `Failure` ? h.cause.reasons.push(e) : (h = It(xt([e])));
                     } else {
-                      let e = y(r, i, t);
-                      e && ((h = e._tag === `Failure` ? It(St(e.cause.reasons.slice())) : e), b());
+                      let e = ee(r, i, t);
+                      e && ((h = e._tag === `Failure` ? It(xt(e.cause.reasons.slice())) : e), b());
                     }
                     if (n) {
                       let e = b();
                       e && p(e);
                     } else u && f.size === 0 && p(h ?? ri);
                   } catch (e) {
-                    p(v(e));
+                    p(y(e));
                   }
                 }),
                 f.size < c)
@@ -1840,7 +1840,7 @@ const Wr = {
                 try {
                   t = b();
                 } catch (t) {
-                  return e(v(t));
+                  return e(y(t));
                 }
                 return t ? e(t) : $r(() => ((h = _i), (m = !0), f ? Jr(f) : ri));
               });
@@ -1913,11 +1913,11 @@ const Mi = {
   bgBrightRed: `101`,
 };
 (Mi.gray, Mi.blue, Mi.green, Mi.yellow, Mi.red, Mi.bgBrightRed, Mi.black);
-const Ni = Dt,
+const Ni = Et,
   Pi = Rr;
 (Zn()(`effect/Cause/StackTrace`), Zn()(`effect/Cause/InterruptorStackTrace`));
 const Fi = Ht,
-  Ii = M,
+  Ii = Nt,
   Li = It,
   Ri = Lt,
   zi = _i,
@@ -1964,7 +1964,7 @@ function na(e) {
   return (t) => ta(t)?.[e];
 }
 const ra = na(`identifier`),
-  ia = v((e) => {
+  ia = y((e) => {
     let t = ra(e);
     return typeof t == `string` ? t : e.getExpected(ia);
   }),
@@ -2665,12 +2665,12 @@ var ko = class {
           h = { ast: t, input: p, out: m, issues: void 0, options: f },
           g = f.errors === `all`,
           _ = f.onExcessProperty === `error`,
-          ee = f.onExcessProperty === `preserve`,
-          v;
-        if (!i && (_ || ee)) {
-          ((a ??= new Set(n)), (v = Reflect.ownKeys(p)));
-          for (let e = 0; e < v.length; e++) {
-            let n = v[e];
+          v = f.onExcessProperty === `preserve`,
+          y;
+        if (!i && (_ || v)) {
+          ((a ??= new Set(n)), (y = Reflect.ownKeys(p)));
+          for (let e = 0; e < y.length; e++) {
+            let n = y[e];
             if (!a.has(n))
               if (_) {
                 let e = new la([n], new da(t));
@@ -2681,12 +2681,12 @@ var ko = class {
               } else nt(m, n, p[n]);
           }
         }
-        let y = So(f?.concurrency);
+        let ee = So(f?.concurrency);
         if (r) {
-          let e = jo(h, o, y);
+          let e = jo(h, o, ee);
           e && (yield* e);
         }
-        if (i && !y)
+        if (i && !ee)
           for (let e = 0; e < i; e++) {
             let t = s[e],
               n = t.is.parameter === mo ? u : l,
@@ -2704,12 +2704,12 @@ var ko = class {
               r = To(p, n.is.parameter, f);
             for (let t = 0; t < r.length; t++) e.push([r[t], n]);
           }
-          let t = d(h, e, y);
+          let t = d(h, e, ee);
           t && (yield* t);
         }
         if (h.issues) return yield* F(new L(t, h.issues));
         if (f.propertyOrder === `original`) {
-          let e = (v ?? Reflect.ownKeys(p)).concat(n),
+          let e = (y ?? Reflect.ownKeys(p)).concat(n),
             t = {};
           for (let n of e) Object.hasOwn(m, n) && nt(t, n, m[n]);
           return t;
@@ -2795,7 +2795,7 @@ function Fo(e, t = void 0) {
 function Io(e, t, n) {
   return new Go(e.map(Po), t, void 0, n);
 }
-const Lo = v((e) => {
+const Lo = y((e) => {
   for (;;) {
     if (no(e)) return uo;
     let t = e.encoding;
@@ -3165,7 +3165,7 @@ function ds(e) {
   function t(n) {
     return n.encoding ? U(n, ls(n.encoding, t)) : e(n);
   }
-  return v(t);
+  return y(t);
 }
 function fs(e, t, n) {
   let r = new V(e, t);
@@ -3246,7 +3246,7 @@ function Ss(e) {
   let n = e.flatMap(t);
   return Sn(n) ? n : void 0;
 }
-const Cs = v((e) => {
+const Cs = y((e) => {
     if (e.encoding) return Cs(U(e, void 0));
     let t = e,
       n = t.recur?.(Cs) ?? t,
@@ -3260,7 +3260,7 @@ const Cs = v((e) => {
     }
     return n;
   }),
-  ws = v((e) => Cs(Es(e)));
+  ws = y((e) => Cs(Es(e)));
 function Ts(e, t) {
   let n = t,
     r = n.length,
@@ -3270,7 +3270,7 @@ function Ts(e, t) {
   let o = Es(i.to);
   return o.encoding ? U(o, [...o.encoding, ...a]) : U(o, a);
 }
-const Es = v((e) => {
+const Es = y((e) => {
   if (e.encoding) return Ts(e, e.encoding);
   let t = e;
   return t.flip?.(Es) ?? t.recur?.(Es) ?? t;
@@ -3347,7 +3347,7 @@ var zs = class extends Fi(`SchemaError`) {
     return `SchemaError(${this.message})`;
   }
 };
-const Bs = v((e) => {
+const Bs = y((e) => {
   switch (e._tag) {
     case `Declaration`: {
       let t = e.annotations?.[`~effect/Schema/Class`];
@@ -4073,16 +4073,19 @@ const Bc = (e, t, n = {}) => {
         o = e;
       }),
       l = (e) => {
-        a || ((a = !0), r.off(`error`, u), r.off(`exit`, d), o(e));
+        a || ((a = !0), r.off(`error`, u), r.off(`exit`, d), r.stdout.off(`end`, f), o(e));
       },
       u = () => l(null),
-      d = (e) => l(e);
-    (r.once(`error`, u), r.once(`exit`, d));
-    let f = () => void 0;
+      d = (e) => l(e),
+      f = () => {
+        (r.exitCode !== null || r.signalCode !== null) && l(r.exitCode);
+      };
+    (r.once(`error`, u), r.once(`exit`, d), r.stdout.once(`end`, f));
+    let p = () => void 0;
     return (
-      r.stdin.on(`error`, f),
-      r.stdout.on(`error`, f),
-      r.stderr.on(`error`, f),
+      r.stdin.on(`error`, p),
+      r.stdout.on(`error`, p),
+      r.stderr.on(`error`, p),
       {
         stdout: r.stdout,
         stderr: r.stderr,
@@ -4128,23 +4131,22 @@ const Bc = (e, t, n = {}) => {
     } catch (e) {
       Q(e instanceof Ic && e.reason === t, `${t} rejection`);
     }
-  },
-  Uc = () => new Promise((e) => setImmediate(e));
-let Wc = Vc;
-const Gc = [],
-  Kc = (e, t = {}) => {
-    let n = new zc(Bc(process.execPath, [Wc, `--mode`, `rpc`, `--scenario`, e]), {
+  };
+let Uc = Vc;
+const Wc = [],
+  Gc = (e, t = {}) => {
+    let n = new zc(Bc(process.execPath, [Uc, `--mode`, `rpc`, `--scenario`, e]), {
       requestIdPrefix: e.replaceAll(`-`, `_`),
       defaultTimeoutMs: 1e3,
       ...t,
     });
-    return (Gc.push(n), n);
+    return (Wc.push(n), n);
   };
 await (async () => {
   let o = await t(a(r(), `pa-m03-artifact-`));
-  ((Wc = a(o, i(Vc))), await e(Vc, Wc));
+  ((Uc = a(o, i(Vc))), await e(Vc, Uc));
   try {
-    let e = Kc(`reverse-two`, { maxQueuedEvents: 1 }),
+    let e = Gc(`reverse-two`, { maxQueuedEvents: 1 }),
       t = e.command({ type: `get_state` }),
       n = e.command({ type: `get_state` });
     (Q(
@@ -4152,69 +4154,68 @@ await (async () => {
       `interleaved concurrent correlation`,
     ),
       Q(e.diagnostics().droppedEvents === 1, `unread consumer does not block responses`));
-    let r = Kc(`duplicate`);
+    let r = Gc(`duplicate`);
     (await r.command({ type: `get_state` }),
-      await Uc(),
-      await Uc(),
+      await r.command({ type: `abort` }),
       Q(r.diagnostics().duplicateResponses === 1, `duplicate successful id diagnostic`));
-    let i = Kc(`mismatch`);
+    let i = Gc(`mismatch`);
     await $(i.command({ type: `get_state` }), `response-command`);
-    let a = Kc(`late-after-abort`),
-      o = new AbortController(),
-      s = a.command({ type: `get_state` }, { signal: o.signal });
-    (await Uc(),
-      o.abort(),
-      await $(s, `aborted`),
+    let a = Gc(`late-after-abort`),
+      o = a.events(),
+      s = new AbortController(),
+      c = a.command({ type: `get_state` }, { signal: s.signal });
+    (Q(!(await o.next()).done, `late request accepted before abort`),
+      await o.return?.(),
+      s.abort(),
+      await $(c, `aborted`),
       await a.command({ type: `abort` }),
-      await Uc(),
-      await Uc(),
       Q(a.diagnostics().duplicateResponses === 1, `late-after-abort exact once`));
-    let c = Kc(`timeout`, { defaultTimeoutMs: 1 }),
-      l = 0;
+    let l = Gc(`timeout`, { defaultTimeoutMs: 1 }),
+      u = 0;
     (await $(
-      c.command({ type: `get_state` }).catch((e) => {
-        throw ((l += 1), e);
+      l.command({ type: `get_state` }).catch((e) => {
+        throw ((u += 1), e);
       }),
       `timeout`,
     ),
-      Q(l === 1, `timeout exact once`));
-    let u = Kc(`exit`, { maxStderrBytes: 8 }),
-      d = u.command({ type: `get_state` }),
-      f = u.command({ type: `abort` });
-    (await Promise.all([$(d, `exit`), $(f, `exit`)]),
+      Q(u === 1, `timeout exact once`));
+    let d = Gc(`exit`, { maxStderrBytes: 8 }),
+      f = d.command({ type: `get_state` }),
+      p = d.command({ type: `abort` });
+    (await Promise.all([$(f, `exit`), $(p, `exit`)]),
       Q(
-        u.diagnostics().stderrBytes <= 8 && u.diagnostics().stderrTruncated,
+        d.diagnostics().stderrBytes <= 8 && d.diagnostics().stderrTruncated,
         `child exit fanout and bounded redacted stderr`,
       ));
-    let p = Kc(`corrupt`);
-    await $(p.command({ type: `get_state` }), `framing`);
-    let m = Bc(process.execPath, [Wc, `--mode`, `rpc`, `--scenario`, `eof-live`]),
-      h = 0,
-      g = new zc({ ...m, close: () => ((h += 1), m.close?.()) }, { requestIdPrefix: `eof` });
-    (Gc.push(g),
-      await $(g.command({ type: `get_state` }), `eof`),
-      g.close(),
-      Q(h === 1, `EOF fanout and transport close once`));
-    let _ = Kc(`write-failure`);
+    let m = Gc(`corrupt`);
+    await $(m.command({ type: `get_state` }), `framing`);
+    let h = Bc(process.execPath, [Uc, `--mode`, `rpc`, `--scenario`, `eof-live`]),
+      g = 0,
+      _ = new zc({ ...h, close: () => ((g += 1), h.close?.()) }, { requestIdPrefix: `eof` });
+    (Wc.push(_),
+      await $(_.command({ type: `get_state` }), `eof`),
+      _.close(),
+      Q(g === 1, `EOF fanout and transport close once`));
+    let v = Gc(`write-failure`);
     await new Promise(async (e) => {
-      let t = _.events();
+      let t = v.events();
       for await (let n of t) n._tag === `unknown-event` && (await t.return?.(), e());
     });
-    let ee = _.command({ type: `get_state` }),
-      v = _.command({ type: `abort` });
-    (await Promise.all([$(ee, `write`), $(v, `write`)]),
-      await $(_.command({ type: `get_state` }), `write`),
-      Q(_.diagnostics().pendingRequests === 0, `write failure fail-stop`));
-    let y = Kc(`events`),
-      b = y.events();
-    (await y.command({ type: `get_state` }),
-      Q(!(await b.next()).done && !(await b.next()).done, `events delivered before close`),
-      y.close(),
-      Q((await b.next()).done === !0, `event close drain and iterator end`));
+    let y = v.command({ type: `get_state` }),
+      ee = v.command({ type: `abort` });
+    (await Promise.all([$(y, `write`), $(ee, `write`)]),
+      await $(v.command({ type: `get_state` }), `write`),
+      Q(v.diagnostics().pendingRequests === 0, `write failure fail-stop`));
+    let b = Gc(`events`),
+      te = b.events();
+    (await b.command({ type: `get_state` }),
+      Q(!(await te.next()).done && !(await te.next()).done, `events delivered before close`),
+      b.close(),
+      Q((await te.next()).done === !0, `event close drain and iterator end`));
     for (let e of Hc) console.log(`PA-M03 ${e}: pass`);
     console.log(`PA-M03 source-derived client/process artifact: pass (${Hc.length} checks)`);
   } finally {
-    for (let e of Gc) e.close();
+    for (let e of Wc) e.close();
     await n(o, { recursive: !0, force: !0 });
   }
 })().catch((e) => {

@@ -22,7 +22,6 @@ const reject = async (promise: Promise<unknown>, reason: PrimeRpcClientError["re
     check(error instanceof PrimeRpcClientError && error.reason === reason, `${reason} rejection`);
   }
 };
-const nextTask = () => new Promise<void>((resolve) => setImmediate(resolve));
 let fake = sourceFake;
 const clients: PrimeRpcClient[] = [];
 const clientFor = (scenario: string, options = {}) => {
@@ -50,22 +49,21 @@ const main = async () => {
 
     const duplicate = clientFor("duplicate");
     await duplicate.command({ type: "get_state" });
-    await nextTask();
-    await nextTask();
+    await duplicate.command({ type: "abort" });
     check(duplicate.diagnostics().duplicateResponses === 1, "duplicate successful id diagnostic");
 
     const mismatch = clientFor("mismatch");
     await reject(mismatch.command({ type: "get_state" }), "response-command");
 
     const late = clientFor("late-after-abort");
+    const lateEvents = late.events();
     const controller = new AbortController();
     const cancelled = late.command({ type: "get_state" }, { signal: controller.signal });
-    await nextTask();
+    check(!(await lateEvents.next()).done, "late request accepted before abort");
+    await lateEvents.return?.();
     controller.abort();
     await reject(cancelled, "aborted");
     await late.command({ type: "abort" });
-    await nextTask();
-    await nextTask();
     check(late.diagnostics().duplicateResponses === 1, "late-after-abort exact once");
 
     const timeout = clientFor("timeout", { defaultTimeoutMs: 1 });

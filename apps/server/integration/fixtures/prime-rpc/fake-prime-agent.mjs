@@ -53,8 +53,13 @@ if (argument("--mode", "rpc") !== "rpc") {
         return;
       }
       if (scenario === "duplicate") {
+        if (held.length === 0) {
+          held.push(command);
+          response(command);
+          return;
+        }
+        for (const pending of held.splice(0)) response(pending);
         response(command);
-        setImmediate(() => response(command));
         return;
       }
       if (scenario === "mismatch") {
@@ -64,10 +69,11 @@ if (argument("--mode", "rpc") !== "rpc") {
       if (scenario === "late-after-abort") {
         if (command.type === "get_state") {
           held.push(command);
+          write({ type: "agent_start" });
           return;
         }
-        response(command);
         for (const pending of held.splice(0)) response(pending);
+        response(command);
         return;
       }
       if (scenario === "timeout") return;

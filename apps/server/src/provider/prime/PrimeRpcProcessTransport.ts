@@ -31,12 +31,17 @@ export const spawnPrimeRpcTransport = (
     exitSettled = true;
     child.off("error", onChildError);
     child.off("exit", onExit);
+    child.stdout.off("end", onStdoutEnd);
     settleExit(code);
   };
   const onChildError = () => finishExit(null);
   const onExit = (code: number | null) => finishExit(code);
+  const onStdoutEnd = () => {
+    if (child.exitCode !== null || child.signalCode !== null) finishExit(child.exitCode);
+  };
   child.once("error", onChildError);
   child.once("exit", onExit);
+  child.stdout.once("end", onStdoutEnd);
 
   // Stream errors are also surfaced to async iterators/write receipts. Keeping
   // listeners attached guarantees destroy/error races cannot become unhandled.

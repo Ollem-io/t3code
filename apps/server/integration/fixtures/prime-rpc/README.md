@@ -60,7 +60,7 @@ sha256sum apps/server/integration/fixtures/prime-rpc/review-prime-rpc-client.bun
 
 No source map, timestamp, or absolute repository path is emitted. Two consecutive
 regenerations must be byte-identical. The expected SHA-256 is
-`649766f5423df36a8929f9ea041df633a31a4725a32eb72481db7ab8e56f97f9`.
+`b80c823d4d25523b7a1852fff7763fa80f5c99992130612e0a83f4458479d4bd`.
 
 ## PA-M02 portable framing conformance
 
