@@ -40,7 +40,7 @@ describe("PrimeRpcClient", () => {
 
   it("settles each request once across timeout, cancellation, mismatch, late and duplicate responses", async () => {
     const { client, stdout } = fixture();
-    await rejection(client.command({ type: "get_state" }, { timeoutMs: 1 }), "timeout");
+    await rejection(client.command({ type: "get_state" }, { timeoutMs: 10 }), "timeout");
     const controller = new AbortController(); const aborted = client.command({ type: "abort" }, { signal: controller.signal }); controller.abort();
     await rejection(aborted, "aborted");
     const mismatch = client.command({ type: "get_state" }); await flush();
@@ -57,7 +57,47 @@ describe("PrimeRpcClient", () => {
     stderr.push("abcdef"); stderr.end();
     stdout.push('{"type":"agent_start"}\n{"type":"turn_start"}\n{"type":"message_start","message":{}}\n');
     exit.resolve(17); await rejection(exitPending, "exit"); await rejection(eofPending, "exit");
-    await flush(); assert.deepStrictEqual(client.diagnostics(), { pendingRequests: 0, closed: true, stderr: "abcd", stderrTruncated: true, droppedEvents: 1, duplicateResponses: 0 });
+    await flush(); assert.deepStrictEqual(client.diagnostics(), { pendingRequests: 0, closed: true, stderrBytes: 4, stderrTruncated: true, droppedEvents: 1, duplicateResponses: 0 });
     const { client: eofClient, stdout: eofStdout } = fixture(); const pending = eofClient.command({ type: "get_state" }); eofStdout.end(); await rejection(pending, "eof");
   });
+  it("fails all pending requests on malformed envelopes or a response without an id", async () => {
+    const { client, stdout } = fixture();
+    const pending = client.command({ type: "get_state" });
+    stdout.push('{"type":"response","command":"get_state","success":true}\n');
+    await rejection(pending, "protocol");
+    const second = client.command({ type: "abort" });
+    await rejection(second, "exit");
+    const { client: malformedClient, stdout: malformedStdout } = fixture();
+    const malformed = malformedClient.command({ type: "get_state" });
+    malformedStdout.push('{"type":"response","id":3}\n');
+    await rejection(malformed, "protocol");
+  });
+
+  it("uses the configured record cap in both directions and detaches cancelled event readers", async () => {
+    const stdout = new Channel(); const stderr = new Channel(); const exit = deferred<number | null>();
+    const client = new PrimeRpcClient({ stdout, stderr, exited: exit.promise, write: async () => undefined }, { maxRecordBytes: 100, requestIdPrefix: "cap" });
+    await rejection(client.command({ type: "prompt", text: "this cannot fit" }), "write");
+    const events = client.events(); const waiting = events.next();
+    await events.return?.();
+    stdout.push('{"type":"agent_start"}\n');
+    await flush();
+    // The cancelled waiter cannot steal this event from a later subscriber.
+    const later = client.events();
+    assert.strictEqual((await later.next()).value?._tag, "known-event");
+    void waiting;
+    const inbound = client.command({ type: "get_state" });
+    stdout.push(`{"type":"x","padding":"${"x".repeat(130)}"}\n`);
+    await rejection(inbound, "framing");
+  });
+
+  it("closes the owned transport exactly once and rejects a second live event subscription", async () => {
+    const stdout = new Channel(); const stderr = new Channel(); const exit = deferred<number | null>(); let closes = 0;
+    const client = new PrimeRpcClient({ stdout, stderr, exited: exit.promise, write: async () => undefined, close: () => { closes += 1; } });
+    const events = client.events();
+    assert.throws(() => client.events(), PrimeRpcClientError);
+    client.close(); client.close();
+    assert.strictEqual(closes, 1);
+    assert.strictEqual((await events.next()).done, true);
+  });
+
 });

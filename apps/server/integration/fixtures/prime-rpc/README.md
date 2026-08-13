@@ -26,7 +26,7 @@ It reads this directory's JSONL corpus and prints only each fixture name, decode
 
 ## Deterministic fake executable
 
-`fake-prime-agent.mjs` is a process-level fake whose contract is `prime-agent --mode rpc`: it accepts LF JSON command records on stdin and writes LF JSON responses/events on stdout. It ignores process flags other than accepting `--mode rpc`, has no network/auth/filesystem dependency, and only returns synthetic data. PA-M03 may spawn it with `node <path>/fake-prime-agent.mjs --mode rpc` to exercise real stdin/stdout chunking.
+`fake-prime-agent.mjs` is a process-level fake whose contract is `prime-agent --mode rpc`: it accepts LF JSON command records on stdin and writes LF JSON responses/events on stdout. It ignores process flags other than accepting `--mode rpc`, has no network/auth/filesystem dependency, and only returns synthetic data. PA-M03 spawns it with `node <path>/fake-prime-agent.mjs --mode rpc --adversarial` through `PrimeRpcProcessTransport`: that mode splits every stdout record across writes, interleaves an event before each state response, emits stderr, and proves an unread bounded event queue cannot stop response draining.
 
 
 ## PA-M02 portable framing conformance
