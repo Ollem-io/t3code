@@ -13,10 +13,18 @@ const push = (parser: PrimeRpcJsonlParser, bytes: Uint8Array): Array<unknown> =>
   parser.push(bytes, (value) => values.push(value));
   return values;
 };
+const thrownBy = (run: () => unknown): unknown => {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  return assert.fail("Expected function to throw");
+};
 const framingError = (run: () => unknown, reason: PrimeRpcFramingError["reason"]) => {
-  assert.throws(run, (error: unknown) =>
-    error instanceof PrimeRpcFramingError && error.reason === reason,
-  );
+  const error = thrownBy(run);
+  assert.instanceOf(error, PrimeRpcFramingError);
+  assert.strictEqual(error.reason, reason);
 };
 
 describe("PrimeRpcJsonlParser", () => {
@@ -69,7 +77,10 @@ describe("PrimeRpcJsonlParser", () => {
   it("makes a throwing consumer terminal without retaining or continuing", () => {
     const parser = new PrimeRpcJsonlParser();
     const consumerError = new Error("consumer stopped");
-    assert.throws(() => parser.push(utf8.encode('1\n2\n'), () => { throw consumerError; }), (error) => error === consumerError);
+    assert.strictEqual(
+      thrownBy(() => parser.push(utf8.encode('1\n2\n'), () => { throw consumerError; })),
+      consumerError,
+    );
     assert.throws(() => parser.push(utf8.encode('3\n'), () => undefined));
     parser.finish();
   });
