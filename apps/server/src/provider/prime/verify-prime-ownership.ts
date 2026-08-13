@@ -7,9 +7,9 @@ import {
   writePrimeOwnership,
 } from "./PrimeOwnership.ts";
 import { primeResourceLayout } from "./PrimeResourceLayout.ts";
-const check = (v: unknown, m: string): asserts v => {
+function check(v: unknown, m: string): asserts v {
   if (!v) throw Error(m);
-};
+}
 const homes = [
   await mkdtemp(join(tmpdir(), "t3-pa-m06-a-")),
   await mkdtemp(join(tmpdir(), "t3-pa-m06-b-")),

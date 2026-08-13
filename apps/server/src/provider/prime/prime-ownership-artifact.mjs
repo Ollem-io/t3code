@@ -492,9 +492,9 @@ const recoverPrimeOwnership = async (root, proof, cleanup) => {
 };
 //#endregion
 //#region apps/server/src/provider/prime/verify-prime-ownership.ts
-const check = (v, m) => {
+function check(v, m) {
   if (!v) throw Error(m);
-};
+}
 const homes = [
   await mkdtemp(join(tmpdir(), "t3-pa-m06-a-")),
   await mkdtemp(join(tmpdir(), "t3-pa-m06-b-")),

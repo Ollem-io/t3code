@@ -3,15 +3,20 @@
 `prime-ownership-artifact.mjs` is a deterministic standalone Node ESM bundle built
 from the checked-in production `PrimeOwnership.ts`, `PrimeResourceLayout.ts`, and
 `verify-prime-ownership.ts`. It imports only Node built-ins. SHA-256:
-`96cb35981ff65560556361b1d383c92464a6282f81d29fe16d5cfe9cb51aedbb`.
+`04b01dbcfb789abbf551c7e0efb3e92f66ead458857f4d5b610418a62e3030d7`.
 
 Generate from a fresh checkout and verify that the committed copy is identical:
 
 ```sh
-rm -rf /tmp/pa-m06-bundle
-vp pack apps/server/src/provider/prime/verify-prime-ownership.ts --out-dir /tmp/pa-m06-bundle --clean
-cmp /tmp/pa-m06-bundle/verify-prime-ownership.mjs apps/server/src/provider/prime/prime-ownership-artifact.mjs
+rm -rf apps/server/src/provider/prime/.ownership-bundle-tmp
+/root/.vite-plus/bin/vp pack apps/server/src/provider/prime/verify-prime-ownership.ts \
+  --out-dir apps/server/src/provider/prime/.ownership-bundle-tmp \
+  --no-clean --no-sourcemap --platform node --format esm --target node24 \
+  --no-report --logLevel silent
+cmp apps/server/src/provider/prime/.ownership-bundle-tmp/verify-prime-ownership.mjs \
+  apps/server/src/provider/prime/prime-ownership-artifact.mjs
 sha256sum apps/server/src/provider/prime/prime-ownership-artifact.mjs
+rm -rf apps/server/src/provider/prime/.ownership-bundle-tmp
 node apps/server/src/provider/prime/verify-prime-ownership.mjs
 ```
 
