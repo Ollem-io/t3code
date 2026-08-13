@@ -212,6 +212,8 @@ export function applyServerSettingsPatch(
 
   const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
   const model = selectionPatch.model ?? current.textGenerationModelSelection.model;
+  const nativeIdentity =
+    selectionPatch.nativeIdentity ?? current.textGenerationModelSelection.nativeIdentity;
   const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
     ? selectionPatch.options
     : mergeModelSelectionOptionsById({
@@ -221,6 +223,9 @@ export function applyServerSettingsPatch(
 
   return {
     ...nextWithReplacements,
-    textGenerationModelSelection: createModelSelection(instanceId, model, options),
+    textGenerationModelSelection: {
+      ...createModelSelection(instanceId, model, options),
+      ...(nativeIdentity !== undefined ? { nativeIdentity } : {}),
+    },
   };
 }

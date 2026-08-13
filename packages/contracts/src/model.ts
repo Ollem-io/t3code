@@ -127,11 +127,26 @@ export const ModelCapabilities = Schema.Struct({
 });
 export type ModelCapabilities = typeof ModelCapabilities.Type;
 
+/**
+ * A provider-native model key. `modelId` alone is not globally unique: Prime
+ * can expose the same model id through multiple upstream providers.
+ */
+export const NativeModelIdentity = Schema.Struct({
+  provider: TrimmedNonEmptyString,
+  modelId: TrimmedNonEmptyString,
+});
+export type NativeModelIdentity = typeof NativeModelIdentity.Type;
+
+/** Readable compatibility slug; never reverse-parse it to recover identity. */
+export const nativeModelSlug = (identity: NativeModelIdentity): string =>
+  `${identity.provider}/${identity.modelId}`;
+
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
+const PRIME_AGENT_DRIVER_KIND = ProviderDriverKind.make("prime-agent");
 
 export const DEFAULT_MODEL = "gpt-5.6-sol";
 
@@ -153,6 +168,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [CURSOR_DRIVER_KIND]: "auto",
   [GROK_DRIVER_KIND]: "grok-build",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
+  [PRIME_AGENT_DRIVER_KIND]: "default",
 };
 
 /** Per-provider text generation model defaults. */
@@ -163,6 +179,7 @@ export const DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [CLAUDE_DRIVER_KIND]: "claude-haiku-4-5",
   [CURSOR_DRIVER_KIND]: "composer-2",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
+  [PRIME_AGENT_DRIVER_KIND]: "default",
 };
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
@@ -212,6 +229,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.5": "claude-opus-4-5",
   },
   [OPENCODE_DRIVER_KIND]: {},
+  [PRIME_AGENT_DRIVER_KIND]: {},
 };
 
 // ── Provider display names ────────────────────────────────────────────
@@ -222,4 +240,5 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [CURSOR_DRIVER_KIND]: "Cursor",
   [GROK_DRIVER_KIND]: "Grok",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
+  [PRIME_AGENT_DRIVER_KIND]: "Prime Agent",
 };

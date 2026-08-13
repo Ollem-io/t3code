@@ -112,6 +112,26 @@ export type ProviderInstanceEnvironmentVariable = typeof ProviderInstanceEnviron
 export const ProviderInstanceEnvironment = Schema.Array(ProviderInstanceEnvironmentVariable);
 export type ProviderInstanceEnvironment = typeof ProviderInstanceEnvironment.Type;
 
+/** Stable driver and default instance identity for the built-in Prime Agent provider. */
+export const PRIME_AGENT_DRIVER_KIND = ProviderDriverKind.make("prime-agent");
+export const PRIME_AGENT_DEFAULT_INSTANCE_ID = ProviderInstanceId.make("prime-agent");
+
+/**
+ * Prime owns RPC mode, workspace, model, and session flags. Its instance
+ * configuration deliberately contains no free-form argument field: callers
+ * may choose the executable, while the driver owns every launch flag.
+ */
+export const PrimeAgentSettings = Schema.Struct({
+  binaryPath: TrimmedNonEmptyString.pipe(
+    Schema.withDecodingDefault(Effect.succeed("prime-agent")),
+  ),
+});
+export type PrimeAgentSettings = typeof PrimeAgentSettings.Type;
+
+export const DEFAULT_PRIME_AGENT_SETTINGS: PrimeAgentSettings = Schema.decodeSync(
+  PrimeAgentSettings,
+)({});
+
 /**
  * Envelope shape for a provider instance configuration in `ServerSettings`.
  *
@@ -147,3 +167,23 @@ export type ProviderInstanceConfigMap = typeof ProviderInstanceConfigMap.Type;
  */
 export const defaultInstanceIdForDriver = (driver: ProviderDriverKind): ProviderInstanceId =>
   ProviderInstanceId.make(driver);
+
+/**
+ * Adds the built-in Prime default exactly once. This is deliberately a pure
+ * migration so startup can persist it atomically and callers can safely retry
+ * after a crash. Existing instance envelopes (including future fields) are
+ * copied unchanged.
+ */
+export function bootstrapPrimeAgentInstance(
+  instances: ProviderInstanceConfigMap,
+): ProviderInstanceConfigMap {
+  if (instances[PRIME_AGENT_DEFAULT_INSTANCE_ID] !== undefined) return instances;
+  return {
+    ...instances,
+    [PRIME_AGENT_DEFAULT_INSTANCE_ID]: {
+      driver: PRIME_AGENT_DRIVER_KIND,
+      enabled: false,
+      config: DEFAULT_PRIME_AGENT_SETTINGS,
+    },
+  };
+}

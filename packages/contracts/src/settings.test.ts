@@ -5,6 +5,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
+  bootstrapPrimeAgentServerSettings,
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
   ServerSettingsPatch,
@@ -295,5 +296,26 @@ describe("ServerSettingsPatch string normalization", () => {
     expect(encoded.addProjectBaseDirectory).toBe("~/Development");
     expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(encoded.providers?.codex?.launchArgs).toBe("--strict-config");
+  });
+});
+
+describe("Prime Agent legacy settings bootstrap", () => {
+  it("adds a stable Prime instance without altering readable legacy settings", () => {
+    const legacy = decodeServerSettings({
+      providers: { codex: { binaryPath: "/opt/codex" } },
+      textGenerationModelSelection: { provider: "codex", model: "gpt-5.6" },
+    });
+    const bootstrapped = bootstrapPrimeAgentServerSettings(legacy);
+    expect(bootstrapped.providers.codex.binaryPath).toBe("/opt/codex");
+    expect(bootstrapped.textGenerationModelSelection).toMatchObject({
+      instanceId: "codex",
+      model: "gpt-5.6",
+    });
+    expect(bootstrapped.providerInstances[ProviderInstanceId.make("prime-agent")]).toMatchObject({
+      driver: "prime-agent",
+      enabled: false,
+      config: { binaryPath: "prime-agent" },
+    });
+    expect(bootstrapPrimeAgentServerSettings(bootstrapped)).toBe(bootstrapped);
   });
 });

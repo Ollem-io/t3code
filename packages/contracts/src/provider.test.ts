@@ -7,11 +7,16 @@ import {
   ProviderSession,
   ProviderSessionStartInput,
 } from "./provider.ts";
+import { ModelSelection } from "./orchestration.ts";
+import { ServerProvider } from "./server.ts";
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
+const decodeModelSelection = Schema.decodeUnknownSync(ModelSelection);
+const encodeModelSelection = Schema.encodeSync(ModelSelection);
+const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -224,5 +229,53 @@ describe("providerInstanceId routing key (slice-2 invariant)", () => {
         runtimeMode: "full-access",
       }),
     ).toThrow();
+  });
+});
+
+describe("Prime structured model identity compatibility", () => {
+  it("keeps overlapping upstream model ids distinct in selections and snapshots", () => {
+    const anthropic = decodeModelSelection({
+      instanceId: "prime-agent",
+      model: "anthropic/claude-sonnet",
+      nativeIdentity: { provider: "anthropic", modelId: "claude-sonnet" },
+    });
+    const custom = decodeModelSelection({
+      instanceId: "prime-agent",
+      model: "custom/claude-sonnet",
+      nativeIdentity: { provider: "custom", modelId: "claude-sonnet" },
+    });
+    expect(anthropic.nativeIdentity).not.toEqual(custom.nativeIdentity);
+    expect(encodeModelSelection(anthropic).nativeIdentity).toEqual({
+      provider: "anthropic", modelId: "claude-sonnet",
+    });
+    expect(encodeModelSelection(custom).nativeIdentity).toEqual({
+      provider: "custom", modelId: "claude-sonnet",
+    });
+
+    const snapshot = decodeServerProvider({
+      instanceId: "prime-agent", driver: "prime-agent", enabled: true, installed: true,
+      version: "0.7.2", status: "ready", compatibility: "compatible",
+      auth: { status: "authenticated" }, checkedAt: "2026-01-01T00:00:00Z",
+      models: [
+        { slug: "anthropic/claude-sonnet", name: "Claude", isCustom: false, capabilities: null,
+          nativeIdentity: { provider: "anthropic", modelId: "claude-sonnet" } },
+        { slug: "custom/claude-sonnet", name: "Claude", isCustom: true, capabilities: null,
+          nativeIdentity: { provider: "custom", modelId: "claude-sonnet" }, availability: "stale" },
+      ],
+    });
+    expect(snapshot.models.map((model) => model.nativeIdentity?.provider)).toEqual([
+      "anthropic", "custom",
+    ]);
+  });
+
+  it("decodes older readable selections and snapshots when new fields are absent", () => {
+    expect(decodeModelSelection({ provider: "prime-agent", model: "anthropic/claude-sonnet" }))
+      .toMatchObject({ instanceId: "prime-agent", model: "anthropic/claude-sonnet" });
+    const legacy = decodeServerProvider({
+      instanceId: "prime-agent", driver: "prime-agent", enabled: false, installed: false,
+      version: null, status: "disabled", auth: { status: "unknown" },
+      checkedAt: "2026-01-01T00:00:00Z", models: [],
+    });
+    expect(legacy.compatibility).toBeUndefined();
   });
 });

@@ -1,0 +1,11 @@
+{
+  "description": "PA-M04 contract review fixture: legacy settings plus two Prime models sharing modelId.",
+  "legacySettings": {
+    "providers": { "codex": { "binaryPath": "codex" } },
+    "textGenerationModelSelection": { "provider": "codex", "model": "gpt-5.6" }
+  },
+  "primeModels": [
+    { "slug": "anthropic/claude-sonnet", "nativeIdentity": { "provider": "anthropic", "modelId": "claude-sonnet" } },
+    { "slug": "custom/claude-sonnet", "nativeIdentity": { "provider": "custom", "modelId": "claude-sonnet" } }
+  ]
+}
