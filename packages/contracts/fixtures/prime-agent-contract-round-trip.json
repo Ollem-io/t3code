@@ -1,22 +1,16 @@
 {
-  "description": "Executable PA-M04 compatibility fixture. Run node packages/contracts/fixtures/verify-prime-agent-contract-round-trip.mjs.",
+  "description": "PA-M04 fixture. Review with: node verify-prime-agent-contracts.bundle.mjs --fixture prime-agent-contract-round-trip.json",
   "structuredIdentity": {
     "selections": [
       {
         "instanceId": "prime-agent",
         "model": "anthropic/claude-sonnet",
-        "nativeIdentity": {
-          "provider": "anthropic",
-          "modelId": "claude-sonnet"
-        }
+        "nativeIdentity": { "provider": "anthropic", "modelId": "claude-sonnet" }
       },
       {
         "instanceId": "prime-agent",
         "model": "custom/claude-sonnet",
-        "nativeIdentity": {
-          "provider": "custom",
-          "modelId": "claude-sonnet"
-        }
+        "nativeIdentity": { "provider": "custom", "modelId": "claude-sonnet" }
       }
     ],
     "serverSnapshot": {
@@ -26,9 +20,7 @@
       "installed": true,
       "version": "0.7.2",
       "status": "ready",
-      "auth": {
-        "status": "authenticated"
-      },
+      "auth": { "status": "authenticated" },
       "checkedAt": "2026-01-01T00:00:00.000Z",
       "models": [
         {
@@ -36,56 +28,34 @@
           "name": "Claude Sonnet",
           "isCustom": false,
           "capabilities": null,
-          "nativeIdentity": {
-            "provider": "anthropic",
-            "modelId": "claude-sonnet"
-          }
+          "nativeIdentity": { "provider": "anthropic", "modelId": "claude-sonnet" }
         },
         {
           "slug": "custom/claude-sonnet",
           "name": "Claude Sonnet (custom)",
           "isCustom": true,
           "capabilities": null,
-          "nativeIdentity": {
-            "provider": "custom",
-            "modelId": "claude-sonnet"
-          }
+          "nativeIdentity": { "provider": "custom", "modelId": "claude-sonnet" }
         }
       ]
     }
   },
   "legacySettings": {
-    "providers": {
-      "codex": {
-        "binaryPath": "/opt/codex"
-      }
-    },
+    "providers": { "codex": { "binaryPath": "/opt/codex" } },
     "textGenerationModelSelection": {
       "provider": "codex",
       "model": "gpt-5.6",
-      "options": {
-        "reasoningEffort": "low"
-      }
+      "options": { "reasoningEffort": "low" }
     }
   },
   "primeInstance": {
     "driver": "prime-agent",
     "displayName": "Prime Agent",
     "enabled": true,
-    "config": {
-      "binaryPath": "/opt/prime-agent"
-    },
+    "config": { "binaryPath": "/opt/prime-agent" },
     "environment": [
-      {
-        "name": "PRIME_TOKEN",
-        "value": "fixture-secret-token",
-        "sensitive": true
-      },
-      {
-        "name": "PRIME_ENDPOINT",
-        "value": "https://api.prime.example",
-        "sensitive": false
-      }
+      { "name": "PRIME_TOKEN", "value": "fixture-secret-token", "sensitive": true },
+      { "name": "PRIME_ENDPOINT", "value": "https://api.prime.example", "sensitive": false }
     ],
     "configWithOwnedOverrides": {
       "binaryPath": "prime-agent",
@@ -99,10 +69,7 @@
   "unknownDriverInstance": {
     "driver": "fork-driver",
     "displayName": "Fork instance",
-    "config": {
-      "futureChoice": "kept",
-      "model": "future-model"
-    },
+    "config": { "futureChoice": "kept", "model": "future-model" },
     "futureEnvelopeField": "ignored-by-current-contract"
   },
   "oldServerSnapshot": {
@@ -112,9 +79,7 @@
     "installed": false,
     "version": null,
     "status": "disabled",
-    "auth": {
-      "status": "unknown"
-    },
+    "auth": { "status": "unknown" },
     "checkedAt": "2026-01-01T00:00:00.000Z",
     "models": [
       {
@@ -126,37 +91,25 @@
     ]
   },
   "expected": {
-    "readableSlugs": [
-      "anthropic/claude-sonnet",
-      "custom/claude-sonnet"
-    ],
+    "readableSlugs": ["anthropic/claude-sonnet", "custom/claude-sonnet"],
     "defaultPrime": {
       "driver": "prime-agent",
       "enabled": false,
-      "config": {
-        "binaryPath": "prime-agent"
-      }
+      "config": { "binaryPath": "prime-agent" }
     },
     "redactedSensitiveValue": "",
     "redactedMarker": true,
-    "primeSettingsAfterUnknownFields": {
-      "binaryPath": "prime-agent"
-    }
+    "primeSettingsAfterUnknownFields": { "binaryPath": "prime-agent" }
   },
   "rejections": [
     {
       "name": "invalid instance id",
-      "input": {
-        "instanceId": "1bad",
-        "model": "x"
-      },
+      "input": { "instanceId": "1bad", "model": "x" },
       "message": "invalid provider instance id"
     },
     {
       "name": "blank Prime binary",
-      "input": {
-        "binaryPath": ""
-      },
+      "input": { "binaryPath": "" },
       "message": "Prime binaryPath must be non-empty"
     }
   ]
