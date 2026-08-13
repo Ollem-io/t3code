@@ -27,3 +27,32 @@ It reads this directory's JSONL corpus and prints only each fixture name, decode
 ## Deterministic fake executable
 
 `fake-prime-agent.mjs` is a process-level fake whose contract is `prime-agent --mode rpc`: it accepts LF JSON command records on stdin and writes LF JSON responses/events on stdout. It ignores process flags other than accepting `--mode rpc`, has no network/auth/filesystem dependency, and only returns synthetic data. PA-M03 may spawn it with `node <path>/fake-prime-agent.mjs --mode rpc` to exercise real stdin/stdout chunking.
+
+
+## PA-M02 portable framing conformance
+
+`PrimeRpcFraming.ts` is the production source of truth. Its focused unit test
+and `prime-rpc-jsonl-conformance.mjs` lock the same frozen PA-M02 cases. The
+portable script is a deliberately dependency-free copy of that small framing
+algorithm: changing production framing requires updating its case list and
+running both checks, so it cannot silently drift.
+
+The artifact has no fixture or repository dependency. To prove this from a
+fresh directory with only Node installed:
+
+```sh
+mkdir /tmp/prime-rpc-proof && cd /tmp/prime-rpc-proof
+cp /path/to/prime-rpc-jsonl-conformance.mjs .
+node prime-rpc-jsonl-conformance.mjs
+```
+
+It prints one `case pass` or `case fail` line for every frozen PA-M02 framing
+case and exits nonzero on any failure. It covers LF-only framing, one-CR CRLF
+handling, Unicode separators as payload, every UTF-8 byte boundary, malformed
+UTF-8/JSON terminal failures (including no later record emission), bounded
+single-record/total buffer behavior, EOF and idempotent finish, redacted
+errors, and writer payload caps. The writer's cap measures encoded UTF-8 JSON
+payload bytes excluding its required LF. As with all JSON.stringify-based
+writers, serializing a huge input allocates the complete JSON string before the
+cap can reject it; the implementation avoids additionally constructing an
+unbounded string with the LF suffix.

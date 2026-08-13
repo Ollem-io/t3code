@@ -37,7 +37,9 @@ describe("PrimeRpcJsonlParser", () => {
   it("accepts CRLF but strips only one CR", () => {
     const parser = new PrimeRpcJsonlParser();
     assert.deepStrictEqual(parser.push(utf8.encode('{"ok":true}\r\n')), [{ ok: true }]);
-    framingError(() => parser.push(utf8.encode('{"ok":true}\r\r\n')), "invalid-json");
+    // The remaining CR is passed unchanged; JSON permits CR as trailing whitespace.
+    assert.deepStrictEqual(parser.push(utf8.encode('{"ok":true}\r\r\n')), [{ ok: true }]);
+    parser.finish();
   });
 
   it("treats Unicode line separators as JSON content rather than framing", () => {
@@ -46,16 +48,25 @@ describe("PrimeRpcJsonlParser", () => {
     parser.finish();
   });
 
-  it("rejects malformed UTF-8 and JSON without retaining record data", () => {
-    framingError(() => new PrimeRpcJsonlParser().push(Uint8Array.of(0xff, 0x0a)), "invalid-utf8");
-    framingError(() => new PrimeRpcJsonlParser().push(utf8.encode('{bad}\n')), "invalid-json");
+  it("makes invalid UTF-8 and JSON terminal without retaining record data", () => {
+    const invalidUtf8 = new PrimeRpcJsonlParser();
+    framingError(() => invalidUtf8.push(Uint8Array.of(0xff, 0x0a)), "invalid-utf8");
+    assert.throws(() => invalidUtf8.push(utf8.encode('{"ok":true}\n')));
+    invalidUtf8.finish();
+
+    const invalidJson = new PrimeRpcJsonlParser();
+    framingError(() => invalidJson.push(utf8.encode('{bad}\n{"ok":true}\n')), "invalid-json");
+    assert.throws(() => invalidJson.push(utf8.encode('{"ok":true}\n')));
+    invalidJson.finish();
   });
 
-  it("bounds an individual record over arbitrary chunks", () => {
+  it("caps total buffered bytes because it retains only the current record", () => {
     const parser = new PrimeRpcJsonlParser({ maxRecordBytes: 4 });
-    assert.deepStrictEqual(parser.push(utf8.encode("123")), []);
-    framingError(() => parser.push(utf8.encode("45")), "record-too-large");
+    assert.deepStrictEqual(parser.push(utf8.encode("12")), []);
+    assert.deepStrictEqual(parser.push(utf8.encode("34")), []);
+    framingError(() => parser.push(utf8.encode("5")), "record-too-large");
     assert.throws(() => parser.push(utf8.encode("\n")));
+    parser.finish();
   });
 
   it("accepts a record at the exact configured byte limit", () => {
@@ -69,7 +80,10 @@ describe("PrimeRpcJsonlParser", () => {
     const parser = new PrimeRpcJsonlParser();
     assert.deepStrictEqual(parser.push(utf8.encode('{"partial":true}')), []);
     framingError(() => parser.finish(), "eof-fragment");
-    parser.finish();
+    parser.finish(); // terminal finish is idempotent
+    const complete = new PrimeRpcJsonlParser();
+    complete.finish(); // successful finish is idempotent
+    complete.finish();
   });
 });
 
@@ -78,6 +92,11 @@ describe("encodePrimeRpcJsonlRecord", () => {
     const bytes = encodePrimeRpcJsonlRecord({ text: "a b c" });
     assert.strictEqual(text.decode(bytes), '{"text":"a b c"}\n');
     assert.strictEqual(bytes.filter((byte) => byte === 0x0a).length, 1);
+  });
+
+  it("enforces the UTF-8 payload cap (excluding the LF)", () => {
+    assert.strictEqual(text.decode(encodePrimeRpcJsonlRecord("é", { maxRecordBytes: 4 })), '"é"\n');
+    framingError(() => encodePrimeRpcJsonlRecord("é", { maxRecordBytes: 3 }), "record-too-large");
   });
 
   it("rejects values JSON cannot represent as a record", () => {

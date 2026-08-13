@@ -37,7 +37,9 @@ const findLineFeed = (bytes: Uint8Array, start: number): number => {
  *
  * `push` emits only records terminated by LF. A single CR immediately before
  * the LF is tolerated and removed; all other bytes are passed to UTF-8 and
- * JSON decoding unchanged. `finish` rejects a non-empty unterminated record.
+ * JSON decoding unchanged. There is only one incomplete record in memory, so
+ * the total buffered bytes are exactly the current record bytes and are capped
+ * by `maxRecordBytes`.
  */
 export class PrimeRpcJsonlParser {
   readonly #maxRecordBytes: number;
@@ -74,21 +76,17 @@ export class PrimeRpcJsonlParser {
   /** Reject an unterminated final fragment; a final LF is required. */
   finish(): void {
     if (this.#finished) return;
-    this.#finished = true;
     if (this.#partByteLength > 0) {
-      const byteLength = this.#partByteLength;
-      this.#clear();
-      throw new PrimeRpcFramingError("eof-fragment", byteLength);
+      throw this.#fail("eof-fragment", this.#partByteLength);
     }
+    this.#finished = true;
   }
 
   #append(part: Uint8Array): void {
     if (part.length === 0) return;
     const byteLength = this.#partByteLength + part.length;
     if (byteLength > this.#maxRecordBytes) {
-      this.#clear();
-      this.#finished = true;
-      throw new PrimeRpcFramingError("record-too-large", byteLength);
+      throw this.#fail("record-too-large", byteLength);
     }
     // Retain a copy: callers are allowed to reuse their input chunk after push.
     this.#parts.push(part.slice());
@@ -110,13 +108,20 @@ export class PrimeRpcJsonlParser {
     try {
       text = new TextDecoder("utf-8", { fatal: true }).decode(withoutTrailingCr);
     } catch {
-      throw new PrimeRpcFramingError("invalid-utf8", byteLength);
+      throw this.#fail("invalid-utf8", byteLength);
     }
     try {
       return JSON.parse(text);
     } catch {
-      throw new PrimeRpcFramingError("invalid-json", byteLength);
+      throw this.#fail("invalid-json", byteLength);
     }
+  }
+
+  /** Terminal failures clear retained bytes before exposing only redacted metadata. */
+  #fail(reason: PrimeRpcFramingFailureReason, byteLength?: number): PrimeRpcFramingError {
+    this.#clear();
+    this.#finished = true;
+    return new PrimeRpcFramingError(reason, byteLength);
   }
 
   #clear(): void {
@@ -125,8 +130,23 @@ export class PrimeRpcJsonlParser {
   }
 }
 
-/** Serialize one JSON value as exactly one LF-terminated UTF-8 JSONL record. */
-export const encodePrimeRpcJsonlRecord = (value: unknown): Uint8Array => {
+/**
+ * Serialize one JSON value as exactly one LF-terminated UTF-8 JSONL record.
+ *
+ * `maxRecordBytes` limits the UTF-8 JSON payload, excluding the terminating
+ * LF. JSON.stringify necessarily creates its complete string before framing
+ * can enforce this limit; this function avoids an additional unbounded
+ * `${"${json}"}\n` string by appending the LF to a bounded byte array.
+ */
+export const encodePrimeRpcJsonlRecord = (
+  value: unknown,
+  options: { readonly maxRecordBytes?: number } = {},
+): Uint8Array => {
+  const maxRecordBytes = options.maxRecordBytes ?? PRIME_RPC_MAX_RECORD_BYTES;
+  if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes < 1) {
+    throw new RangeError("maxRecordBytes must be a positive safe integer");
+  }
+
   let json: string | undefined;
   try {
     json = JSON.stringify(value);
@@ -134,5 +154,13 @@ export const encodePrimeRpcJsonlRecord = (value: unknown): Uint8Array => {
     throw new PrimeRpcFramingError("writer-value");
   }
   if (json === undefined) throw new PrimeRpcFramingError("writer-value");
-  return new TextEncoder().encode(`${json}\n`);
+
+  const payload = new TextEncoder().encode(json);
+  if (payload.length > maxRecordBytes) {
+    throw new PrimeRpcFramingError("record-too-large", payload.length);
+  }
+  const record = new Uint8Array(payload.length + 1);
+  record.set(payload);
+  record[payload.length] = 0x0a;
+  return record;
 };
