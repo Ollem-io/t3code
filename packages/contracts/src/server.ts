@@ -18,7 +18,7 @@ import {
   ResolvedKeybindingsConfig,
 } from "./keybindings.ts";
 import { EditorId } from "./editor.ts";
-import { ModelCapabilities } from "./model.ts";
+import { ModelCapabilities, NativeModelIdentity } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
 
@@ -61,11 +61,22 @@ export const ServerProviderAuth = Schema.Struct({
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 
+export const ServerProviderModelAvailability = Schema.Literals([
+  "available",
+  "unavailable",
+  "stale",
+]);
+export type ServerProviderModelAvailability = typeof ServerProviderModelAvailability.Type;
+
 export const ServerProviderModel = Schema.Struct({
   slug: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
   shortName: Schema.optional(TrimmedNonEmptyString),
   subProvider: Schema.optional(TrimmedNonEmptyString),
+  // Native identity is optional so old snapshots retain their readable slug.
+  // Consumers must never infer this key by splitting `slug`.
+  nativeIdentity: Schema.optional(NativeModelIdentity),
+  availability: Schema.optional(ServerProviderModelAvailability),
   isCustom: Schema.Boolean,
   isDefault: Schema.optional(Schema.Boolean),
   isLegacy: Schema.optional(Schema.Boolean),
@@ -158,6 +169,14 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+export const ServerProviderCompatibility = Schema.Literals([
+  "unknown",
+  "compatible",
+  "advisory",
+  "incompatible",
+]);
+export type ServerProviderCompatibility = typeof ServerProviderCompatibility.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -175,6 +194,10 @@ export const ServerProvider = Schema.Struct({
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),
   status: ServerProviderState,
+  // Optional compact compatibility metadata. Existing providers retain their
+  // status-only snapshots; Prime can distinguish a supported warning from a
+  // version that must not run.
+  compatibility: Schema.optional(ServerProviderCompatibility),
   auth: ServerProviderAuth,
   checkedAt: IsoDateTime,
   message: Schema.optional(TrimmedNonEmptyString),

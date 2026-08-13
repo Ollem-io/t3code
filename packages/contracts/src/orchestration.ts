@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Struct from "effect/Struct";
-import { ProviderOptionSelections } from "./model.ts";
+import { NativeModelIdentity, ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
   ApprovalRequestId,
@@ -65,7 +65,10 @@ export type ProviderSandboxMode = typeof ProviderSandboxMode.Type;
  */
 const ModelSelectionWire = Schema.Struct({
   instanceId: ProviderInstanceId,
+  // Readable legacy slug. Prime additionally carries nativeIdentity so an
+  // upstream provider/model pair is never reconstructed by splitting it.
   model: TrimmedNonEmptyString,
+  nativeIdentity: Schema.optionalKey(NativeModelIdentity),
   options: Schema.optionalKey(ProviderOptionSelections),
 });
 
@@ -77,6 +80,7 @@ const ModelSelectionSource = Schema.Struct({
   provider: Schema.optional(Schema.Unknown),
   instanceId: Schema.optional(Schema.Unknown),
   model: Schema.Unknown,
+  nativeIdentity: Schema.optional(Schema.Unknown),
   options: Schema.optional(Schema.Unknown),
 });
 
@@ -100,6 +104,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           instanceId: instanceIdSource,
           model: raw.model,
         };
+        if (raw.nativeIdentity !== undefined) base.nativeIdentity = raw.nativeIdentity;
         if (raw.options !== undefined) base.options = raw.options;
         return Effect.succeed(base as typeof ModelSelectionWire.Encoded);
       },
@@ -108,6 +113,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           model: value.model,
           instanceId: value.instanceId,
         };
+        if (value.nativeIdentity !== undefined) base.nativeIdentity = value.nativeIdentity;
         if (value.options !== undefined) base.options = value.options;
         return Effect.succeed(base as typeof ModelSelectionSource.Encoded);
       },
