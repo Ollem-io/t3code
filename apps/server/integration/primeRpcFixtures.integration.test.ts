@@ -5,9 +5,9 @@ import { decodePrimeRpcEnvelope } from "../src/provider/prime/PrimeRpcProtocol.t
 
 const fixturesDirectory = join(import.meta.dirname, "fixtures/prime-rpc");
 const expected = {
-  "normal.jsonl": ["command", "response", "known-event", "known-event", "known-event", "known-event", "command"],
+  "normal.jsonl": ["command", "response", "command", "command", "known-event", "known-event", "known-event", "known-event", "command"],
   "additive-field.jsonl": ["response", "known-event"],
-  "malformed.jsonl": ["malformed", "malformed"],
+  "malformed.jsonl": Array(12).fill("malformed"),
   "unknown-event.jsonl": ["unknown-event"],
 } as const;
 

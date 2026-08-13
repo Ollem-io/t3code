@@ -8,9 +8,9 @@ Field names and shapes were confirmed read-only from the installed Prime Agent 0
 
 ## Cases
 
-- `normal.jsonl`: model discovery command, correlated success, and core event.
+- `normal.jsonl`: model discovery, model object, image input, the installed `off` thinking level, core event/tool envelopes, and extension UI envelopes.
 - `additive-field.jsonl`: future additive fields which must remain decodable.
-- `malformed.jsonl`: missing/wrong required fields, classified locally as compatibility failures.
+- `malformed.jsonl`: missing/wrong command, image, model, event/tool, and extension UI fields, classified locally as compatibility failures.
 - `unknown-event.jsonl`: forward-compatible event classification without a crash.
 - `review-prime-rpc-fixtures.mjs`: source-free Node decoder/classifier review artifact.
 
@@ -22,7 +22,7 @@ From any checkout with Node (no `vp`, `node_modules`, or repository source requi
 node review-prime-rpc-fixtures.mjs
 ```
 
-It reads this directory's JSONL corpus and prints only each fixture name, decoded envelope class, and `pass`/`fail`. Its checks visibly cover additive-field acceptance, missing-required-field compatibility failures, and unknown-event classification. It is intentionally a small independently portable review artifact, synchronized with the corpus rather than a production decoder.
+It reads this directory's JSONL corpus and prints only each fixture name, decoded envelope class, and `pass`/`fail`. Its dependency-free validators mirror every supported command, model, image, core event/tool, and extension UI envelope in the production boundary. They visibly cover additive-field acceptance, missing-required-field compatibility failures, and unknown-event classification. The integration test locks its expected classifications to the same corpus.
 
 ## Deterministic fake executable
 

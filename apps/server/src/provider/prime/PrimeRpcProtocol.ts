@@ -47,14 +47,25 @@ export const PrimeRpcExtensionUiResponse = Schema.Union(
 );
 const PromptCommand = Schema.Struct({
   id: Schema.optional(RequestId),
-  type: Schema.Literal("prompt", "steer", "follow_up"),
+  type: Schema.Literal("prompt"),
   message: Schema.String,
   images: Schema.optional(Schema.Array(PrimeRpcImageInput)),
   streamingBehavior: Schema.optional(Schema.Literal("steer", "followUp")),
 });
+const QueuedPromptCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("steer", "follow_up"),
+  message: Schema.String,
+  images: Schema.optional(Schema.Array(PrimeRpcImageInput)),
+});
 const NoArgumentCommand = Schema.Struct({
   id: Schema.optional(RequestId),
-  type: Schema.Literal("abort", "get_state", "get_available_models", "new_session"),
+  type: Schema.Literal("abort", "get_state", "get_available_models"),
+});
+const NewSessionCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("new_session"),
+  parentSession: Schema.optional(Schema.String),
 });
 const SetModelCommand = Schema.Struct({
   id: Schema.optional(RequestId),
@@ -65,11 +76,13 @@ const SetModelCommand = Schema.Struct({
 const SetThinkingLevelCommand = Schema.Struct({
   id: Schema.optional(RequestId),
   type: Schema.Literal("set_thinking_level"),
-  level: Schema.Literal("minimal", "low", "medium", "high", "xhigh", "max"),
+  level: Schema.Literal("off", "minimal", "low", "medium", "high", "xhigh", "max"),
 });
 export const PrimeRpcCommand = Schema.Union(
   PromptCommand,
+  QueuedPromptCommand,
   NoArgumentCommand,
+  NewSessionCommand,
   SetModelCommand,
   SetThinkingLevelCommand,
   PrimeRpcExtensionUiResponse,
@@ -113,7 +126,7 @@ const TurnEndEvent = Schema.Struct({
 const MessageEvent = Schema.Struct({
   type: Schema.Literal("message_start", "message_update", "message_end"),
   message: Schema.Unknown,
-  assistantMessageEvent: Schema.optional(Schema.Unknown),
+  assistantMessageEvent: Schema.Unknown,
 });
 const ToolExecutionStart = Schema.Struct({ type: Schema.Literal("tool_execution_start"), toolCallId: Schema.String, toolName: Schema.String, args: Schema.Unknown });
 const ToolExecutionUpdate = Schema.Struct({ type: Schema.Literal("tool_execution_update"), toolCallId: Schema.String, toolName: Schema.String, args: Schema.Unknown, partialResult: Schema.Unknown });

@@ -27,12 +27,17 @@ it("accepts additive fields and classifies unknown events", () => {
 });
 
 it("validates image inputs and thinking levels", () => {
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "new_session", parentSession: "fixture-parent" })._tag, "command");
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "new_session", parentSession: 7 })._tag, "malformed");
   assert.strictEqual(decodePrimeRpcEnvelope({ id: "p", type: "prompt", message: "synthetic", images: [{ type: "image", data: "AA==", mimeType: "image/png" }] })._tag, "command");
   assert.strictEqual(decodePrimeRpcEnvelope({ type: "set_thinking_level", level: "max" })._tag, "command");
-  assert.strictEqual(decodePrimeRpcEnvelope({ type: "set_thinking_level", level: "off" })._tag, "malformed");
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "set_thinking_level", level: "off" })._tag, "command");
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "set_thinking_level", level: "ultra" })._tag, "malformed");
 });
 
 it("decodes declaration-shaped tool and extension UI envelopes", () => {
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "message_update", message: {}, assistantMessageEvent: {} })._tag, "known-event");
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "message_update", message: {} })._tag, "malformed");
   assert.strictEqual(decodePrimeRpcEnvelope({ type: "tool_execution_end", toolCallId: "call-1", toolName: "fixture_tool", result: { ok: true }, isError: false })._tag, "known-event");
   assert.strictEqual(decodePrimeRpcEnvelope({ type: "tool_execution_end", toolCallId: "call-1", toolName: "fixture_tool", args: {}, result: "ok", isError: false })._tag, "known-event");
   const extensionRequests = [
