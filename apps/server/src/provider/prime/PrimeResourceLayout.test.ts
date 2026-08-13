@@ -15,6 +15,10 @@ describe("primeResourceLayout", () => {
     assert.strictEqual(first.ownership, again.ownership);
     assert.notStrictEqual(first.ownership, second.ownership);
     assert.notStrictEqual(first.ownership, otherInstance.ownership);
-    assert.ok(first.ownership.includes("env%2Fa"));
+    assert.ok(first.ownership.includes("id-ZW52L2E"));
+    const hostile = primeResourceLayout({ home: one, environmentId: "../%/é", instanceId: "/", threadId: "..x" });
+    assert.ok(hostile.ownership.startsWith(first.root));
+    assert.notStrictEqual(primeResourceLayout({ home: one, environmentId: "/" , instanceId: "x", threadId: "t" }).ownership, primeResourceLayout({ home: one, environmentId: "%2F", instanceId: "x", threadId: "t" }).ownership);
+    assert.throws(() => primeResourceLayout({ home: one, environmentId: ".", instanceId: "x", threadId: "t" }));
   });
 });

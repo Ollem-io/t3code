@@ -1,0 +1,7 @@
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { cleanupPrimeOwnership, primeResourceLayout, writePrimeOwnership } from "./prime-ownership-artifact.mjs";
+function check(value, message) { if (!value) throw new Error(message); }
+const homes = await Promise.all([mkdtemp(join(tmpdir(), "t3-prime-artifact-a-")), mkdtemp(join(tmpdir(), "t3-prime-artifact-b-"))]);
+try { const one=primeResourceLayout({home:homes[0],environmentId:"env",instanceId:"one",threadId:"thread"}), two=primeResourceLayout({home:homes[1],environmentId:"env",instanceId:"two",threadId:"thread"}); const own=(instanceId,pid)=>({version:1,environmentId:"env",instanceId,threadIds:["thread"],process:{pid,startToken:"start"}}); await writePrimeOwnership(one.ownership,own("one",1)); await writePrimeOwnership(two.ownership,own("two",2)); const sentinel=join(homes[0],"unrelated-prime-sentinel"); await writeFile(sentinel,"untouched"); const stopped=[]; await cleanupPrimeOwnership(one.ownership,{processMatches:async({pid})=>pid===1},async({pid})=>stopped.push(pid)); check(stopped.join()==="1","only selected captured process may stop"); check(await readFile(two.ownership,"utf8"),"other home ownership must remain"); check(await readFile(sentinel,"utf8")==="untouched","unrelated sentinel must remain"); await stat(two.ownership); console.log("Prime ownership standalone artifact passed"); } finally { await Promise.all(homes.map(home=>rm(home,{recursive:true,force:true}))); }

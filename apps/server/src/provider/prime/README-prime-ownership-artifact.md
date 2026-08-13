@@ -1,15 +1,16 @@
 # PA-M06 ownership review artifact
 
-`verify-prime-ownership.ts` imports the production `PrimeResourceLayout` and
-`PrimeOwnership` exports (it does not reimplement them). It creates temporary
-T3 homes, writes two exact ownership records, and proves scoped cleanup stops
-and removes only the selected handle while a separate home and unrelated
-sentinel remain intact.
+`prime-ownership-artifact.mjs` is a committed standalone Node ESM bundle derived from
+`PrimeOwnership.ts` and `PrimeResourceLayout.ts`; it imports only Node built-ins, not
+`tsx`, `vp`, or repository dependencies. Its SHA-256 is `ad16f3bae222780080d1390fc6b7e3ff5e5d7f4c4daf9444200dbd81116d94ad`.
 
-Run from repository root after dependencies are installed:
+Run repeatedly from this directory or repository root:
 
 ```sh
-vp tsx apps/server/src/provider/prime/verify-prime-ownership.ts
+node apps/server/src/provider/prime/verify-prime-ownership.mjs
+sha256sum apps/server/src/provider/prime/prime-ownership-artifact.mjs
 ```
 
-It uses only `mkdtemp` directories and can be run repeatedly.
+The verifier creates two `mkdtemp` homes and removes them in `finally`, including on
+failure. It proves an exact matching process is stopped while the other home and an
+unrelated sentinel are retained.

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { cleanupPrimeOwnership, writePrimeOwnership } from "./PrimeOwnership.ts";
 import { primeResourceLayout } from "./PrimeResourceLayout.ts";
 
-const check = (value: unknown, message: string): asserts value => { if (!value) throw new Error(message); };
+function check(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 const homeA = await mkdtemp(join(tmpdir(), "t3-prime-artifact-a-"));
 const homeB = await mkdtemp(join(tmpdir(), "t3-prime-artifact-b-"));
 const one = primeResourceLayout({ home: homeA, environmentId: "env", instanceId: "one", threadId: "thread" });
