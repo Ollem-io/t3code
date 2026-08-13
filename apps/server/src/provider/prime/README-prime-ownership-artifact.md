@@ -2,7 +2,7 @@
 
 `prime-ownership-artifact.mjs` is a committed standalone Node ESM bundle derived from
 `PrimeOwnership.ts` and `PrimeResourceLayout.ts`; it imports only Node built-ins, not
-`tsx`, `vp`, or repository dependencies. Its SHA-256 is `ad16f3bae222780080d1390fc6b7e3ff5e5d7f4c4daf9444200dbd81116d94ad`.
+`tsx`, `vp`, or repository dependencies. Its SHA-256 is `026b0ec605d2c82a95d889e80704dd341b6d3aa1aeca2d7bc2d90dd888c59c90`.
 
 Run repeatedly from this directory or repository root:
 

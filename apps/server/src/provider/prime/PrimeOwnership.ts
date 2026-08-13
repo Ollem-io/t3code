@@ -19,7 +19,7 @@ const isLayoutRoot = (root: string): boolean => {
 const ownershipRoot = (path: string): string | undefined => {
   const absolute = resolve(path);
   const marker = `${String.raw`/`}userdata${String.raw`/`}prime${String.raw`/`}v1${String.raw`/`}`;
-  const index = absolute.lastIndexOf(marker);
+  const index = absolute.replaceAll("\\", "/").lastIndexOf(marker);
   if (index < 0 || basename(absolute) !== ownershipName) return undefined;
   const root = absolute.slice(0, index + marker.length - 1);
   const remainder = relative(root, absolute).split(/[\\/]/);
