@@ -10,6 +10,7 @@ if (process.argv.includes("--mode") && process.argv[process.argv.indexOf("--mode
   const model = {
     id: "model-1", name: "Fixture model", api: "openai-completions", provider: "fixture-provider",
     baseUrl: "https://example.invalid", reasoning: true, input: ["text", "image"], cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }, contextWindow: 1000, maxTokens: 100,
+    thinkingLevelMap: { off: null, minimal: "minimal", max: "max" },
   };
   createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line) => {
     let command;

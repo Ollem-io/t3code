@@ -8,7 +8,7 @@ const directory = process.argv[2] ?? dirname(fileURLToPath(import.meta.url));
 const expected = {
   "normal.jsonl": ["command", "response", "response", "command", "command", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "command"],
   "additive-field.jsonl": ["response", "known-event"],
-  "malformed.jsonl": Array(14).fill("malformed"),
+  "malformed.jsonl": Array(17).fill("malformed"),
   "unknown-event.jsonl": ["unknown-event"],
 };
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
@@ -16,11 +16,15 @@ const object = (value) => value !== null && typeof value === "object" && !Array.
 const stringArray = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
 const optionalString = (value, key) => !own(value, key) || typeof value[key] === "string";
 const image = (value) => object(value) && value.type === "image" && typeof value.data === "string" && typeof value.mimeType === "string";
+const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const thinkingLevelMap = (value) => object(value)
+  && Object.entries(value).every(([key, item]) => thinkingLevels.has(key) && (typeof item === "string" || item === null));
 const model = (value) => object(value)
   && ["id", "name", "api", "provider", "baseUrl"].every((key) => typeof value[key] === "string")
   && typeof value.reasoning === "boolean" && Array.isArray(value.input) && value.input.every((item) => item === "text" || item === "image")
   && object(value.cost) && ["input", "output", "cacheRead", "cacheWrite"].every((key) => typeof value.cost[key] === "number")
   && typeof value.contextWindow === "number" && typeof value.maxTokens === "number"
+  && (!own(value, "thinkingLevelMap") || thinkingLevelMap(value.thinkingLevelMap))
   && (!own(value, "featured") || typeof value.featured === "boolean")
   && (!own(value, "headers") || (object(value.headers) && Object.values(value.headers).every((item) => typeof item === "string")));
 const commandTypes = new Set(["prompt", "steer", "follow_up", "abort", "get_state", "get_available_models", "new_session", "set_model", "set_thinking_level"]);

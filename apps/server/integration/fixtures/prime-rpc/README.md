@@ -4,13 +4,13 @@ These small, LF-terminated JSONL fixtures define T3's append-only Prime Agent **
 
 ## Provenance and redaction
 
-Field names and shapes were confirmed read-only from the installed Prime Agent 0.7.2 RPC declarations and implementation (`dist/modes/rpc/rpc-types.*`). Values are synthetic: `fixture-*`, `model-1`, `fixture-provider`, and `example.invalid`. Fixtures contain no credentials, user prompts, transcripts, real model identifiers, session identifiers, filesystem paths, or hostnames.
+Field names and shapes were confirmed read-only from the installed Prime Agent 0.7.2 declarations and implementation. Command `ThinkingLevel` comes from `@earendil-works/pi-agent-core` via `dist/modes/rpc/rpc-types.d.ts`, while model `ThinkingLevelMap` comes from `@earendil-works/pi-ai` and is a partial map over `off | minimal | low | medium | high | xhigh | max` with `string | null` values. The production decoder, portable classifier, and fake peer preserve that distinction. Values are synthetic: `fixture-*`, `model-1`, `fixture-provider`, and `example.invalid`. Fixtures contain no credentials, user prompts, transcripts, real model identifiers, session identifiers, filesystem paths, or hostnames.
 
 ## Cases
 
-- `normal.jsonl`: model discovery, model object, image input, the installed `off` thinking level, declaration-shaped message start/update/end events, core tool envelopes, and extension UI envelopes.
+- `normal.jsonl`: model discovery with a declaration-shaped `thinkingLevelMap`, image input, the installed command-level `off` thinking level, declaration-shaped message start/update/end events, core tool envelopes, and extension UI envelopes.
 - `additive-field.jsonl`: future additive fields which must remain decodable.
-- `malformed.jsonl`: missing/wrong command, image, model, message/event/tool, and extension UI fields, classified locally as compatibility failures.
+- `malformed.jsonl`: missing/wrong command, image, model (including wrong-value, unknown-key, and non-object `thinkingLevelMap` cases), message/event/tool, and extension UI fields, classified locally as compatibility failures.
 - `unknown-event.jsonl`: forward-compatible event classification without a crash.
 - `review-prime-rpc-fixtures.mjs`: source-free Node decoder/classifier review artifact.
 

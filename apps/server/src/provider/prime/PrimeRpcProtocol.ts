@@ -8,7 +8,16 @@ import * as Schema from "effect/Schema";
 export const PRIME_RPC_VERSION = "0.7.2" as const;
 
 const RequestId = Schema.String;
-const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
+const ThinkingLevelMapValue = Schema.Union(Schema.String, Schema.Null);
+const ThinkingLevelMap = Schema.Struct({
+  off: Schema.optional(ThinkingLevelMapValue),
+  minimal: Schema.optional(ThinkingLevelMapValue),
+  low: Schema.optional(ThinkingLevelMapValue),
+  medium: Schema.optional(ThinkingLevelMapValue),
+  high: Schema.optional(ThinkingLevelMapValue),
+  xhigh: Schema.optional(ThinkingLevelMapValue),
+  max: Schema.optional(ThinkingLevelMapValue),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
 
 export const PrimeRpcImageInput = Schema.Struct({
   type: Schema.Literal("image"),
@@ -32,7 +41,7 @@ export const PrimeRpcModel = Schema.Struct({
   }),
   contextWindow: Schema.Number,
   maxTokens: Schema.Number,
-  thinkingLevelMap: Schema.optional(JsonObject),
+  thinkingLevelMap: Schema.optional(ThinkingLevelMap),
   featured: Schema.optional(Schema.Boolean),
   // Prime may serialize these optional compatibility settings for a model.
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
