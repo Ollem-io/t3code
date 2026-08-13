@@ -9,7 +9,7 @@ if (process.argv.includes("--mode") && process.argv[process.argv.indexOf("--mode
   const write = (record) => process.stdout.write(`${JSON.stringify(record)}\n`);
   const model = {
     id: "model-1", name: "Fixture model", api: "openai-completions", provider: "fixture-provider",
-    baseUrl: "https://example.invalid", reasoning: true, input: ["text", "image"], contextWindow: 1000, maxTokens: 100,
+    baseUrl: "https://example.invalid", reasoning: true, input: ["text", "image"], cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }, contextWindow: 1000, maxTokens: 100,
   };
   createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line) => {
     let command;
