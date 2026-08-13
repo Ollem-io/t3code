@@ -21,27 +21,33 @@ export const spawnPrimeRpcTransport = (
     stdio: "pipe",
   });
   let closed = false;
-  let exitSettled = false;
-  let settleExit!: (code: number | null) => void;
-  const exited = new Promise<number | null>((resolve) => {
-    settleExit = resolve;
+  let terminalSettled = false;
+  let observedExitCode: number | null = null;
+  let observedSignal = false;
+  let settleTerminal!: (terminal: { kind: "exit"; code: number | null }) => void;
+  const terminal = new Promise<{ kind: "exit"; code: number | null }>((resolve) => {
+    settleTerminal = resolve;
   });
-  const finishExit = (code: number | null) => {
-    if (exitSettled) return;
-    exitSettled = true;
+  const finishTerminal = (code: number | null) => {
+    if (terminalSettled) return;
+    terminalSettled = true;
     child.off("error", onChildError);
     child.off("exit", onExit);
-    child.stdout.off("end", onStdoutEnd);
-    settleExit(code);
+    child.off("close", onClose);
+    settleTerminal({ kind: "exit", code });
   };
-  const onChildError = () => finishExit(null);
-  const onExit = (code: number | null) => finishExit(code);
-  const onStdoutEnd = () => {
-    if (child.exitCode !== null || child.signalCode !== null) finishExit(child.exitCode);
+  const onChildError = () => finishTerminal(null);
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    observedExitCode = code;
+    observedSignal = signal !== null;
   };
+  const onClose = (code: number | null, signal: NodeJS.Signals | null) =>
+    finishTerminal(code ?? (observedSignal || signal !== null ? null : observedExitCode));
   child.once("error", onChildError);
   child.once("exit", onExit);
-  child.stdout.once("end", onStdoutEnd);
+  // `close` runs after stdio closes, so stdout EOF can never outrun process
+  // termination classification. A live process that closes stdout remains live.
+  child.once("close", onClose);
 
   // Stream errors are also surfaced to async iterators/write receipts. Keeping
   // listeners attached guarantees destroy/error races cannot become unhandled.
@@ -53,7 +59,7 @@ export const spawnPrimeRpcTransport = (
   return {
     stdout: child.stdout,
     stderr: child.stderr,
-    exited,
+    terminal,
     write: (record) =>
       new Promise<void>((resolve, reject) => {
         if (closed || child.stdin.destroyed || !child.stdin.writable) {

@@ -13,10 +13,15 @@ import {
 } from "./PrimeRpcProtocol.ts";
 
 /** Session-local streams owned by one Prime RPC child process. */
+export type PrimeRpcTransportTerminal =
+  | { readonly kind: "exit"; readonly code: number | null }
+  | { readonly kind: "eof" };
+
 export interface PrimeRpcTransport {
   readonly stdout: AsyncIterable<Uint8Array>;
   readonly stderr: AsyncIterable<Uint8Array>;
-  readonly exited: Promise<number | null>;
+  /** Authoritative lifecycle classification for the transport owner. */
+  readonly terminal: Promise<PrimeRpcTransportTerminal>;
   /** Resolves only after the complete record was accepted by the stream. */
   readonly write: (record: Uint8Array) => Promise<void>;
   /** Cancels only resources owned by this transport. */
@@ -93,15 +98,14 @@ const safeInteger = (value: number, minimum: number, name: string) => {
     );
   return value;
 };
-const nextTask = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /**
  * Correlates responses while continuously draining stdout. Writes are FIFO.
  * A queued job is re-checked immediately before write, so cancellation, timeout,
  * or close prevents it from reaching the pipe. Once a write starts it cannot be
- * undone; its late response is diagnostic-only. The first terminal signal wins,
- * except stdout EOF yields two event-loop tasks to an already-coincident child
- * exit, allowing its status to be reported without waiting on a live process.
+ * undone; its late response is diagnostic-only. The transport owns lifecycle
+ * classification: stdout completion waits for its authoritative terminal result,
+ * so process exit ordering never depends on event-loop timing.
  */
 export class PrimeRpcClient {
   readonly #transport: PrimeRpcTransport;
@@ -124,8 +128,6 @@ export class PrimeRpcClient {
   #writeTail: Promise<void> = Promise.resolve();
   #transportClosed = false;
   #closeError: PrimeRpcClientError | undefined;
-  #exitSettled = false;
-  #exitCode: number | null = null;
 
   constructor(transport: PrimeRpcTransport, options: PrimeRpcClientOptions = {}) {
     this.#transport = transport;
@@ -155,17 +157,9 @@ export class PrimeRpcClient {
     this.#parser = new PrimeRpcJsonlParser({ maxRecordBytes: this.#maxRecordBytes });
     void this.#drainStdout();
     void this.#drainStderr();
-    void transport.exited.then(
-      (code) => {
-        this.#exitSettled = true;
-        this.#exitCode = code;
-        this.#close("exit", { code });
-      },
-      () => {
-        this.#exitSettled = true;
-        this.#exitCode = null;
-        this.#close("exit", { code: null });
-      },
+    void transport.terminal.then(
+      (terminal) => this.#closeTerminal(terminal),
+      () => this.#close("exit", { code: null }),
     );
   }
 
@@ -293,15 +287,16 @@ export class PrimeRpcClient {
         if (this.#closed) return;
       }
       this.#parser.finish();
-      await nextTask();
-      await nextTask();
-      if (!this.#closed)
-        this.#close(
-          this.#exitSettled ? "exit" : "eof",
-          this.#exitSettled ? { code: this.#exitCode } : {},
-        );
+      if (!this.#closed) this.#closeTerminal(await this.#transport.terminal);
     } catch (error) {
-      this.#close(error instanceof PrimeRpcFramingError ? "framing" : "eof", {});
+      if (error instanceof PrimeRpcFramingError) this.#close("framing", {});
+      else {
+        try {
+          this.#closeTerminal(await this.#transport.terminal);
+        } catch {
+          this.#close("exit", { code: null });
+        }
+      }
     }
   }
   async #drainStderr(): Promise<void> {
@@ -315,6 +310,10 @@ export class PrimeRpcClient {
     } catch {
       this.#stderrTruncated = true;
     }
+  }
+  #closeTerminal(terminal: PrimeRpcTransportTerminal): void {
+    if (terminal.kind === "exit") this.#close("exit", { code: terminal.code });
+    else this.#close("eof", {});
   }
   #handleEnvelope(envelope: PrimeRpcEnvelope): void {
     if (envelope._tag === "malformed") {

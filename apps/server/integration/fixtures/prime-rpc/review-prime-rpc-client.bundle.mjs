@@ -3834,12 +3834,11 @@ var Ic = class extends Error {
   }
 };
 const Lc = (e, t, n) => {
-    if (!Number.isSafeInteger(e) || e < t)
-      throw RangeError(`${n} must be a ${t === 0 ? `non-negative` : `positive`} safe integer`);
-    return e;
-  },
-  Rc = () => new Promise((e) => setImmediate(e));
-var zc = class {
+  if (!Number.isSafeInteger(e) || e < t)
+    throw RangeError(`${n} must be a ${t === 0 ? `non-negative` : `positive`} safe integer`);
+  return e;
+};
+var Rc = class {
   #e;
   #t;
   #n;
@@ -3860,8 +3859,6 @@ var zc = class {
   #_ = Promise.resolve();
   #v = !1;
   #y;
-  #b = !1;
-  #x = null;
   constructor(e, t = {}) {
     if (
       ((this.#e = e),
@@ -3874,15 +3871,11 @@ var zc = class {
       (this.#i = Lc(t.maxQueuedEvents ?? 256, 1, `maxQueuedEvents`)),
       (this.#a = Lc(t.maxRecordBytes ?? 1048576, 1, `maxRecordBytes`)),
       (this.#o = new u({ maxRecordBytes: this.#a })),
-      this.#C(),
-      this.#w(),
-      e.exited.then(
-        (e) => {
-          ((this.#b = !0), (this.#x = e), this.#A(`exit`, { code: e }));
-        },
-        () => {
-          ((this.#b = !0), (this.#x = null), this.#A(`exit`, { code: null }));
-        },
+      this.#x(),
+      this.#S(),
+      e.terminal.then(
+        (e) => this.#C(e),
+        () => this.#k(`exit`, { code: null }),
       ));
   }
   command(e, t = {}) {
@@ -3896,7 +3889,7 @@ var zc = class {
       return Promise.reject(new Ic(`write`, { id: r, command: e.type, phase: `encode` }));
     }
     return new Promise((a, o) => {
-      let s = (t) => this.#O(r, new Ic(t, { id: r, command: e.type })),
+      let s = (t) => this.#D(r, new Ic(t, { id: r, command: e.type })),
         c = () => s(`aborted`),
         l = {
           command: e.type,
@@ -3910,7 +3903,7 @@ var zc = class {
         c();
         return;
       }
-      (t.signal?.addEventListener(`abort`, c, { once: !0 }), this.#S({ id: r, record: i }));
+      (t.signal?.addEventListener(`abort`, c, { once: !0 }), this.#b({ id: r, record: i }));
     });
   }
   events() {
@@ -3969,31 +3962,34 @@ var zc = class {
     };
   }
   close() {
-    this.#A(`exit`, { code: null, requested: !0 });
+    this.#k(`exit`, { code: null, requested: !0 });
   }
-  #S(e) {
+  #b(e) {
     this.#_ = this.#_.then(async () => {
       if (!(this.#l || !this.#s.has(e.id)))
         try {
           await this.#e.write(e.record);
         } catch {
-          this.#A(`write`, { id: e.id, phase: `transport` });
+          this.#k(`write`, { id: e.id, phase: `transport` });
         }
     });
   }
-  async #C() {
+  async #x() {
     try {
       for await (let e of this.#e.stdout)
-        if ((this.#o.push(e, (e) => this.#T(Fc(e))), this.#l)) return;
-      (this.#o.finish(),
-        await Rc(),
-        await Rc(),
-        this.#l || this.#A(this.#b ? `exit` : `eof`, this.#b ? { code: this.#x } : {}));
+        if ((this.#o.push(e, (e) => this.#w(Fc(e))), this.#l)) return;
+      (this.#o.finish(), this.#l || this.#C(await this.#e.terminal));
     } catch (e) {
-      this.#A(e instanceof c ? `framing` : `eof`, {});
+      if (e instanceof c) this.#k(`framing`, {});
+      else
+        try {
+          this.#C(await this.#e.terminal);
+        } catch {
+          this.#k(`exit`, { code: null });
+        }
     }
   }
-  async #w() {
+  async #S() {
     try {
       for await (let e of this.#e.stderr) {
         let t = Math.max(0, this.#r - this.#u),
@@ -4004,18 +4000,21 @@ var zc = class {
       this.#d = !0;
     }
   }
-  #T(e) {
+  #C(e) {
+    e.kind === `exit` ? this.#k(`exit`, { code: e.code }) : this.#k(`eof`, {});
+  }
+  #w(e) {
     if (e._tag === `malformed`) {
-      this.#A(`protocol`, { envelope: e.error.envelopeClass });
+      this.#k(`protocol`, { envelope: e.error.envelopeClass });
       return;
     }
     if (e._tag !== `response`) {
-      this.#E(e);
+      this.#T(e);
       return;
     }
     let t = e.value.id;
     if (t === void 0) {
-      this.#A(`protocol`, { responseId: !1 });
+      this.#k(`protocol`, { responseId: !1 });
       return;
     }
     let n = this.#s.get(t);
@@ -4024,15 +4023,15 @@ var zc = class {
       return;
     }
     if (n.command !== e.value.command) {
-      this.#O(
+      this.#D(
         t,
         new Ic(`response-command`, { id: t, expected: n.command, actual: e.value.command }),
       );
       return;
     }
-    this.#D(t, e.value);
+    this.#E(t, e.value);
   }
-  #E(e) {
+  #T(e) {
     if (this.#l) return;
     let t = this.#p;
     if (t) {
@@ -4041,55 +4040,62 @@ var zc = class {
     }
     (this.#f.length === this.#i && (this.#f.shift(), (this.#h += 1)), this.#f.push(e));
   }
+  #E(e, t) {
+    let n = this.#s.get(e);
+    n && (this.#O(e, n), n.resolve(t));
+  }
   #D(e, t) {
     let n = this.#s.get(e);
-    n && (this.#k(e, n), n.resolve(t));
+    n && (this.#O(e, n), n.reject(t));
   }
   #O(e, t) {
-    let n = this.#s.get(e);
-    n && (this.#k(e, n), n.reject(t));
-  }
-  #k(e, t) {
     (this.#s.delete(e),
       clearTimeout(t.timer),
       t.signal && t.abort && t.signal.removeEventListener(`abort`, t.abort));
   }
-  #A(e, t) {
+  #k(e, t) {
     if (this.#l) return;
     ((this.#l = !0), (this.#y = new Ic(e, t)));
-    for (let [n] of this.#s) this.#O(n, new Ic(e, t));
+    for (let [n] of this.#s) this.#D(n, new Ic(e, t));
     let n = this.#p;
     ((this.#p = void 0),
       n?.(void 0),
       this.#v || ((this.#v = !0), Promise.resolve(this.#e.close?.()).catch(() => void 0)));
   }
 };
-const Bc = (e, t, n = {}) => {
+const zc = (e, t, n = {}) => {
     let r = s(e, [...t], { ...n, stdio: `pipe` }),
       i = !1,
       a = !1,
-      o,
-      c = new Promise((e) => {
-        o = e;
+      o = null,
+      c = !1,
+      l,
+      u = new Promise((e) => {
+        l = e;
       }),
-      l = (e) => {
-        a || ((a = !0), r.off(`error`, u), r.off(`exit`, d), r.stdout.off(`end`, f), o(e));
+      d = (e) => {
+        a ||
+          ((a = !0),
+          r.off(`error`, f),
+          r.off(`exit`, p),
+          r.off(`close`, m),
+          l({ kind: `exit`, code: e }));
       },
-      u = () => l(null),
-      d = (e) => l(e),
-      f = () => {
-        (r.exitCode !== null || r.signalCode !== null) && l(r.exitCode);
-      };
-    (r.once(`error`, u), r.once(`exit`, d), r.stdout.once(`end`, f));
-    let p = () => void 0;
+      f = () => d(null),
+      p = (e, t) => {
+        ((o = e), (c = t !== null));
+      },
+      m = (e, t) => d(e ?? (c || t !== null ? null : o));
+    (r.once(`error`, f), r.once(`exit`, p), r.once(`close`, m));
+    let h = () => void 0;
     return (
-      r.stdin.on(`error`, p),
-      r.stdout.on(`error`, p),
-      r.stderr.on(`error`, p),
+      r.stdin.on(`error`, h),
+      r.stdout.on(`error`, h),
+      r.stderr.on(`error`, h),
       {
         stdout: r.stdout,
         stderr: r.stderr,
-        exited: c,
+        terminal: u,
         write: (e) =>
           new Promise((t, n) => {
             if (i || r.stdin.destroyed || !r.stdin.writable) {
@@ -4119,11 +4125,11 @@ const Bc = (e, t, n = {}) => {
       }
     );
   },
-  Vc = o(new URL(`./fake-prime-agent.mjs`, import.meta.url)),
-  Hc = [],
+  Bc = o(new URL(`./fake-prime-agent.mjs`, import.meta.url)),
+  Vc = [],
   Q = (e, t) => {
     if (!e) throw Error(t);
-    Hc.push(t);
+    Vc.push(t);
   },
   $ = async (e, t) => {
     try {
@@ -4132,21 +4138,21 @@ const Bc = (e, t, n = {}) => {
       Q(e instanceof Ic && e.reason === t, `${t} rejection`);
     }
   };
-let Uc = Vc;
-const Wc = [],
-  Gc = (e, t = {}) => {
-    let n = new zc(Bc(process.execPath, [Uc, `--mode`, `rpc`, `--scenario`, e]), {
+let Hc = Bc;
+const Uc = [],
+  Wc = (e, t = {}) => {
+    let n = new Rc(zc(process.execPath, [Hc, `--mode`, `rpc`, `--scenario`, e]), {
       requestIdPrefix: e.replaceAll(`-`, `_`),
       defaultTimeoutMs: 1e3,
       ...t,
     });
-    return (Wc.push(n), n);
+    return (Uc.push(n), n);
   };
 await (async () => {
   let o = await t(a(r(), `pa-m03-artifact-`));
-  ((Uc = a(o, i(Vc))), await e(Vc, Uc));
+  ((Hc = a(o, i(Bc))), await e(Bc, Hc));
   try {
-    let e = Gc(`reverse-two`, { maxQueuedEvents: 1 }),
+    let e = Wc(`reverse-two`, { maxQueuedEvents: 1 }),
       t = e.command({ type: `get_state` }),
       n = e.command({ type: `get_state` });
     (Q(
@@ -4154,13 +4160,13 @@ await (async () => {
       `interleaved concurrent correlation`,
     ),
       Q(e.diagnostics().droppedEvents === 1, `unread consumer does not block responses`));
-    let r = Gc(`duplicate`);
+    let r = Wc(`duplicate`);
     (await r.command({ type: `get_state` }),
       await r.command({ type: `abort` }),
       Q(r.diagnostics().duplicateResponses === 1, `duplicate successful id diagnostic`));
-    let i = Gc(`mismatch`);
+    let i = Wc(`mismatch`);
     await $(i.command({ type: `get_state` }), `response-command`);
-    let a = Gc(`late-after-abort`),
+    let a = Wc(`late-after-abort`),
       o = a.events(),
       s = new AbortController(),
       c = a.command({ type: `get_state` }, { signal: s.signal });
@@ -4170,7 +4176,7 @@ await (async () => {
       await $(c, `aborted`),
       await a.command({ type: `abort` }),
       Q(a.diagnostics().duplicateResponses === 1, `late-after-abort exact once`));
-    let l = Gc(`timeout`, { defaultTimeoutMs: 1 }),
+    let l = Wc(`timeout`, { defaultTimeoutMs: 1 }),
       u = 0;
     (await $(
       l.command({ type: `get_state` }).catch((e) => {
@@ -4179,7 +4185,7 @@ await (async () => {
       `timeout`,
     ),
       Q(u === 1, `timeout exact once`));
-    let d = Gc(`exit`, { maxStderrBytes: 8 }),
+    let d = Wc(`exit`, { maxStderrBytes: 8 }),
       f = d.command({ type: `get_state` }),
       p = d.command({ type: `abort` });
     (await Promise.all([$(f, `exit`), $(p, `exit`)]),
@@ -4187,16 +4193,27 @@ await (async () => {
         d.diagnostics().stderrBytes <= 8 && d.diagnostics().stderrTruncated,
         `child exit fanout and bounded redacted stderr`,
       ));
-    let m = Gc(`corrupt`);
+    let m = Wc(`corrupt`);
     await $(m.command({ type: `get_state` }), `framing`);
-    let h = Bc(process.execPath, [Uc, `--mode`, `rpc`, `--scenario`, `eof-live`]),
-      g = 0,
-      _ = new zc({ ...h, close: () => ((g += 1), h.close?.()) }, { requestIdPrefix: `eof` });
-    (Wc.push(_),
+    let h = 0,
+      g = async function* () {},
+      _ = new Rc(
+        {
+          stdout: g(),
+          stderr: g(),
+          terminal: Promise.resolve({ kind: `eof` }),
+          write: async () => void 0,
+          close: () => {
+            h += 1;
+          },
+        },
+        { requestIdPrefix: `eof` },
+      );
+    (Uc.push(_),
       await $(_.command({ type: `get_state` }), `eof`),
       _.close(),
-      Q(g === 1, `EOF fanout and transport close once`));
-    let v = Gc(`write-failure`);
+      Q(h === 1, `EOF fanout and transport close once`));
+    let v = Wc(`write-failure`);
     await new Promise(async (e) => {
       let t = v.events();
       for await (let n of t) n._tag === `unknown-event` && (await t.return?.(), e());
@@ -4206,16 +4223,16 @@ await (async () => {
     (await Promise.all([$(y, `write`), $(ee, `write`)]),
       await $(v.command({ type: `get_state` }), `write`),
       Q(v.diagnostics().pendingRequests === 0, `write failure fail-stop`));
-    let b = Gc(`events`),
+    let b = Wc(`events`),
       te = b.events();
     (await b.command({ type: `get_state` }),
       Q(!(await te.next()).done && !(await te.next()).done, `events delivered before close`),
       b.close(),
       Q((await te.next()).done === !0, `event close drain and iterator end`));
-    for (let e of Hc) console.log(`PA-M03 ${e}: pass`);
-    console.log(`PA-M03 source-derived client/process artifact: pass (${Hc.length} checks)`);
+    for (let e of Vc) console.log(`PA-M03 ${e}: pass`);
+    console.log(`PA-M03 source-derived client/process artifact: pass (${Vc.length} checks)`);
   } finally {
-    for (let e of Wc) e.close();
+    for (let e of Uc) e.close();
     await n(o, { recursive: !0, force: !0 });
   }
 })().catch((e) => {

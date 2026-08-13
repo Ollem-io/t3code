@@ -1,5 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
-import { PrimeRpcClient, PrimeRpcClientError, type PrimeRpcTransport } from "./PrimeRpcClient.ts";
+import {
+  PrimeRpcClient,
+  PrimeRpcClientError,
+  type PrimeRpcTransport,
+  type PrimeRpcTransportTerminal,
+} from "./PrimeRpcClient.ts";
 
 const utf8 = new TextEncoder();
 class Channel implements AsyncIterable<Uint8Array> {
@@ -43,12 +48,12 @@ const flush = async () => {
 function fixture() {
   const stdout = new Channel();
   const stderr = new Channel();
-  const exit = deferred<number | null>();
+  const terminal = deferred<PrimeRpcTransportTerminal>();
   const writes: string[] = [];
   const transport: PrimeRpcTransport = {
     stdout,
     stderr,
-    exited: exit.promise,
+    terminal: terminal.promise,
     write: async (record) => {
       writes.push(new TextDecoder().decode(record));
     },
@@ -61,7 +66,7 @@ function fixture() {
     }),
     stdout,
     stderr,
-    exit,
+    terminal,
     writes,
   };
 }
@@ -117,7 +122,7 @@ describe("PrimeRpcClient", () => {
   });
 
   it("fans out EOF and child exit, bounds stderr, and never lets a slow event consumer stop stdout", async () => {
-    const { client, stdout, stderr, exit } = fixture();
+    const { client, stdout, stderr, terminal } = fixture();
     const exitPending = client.command({ type: "get_state" });
     const eofPending = client.command({ type: "abort" });
     stderr.push("abcdef");
@@ -125,7 +130,7 @@ describe("PrimeRpcClient", () => {
     stdout.push(
       '{"type":"agent_start"}\n{"type":"turn_start"}\n{"type":"message_start","message":{}}\n',
     );
-    exit.resolve(17);
+    terminal.resolve({ kind: "exit", code: 17 });
     await rejection(exitPending, "exit");
     await rejection(eofPending, "exit");
     await flush();
@@ -137,11 +142,26 @@ describe("PrimeRpcClient", () => {
       droppedEvents: 1,
       duplicateResponses: 0,
     });
-    const { client: eofClient, stdout: eofStdout } = fixture();
+    const { client: eofClient, stdout: eofStdout, terminal: eofTerminal } = fixture();
     const pending = eofClient.command({ type: "get_state" });
     eofStdout.end();
+    eofTerminal.resolve({ kind: "eof" });
     await rejection(pending, "eof");
   });
+  it("waits for deterministic lifecycle classification when stdout ends before exit", async () => {
+    const { client, stdout, terminal } = fixture();
+    let settled = false;
+    const pending = client.command({ type: "get_state" }).finally(() => {
+      settled = true;
+    });
+    stdout.end();
+    await flush();
+    assert.isFalse(settled);
+    terminal.resolve({ kind: "exit", code: 17 });
+    const error = await rejection(pending, "exit");
+    assert.strictEqual(error.details.code, 17);
+  });
+
   it("fails all pending requests on malformed envelopes or a response without an id", async () => {
     const { client, stdout } = fixture();
     const pending = client.command({ type: "get_state" });
@@ -158,9 +178,9 @@ describe("PrimeRpcClient", () => {
   it("uses the configured record cap in both directions and detaches cancelled event readers", async () => {
     const stdout = new Channel();
     const stderr = new Channel();
-    const exit = deferred<number | null>();
+    const terminal = deferred<PrimeRpcTransportTerminal>();
     const client = new PrimeRpcClient(
-      { stdout, stderr, exited: exit.promise, write: async () => undefined },
+      { stdout, stderr, terminal: terminal.promise, write: async () => undefined },
       { maxRecordBytes: 50, requestIdPrefix: "cap" },
     );
     await rejection(client.command({ type: "prompt", message: "this cannot fit" }), "write");
@@ -181,12 +201,12 @@ describe("PrimeRpcClient", () => {
   it("closes the owned transport exactly once and rejects a second live event subscription", async () => {
     const stdout = new Channel();
     const stderr = new Channel();
-    const exit = deferred<number | null>();
+    const terminal = deferred<PrimeRpcTransportTerminal>();
     let closes = 0;
     const client = new PrimeRpcClient({
       stdout,
       stderr,
-      exited: exit.promise,
+      terminal: terminal.promise,
       write: async () => undefined,
       close: () => {
         closes += 1;
@@ -221,7 +241,7 @@ describe("PrimeRpcClient", () => {
   it("skips queued requests cancelled before write and treats first write failure as terminal", async () => {
     const stdout = new Channel();
     const stderr = new Channel();
-    const exit = deferred<number | null>();
+    const terminal = deferred<PrimeRpcTransportTerminal>();
     const firstWrite = deferred<void>();
     const writes: string[] = [];
     let closes = 0;
@@ -229,7 +249,7 @@ describe("PrimeRpcClient", () => {
       {
         stdout,
         stderr,
-        exited: exit.promise,
+        terminal: terminal.promise,
         write: async (record) => {
           const line = new TextDecoder().decode(record);
           writes.push(line);

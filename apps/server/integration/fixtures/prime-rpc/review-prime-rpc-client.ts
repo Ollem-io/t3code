@@ -89,20 +89,16 @@ const main = async () => {
     const corrupt = clientFor("corrupt");
     await reject(corrupt.command({ type: "get_state" }), "framing");
 
-    const eofTransport = spawnPrimeRpcTransport(process.execPath, [
-      fake,
-      "--mode",
-      "rpc",
-      "--scenario",
-      "eof-live",
-    ]);
     let eofCloses = 0;
+    const empty = async function* () {};
     const eof = new PrimeRpcClient(
       {
-        ...eofTransport,
+        stdout: empty(),
+        stderr: empty(),
+        terminal: Promise.resolve({ kind: "eof" }),
+        write: async () => undefined,
         close: () => {
           eofCloses += 1;
-          return eofTransport.close?.();
         },
       },
       { requestIdPrefix: "eof" },
