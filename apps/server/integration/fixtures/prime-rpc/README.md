@@ -47,11 +47,17 @@ node prime-rpc-jsonl-conformance.mjs
 ```
 
 It prints one `case pass` or `case fail` line for every frozen PA-M02 framing
-case and exits nonzero on any failure. It covers LF-only framing, one-CR CRLF
-handling, Unicode separators as payload, every UTF-8 byte boundary, malformed
-UTF-8/JSON terminal failures (including no later record emission), bounded
-single-record/total buffer behavior, EOF and idempotent finish, redacted
-errors, and writer payload caps. The writer's cap measures encoded UTF-8 JSON
+case and exits nonzero on any failure. The parser API is `push(chunk, emit)`:
+each complete value is synchronously emitted before decoding continues, so a
+later malformed record cannot hide a prior valid record. Parser failures and
+consumer callback throws are terminal, clear retained bytes, and never attach
+raw or decoded payloads to an error.
+
+The proof covers LF-only framing (including terminal invalid-JSON empty lines),
+one-CR CRLF handling, Unicode separators as payload, arbitrary three-way chunk
+partitions across UTF-8 data, valid-then-invalid JSON/UTF-8/oversize calls,
+many-fragment exact/one-byte-over total-buffer caps, EOF and idempotent finish,
+redacted errors, and writer payload caps. The writer's cap measures encoded UTF-8 JSON
 payload bytes excluding its required LF. As with all JSON.stringify-based
 writers, serializing a huge input allocates the complete JSON string before the
 cap can reject it; the implementation avoids additionally constructing an

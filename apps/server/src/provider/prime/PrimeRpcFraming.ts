@@ -35,11 +35,14 @@ const findLineFeed = (bytes: Uint8Array, start: number): number => {
 /**
  * A bounded, incremental JSONL decoder.
  *
- * `push` emits only records terminated by LF. A single CR immediately before
- * the LF is tolerated and removed; all other bytes are passed to UTF-8 and
- * JSON decoding unchanged. There is only one incomplete record in memory, so
- * the total buffered bytes are exactly the current record bytes and are capped
- * by `maxRecordBytes`.
+ * `push` synchronously emits each LF-terminated record as soon as it is
+ * decoded. If a later record in the same chunk fails, earlier emissions remain
+ * observable. A single CR immediately before the LF is tolerated and removed;
+ * all other bytes are passed to UTF-8 and JSON decoding unchanged.
+ *
+ * There is only one incomplete record in memory, so total buffered bytes are
+ * exactly the current record bytes and are capped by `maxRecordBytes`. Parser
+ * failures and consumer callback throws are terminal and clear retained bytes.
  */
 export class PrimeRpcJsonlParser {
   readonly #maxRecordBytes: number;
@@ -54,10 +57,9 @@ export class PrimeRpcJsonlParser {
     }
   }
 
-  push(chunk: Uint8Array): Array<unknown> {
+  push(chunk: Uint8Array, emit: (record: unknown) => void): void {
     if (this.#finished) throw new Error("Prime RPC JSONL parser is finished");
 
-    const records: Array<unknown> = [];
     let start = 0;
     while (start < chunk.length) {
       const lineFeed = findLineFeed(chunk, start);
@@ -67,10 +69,16 @@ export class PrimeRpcJsonlParser {
       }
 
       this.#append(chunk.subarray(start, lineFeed));
-      records.push(this.#decodeRecord());
+      const record = this.#decodeRecord();
+      try {
+        emit(record);
+      } catch (error) {
+        this.#clear();
+        this.#finished = true;
+        throw error;
+      }
       start = lineFeed + 1;
     }
-    return records;
   }
 
   /** Reject an unterminated final fragment; a final LF is required. */
