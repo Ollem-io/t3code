@@ -159,6 +159,42 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     });
   });
 
+  it("enforces Prime settings at the full ServerSettings boundary", () => {
+    const decoded = decodeServerSettings({
+      providerInstances: {
+        prime_work: {
+          driver: "prime-agent",
+          displayName: "  Prime Work  ",
+          environment: [{ name: "  PRIME_TOKEN  ", value: "secret" }],
+          config: {
+            binaryPath: "  /opt/prime-agent  ",
+            launchArgs: "--dangerous",
+            mode: "rpc",
+            workspace: "/tmp/foreign",
+            model: "foreign",
+            session: "foreign",
+          },
+        },
+        fork_local: {
+          driver: "fork-driver",
+          config: { launchArgs: "--fork-owned", nested: { preserved: true } },
+        },
+      },
+    });
+
+    expect(decoded.providerInstances[ProviderInstanceId.make("prime_work")]).toEqual({
+      driver: "prime-agent",
+      displayName: "Prime Work",
+      environment: [{ name: "PRIME_TOKEN", value: "secret", sensitive: false }],
+      config: { binaryPath: "/opt/prime-agent" },
+    });
+    expect(decoded.providerInstances[ProviderInstanceId.make("fork_local")]?.config).toEqual({
+      launchArgs: "--fork-owned",
+      nested: { preserved: true },
+    });
+    expect(encodeServerSettings(decoded).providerInstances).toEqual(decoded.providerInstances);
+  });
+
   it("rejects instance keys that violate the slug pattern", () => {
     expect(() =>
       decodeServerSettings({
@@ -221,6 +257,20 @@ describe("ServerSettingsPatch.providerInstances", () => {
     expect(replacement.providerInstances?.[ProviderInstanceId.make("codex_personal")]?.driver).toBe(
       "codex",
     );
+  });
+
+  it("normalizes Prime entries in whole-map replacements", () => {
+    const patch = decodeServerSettingsPatch({
+      providerInstances: {
+        prime_work: {
+          driver: "prime-agent",
+          config: { binaryPath: "  custom-prime  ", launchArgs: "--not-owned" },
+        },
+      },
+    });
+    expect(patch.providerInstances?.[ProviderInstanceId.make("prime_work")]?.config).toEqual({
+      binaryPath: "custom-prime",
+    });
   });
 
   it("preserves a fork-defined driver entry through patch decoding", () => {

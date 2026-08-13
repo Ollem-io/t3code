@@ -16,6 +16,7 @@ const decodeProviderDriverKind = Schema.decodeUnknownSync(ProviderDriverKind);
 const decodeProviderInstanceId = Schema.decodeUnknownSync(ProviderInstanceId);
 const decodeProviderInstanceRef = Schema.decodeUnknownSync(ProviderInstanceRef);
 const decodeProviderInstanceConfig = Schema.decodeUnknownSync(ProviderInstanceConfig);
+const encodeProviderInstanceConfig = Schema.encodeSync(ProviderInstanceConfig);
 const decodeProviderInstanceConfigMap = Schema.decodeUnknownSync(ProviderInstanceConfigMap);
 const decodePrimeAgentSettings = Schema.decodeUnknownSync(PrimeAgentSettings);
 
@@ -174,6 +175,56 @@ describe("ProviderInstanceConfig", () => {
   it("rejects driver values that do not satisfy the slug pattern", () => {
     expect(() => decodeProviderInstanceConfig({ driver: "" })).toThrow();
     expect(() => decodeProviderInstanceConfig({ driver: "has spaces" })).toThrow();
+  });
+
+  it("normalizes Prime config on decode and encode while leaving envelope metadata intact", () => {
+    const decoded = decodeProviderInstanceConfig({
+      driver: "prime-agent",
+      displayName: "  Prime Work  ",
+      environment: [{ name: "  PRIME_TOKEN  ", value: "secret" }],
+      config: {
+        binaryPath: "  /opt/prime-agent  ",
+        launchArgs: "--unsafe",
+        mode: "rpc",
+        workspace: "/tmp/wrong",
+        model: "wrong",
+        session: "wrong",
+      },
+    });
+
+    expect(decoded).toEqual({
+      driver: "prime-agent",
+      displayName: "Prime Work",
+      environment: [{ name: "PRIME_TOKEN", value: "secret", sensitive: false }],
+      config: { binaryPath: "/opt/prime-agent" },
+    });
+    expect(encodeProviderInstanceConfig(decoded)).toEqual(decoded);
+  });
+
+  it("rejects malformed Prime config instead of falling back to the opaque branch", () => {
+    expect(() =>
+      decodeProviderInstanceConfig({
+        driver: "prime-agent",
+        config: { binaryPath: "   ", launchArgs: "--must-not-pass" },
+      }),
+    ).toThrow();
+  });
+
+  it("round-trips an unknown-driver envelope config opaquely", () => {
+    const decoded = decodeProviderInstanceConfig({
+      driver: "future-driver",
+      displayName: "  Future  ",
+      config: { nested: { future: true }, list: [1, "two"] },
+      futureEnvelopeField: "dropped by the known envelope",
+    });
+    const encoded = encodeProviderInstanceConfig(decoded);
+    const decodedAgain = decodeProviderInstanceConfig(encoded);
+
+    expect(decodedAgain).toEqual({
+      driver: "future-driver",
+      displayName: "Future",
+      config: { nested: { future: true }, list: [1, "two"] },
+    });
   });
 
   it("drops unknown envelope fields while preserving unknown-driver config", () => {

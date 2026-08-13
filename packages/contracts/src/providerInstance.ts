@@ -122,9 +122,7 @@ export const PRIME_AGENT_DEFAULT_INSTANCE_ID = ProviderInstanceId.make("prime-ag
  * may choose the executable, while the driver owns every launch flag.
  */
 export const PrimeAgentSettings = Schema.Struct({
-  binaryPath: TrimmedNonEmptyString.pipe(
-    Schema.withDecodingDefault(Effect.succeed("prime-agent")),
-  ),
+  binaryPath: TrimmedNonEmptyString.pipe(Schema.withDecodingDefault(Effect.succeed("prime-agent"))),
 });
 export type PrimeAgentSettings = typeof PrimeAgentSettings.Type;
 
@@ -141,14 +139,41 @@ export const DEFAULT_PRIME_AGENT_SETTINGS: PrimeAgentSettings = Schema.decodeSyn
  * envelopes for unknown drivers are preserved verbatim so they round-trip
  * across version changes without data loss.
  */
-export const ProviderInstanceConfig = Schema.Struct({
+const ProviderInstanceConfigEnvelopeFields = {
   driver: ProviderDriverKind,
   displayName: Schema.optional(TrimmedNonEmptyString),
   accentColor: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),
+} as const;
+
+const PrimeAgentInstanceConfig = Schema.Struct({
+  ...ProviderInstanceConfigEnvelopeFields,
+  driver: Schema.Literal(PRIME_AGENT_DRIVER_KIND),
+  config: Schema.optionalKey(PrimeAgentSettings),
+});
+
+const NonPrimeProviderDriverKind = ProviderDriverKind.pipe(
+  Schema.refine((driver): driver is ProviderDriverKind => driver !== PRIME_AGENT_DRIVER_KIND),
+);
+
+const OpaqueProviderInstanceConfig = Schema.Struct({
+  ...ProviderInstanceConfigEnvelopeFields,
+  driver: NonPrimeProviderDriverKind,
   config: Schema.optionalKey(Schema.Unknown),
 });
+
+/**
+ * Provider-neutral envelope with one deliberate built-in boundary: the
+ * discriminated Prime branch materializes config through
+ * `PrimeAgentSettings`, preventing unsupported launch flags from reaching
+ * the runtime. The fallback branch keeps every other driver's config opaque
+ * for fork and downgrade compatibility.
+ */
+export const ProviderInstanceConfig = Schema.Union([
+  PrimeAgentInstanceConfig,
+  OpaqueProviderInstanceConfig,
+]);
 export type ProviderInstanceConfig = typeof ProviderInstanceConfig.Type;
 
 /**
