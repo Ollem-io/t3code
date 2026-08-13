@@ -10,5 +10,6 @@ trap 'rm -rf "$out"' EXIT
   --no-clean --no-sourcemap --platform node --format esm --target node24 \
   --no-report --logLevel silent
 cp "$out/verify-prime-ownership.mjs" "$artifact"
+/root/.vite-plus/bin/vp fmt "$artifact"
 sha256sum "$artifact"
 node apps/server/src/provider/prime/verify-prime-ownership.mjs
