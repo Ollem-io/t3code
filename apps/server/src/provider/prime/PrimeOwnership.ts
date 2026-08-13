@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { lstat, link, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { decodePrimePathComponent, primePathComponent } from "./PrimeResourceLayout.ts";
 
 export const PRIME_OWNERSHIP_VERSION = 1 as const;
 const MAX_ID_LENGTH = 512;
-type Phase = "active" | "stopping" | "stopped" | "sessions-cleaned" | "resources-cleaned";
 export type PrimeProcessHandle = { readonly pid: number; readonly startToken: string };
 export type PrimeOwnershipRecord = {
   readonly version: 1;
@@ -14,16 +13,20 @@ export type PrimeOwnershipRecord = {
   readonly instanceId: string;
   readonly threadId: string;
   readonly kind?: "thread" | "daemon";
-  readonly phase?: Phase;
+  readonly recordId?: string;
+  readonly operationId?: string;
   readonly process?: PrimeProcessHandle;
   readonly rpcSessionId?: string;
   readonly daemonSessionId?: string;
+  readonly processStopped?: boolean;
+  readonly rpcCleaned?: boolean;
+  readonly daemonCleaned?: boolean;
+  readonly resourcesCleaned?: boolean;
 };
 export type PrimeOwnershipWarning = { readonly path: string; readonly reason: string };
 export type PrimeOwnershipAction =
   | {
       readonly kind:
-        | "process-stopping"
         | "process-stopped"
         | "rpc-session-cleaned"
         | "daemon-session-cleaned"
@@ -38,9 +41,9 @@ export type PrimeOwnershipProof = {
   readonly rpcSessionMatches?: (id: string) => Promise<boolean>;
 };
 export type PrimeOwnershipCleanup = {
-  readonly stopProcess: (handle: PrimeProcessHandle) => Promise<void>;
-  readonly cleanupRpcSession?: (id: string) => Promise<void>;
-  readonly cleanupDaemonSession?: (id: string) => Promise<void>;
+  readonly stopProcess: (handle: PrimeProcessHandle, operationId?: string) => Promise<void>;
+  readonly cleanupRpcSession?: (id: string, operationId?: string) => Promise<void>;
+  readonly cleanupDaemonSession?: (id: string, operationId?: string) => Promise<void>;
 };
 const validId = (v: unknown): v is string =>
   typeof v === "string" && v.length > 0 && v.length <= MAX_ID_LENGTH;
@@ -56,10 +59,15 @@ function isRecord(v: unknown): v is PrimeOwnershipRecord {
       "instanceId",
       "threadId",
       "kind",
-      "phase",
+      "recordId",
+      "operationId",
       "process",
       "rpcSessionId",
       "daemonSessionId",
+      "processStopped",
+      "rpcCleaned",
+      "daemonCleaned",
+      "resourcesCleaned",
     ]) ||
     r.version !== 1 ||
     !validId(r.environmentId) ||
@@ -69,12 +77,12 @@ function isRecord(v: unknown): v is PrimeOwnershipRecord {
     return false;
   if (r.kind !== undefined && r.kind !== "thread" && r.kind !== "daemon") return false;
   if (
-    r.phase !== undefined &&
-    !["active", "stopping", "stopped", "sessions-cleaned", "resources-cleaned"].includes(
-      r.phase as string,
-    )
+    (r.recordId !== undefined && !validId(r.recordId)) ||
+    (r.operationId !== undefined && !validId(r.operationId))
   )
     return false;
+  for (const k of ["processStopped", "rpcCleaned", "daemonCleaned", "resourcesCleaned"] as const)
+    if (r[k] !== undefined && typeof r[k] !== "boolean") return false;
   if (r.process !== undefined) {
     if (!r.process || typeof r.process !== "object" || Array.isArray(r.process)) return false;
     const p = r.process as Record<string, unknown>;
@@ -101,17 +109,18 @@ type Identity = {
   daemon: string;
 };
 const identify = (path: string): Identity | undefined => {
-  const a = resolve(path).split(sep);
+  const normalized = path.replace(/\.cleaning$/, "");
+  const a = resolve(normalized).split(sep);
   const n = a.length;
-  const file = basename(path).replace(/\.cleaning$/, "");
+  const file = basename(normalized);
   if (!file.endsWith(".json")) return;
   const oi = a.lastIndexOf("ownership");
   if (
     oi < 7 ||
     oi !== n - 2 ||
-    a[oi - 1]?.startsWith("id-") !== true ||
+    !a[oi - 1]?.startsWith("id-") ||
     a[oi - 2] !== "instances" ||
-    a[oi - 3]?.startsWith("id-") !== true ||
+    !a[oi - 3]?.startsWith("id-") ||
     a[oi - 4] !== "environments" ||
     a[oi - 5] !== "v1" ||
     a[oi - 6] !== "prime" ||
@@ -143,15 +152,13 @@ const syncDir = (p: string) => {
     } finally {
       closeSync(fd);
     }
-  } catch {
-    /* directory fsync unsupported */
-  }
+  } catch {}
 };
-const atomicWrite = async (path: string, record: PrimeOwnershipRecord) => {
+const atomicWrite = async (path: string, r: PrimeOwnershipRecord) => {
   const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   const h = await open(temp, "wx", 0o600);
   try {
-    await h.writeFile(`${JSON.stringify(record)}\n`);
+    await h.writeFile(`${JSON.stringify(r)}\n`);
     await h.sync();
   } finally {
     await h.close();
@@ -160,61 +167,73 @@ const atomicWrite = async (path: string, record: PrimeOwnershipRecord) => {
     await rename(temp, path);
     syncDir(dirname(path));
   } finally {
-    await rm(temp, { force: true }).catch(() => undefined);
+    await rm(temp, { force: true }).catch(() => {});
   }
 };
-const safeParents = async (path: string, id: Identity) => {
-  const rel = relative(id.root, dirname(path));
-  if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`))
-    throw new Error("ownership path is outside Prime root");
-  await mkdir(id.root, { recursive: true, mode: 0o700 });
-  let cur = id.root;
-  const rootStat = await lstat(cur);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
-    throw new Error("Prime root is not a real directory");
-  for (const part of rel.split(sep)) {
+const validateChain = async (path: string, create = false) => {
+  const absolute = resolve(path);
+  const parts = absolute.split(sep).filter(Boolean);
+  let cur: string = sep;
+  for (const part of parts) {
     cur = join(cur, part);
     try {
       const s = await lstat(cur);
-      if (!s.isDirectory() || s.isSymbolicLink())
-        throw new Error("Prime ownership parent is not a real directory");
+      if (s.isSymbolicLink() || !s.isDirectory())
+        throw Error(`unsafe symlink/non-directory: ${cur}`);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT" || !create) throw e;
       try {
         await mkdir(cur, { mode: 0o700 });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      } catch (m) {
+        if ((m as NodeJS.ErrnoException).code !== "EEXIST") throw m;
       }
-      const made = await lstat(cur);
-      if (!made.isDirectory() || made.isSymbolicLink())
-        throw new Error("Prime ownership parent is not a real directory");
+      const s = await lstat(cur);
+      if (s.isSymbolicLink() || !s.isDirectory()) throw Error("unsafe created directory");
     }
   }
 };
-/** Durable atomic persistence into a per-thread record; no concurrent thread can overwrite another. */
+const withLock = async <T>(path: string, fn: () => Promise<T>): Promise<T> => {
+  const lock = `${path}.lock`;
+  let h;
+  try {
+    h = await open(lock, "wx", 0o600);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST")
+      throw Error("ownership record is busy (cleanup lock held)");
+    throw e;
+  }
+  try {
+    return await fn();
+  } finally {
+    await h.close();
+    await rm(lock, { force: true });
+    syncDir(dirname(lock));
+  }
+};
+const validate = (path: string, r: PrimeOwnershipRecord, id: Identity) =>
+  r.environmentId === id.environmentId &&
+  r.instanceId === id.instanceId &&
+  r.threadId === id.threadId &&
+  (basename(path) === "daemon.json") === (r.kind === "daemon") &&
+  (r.kind === "daemon" ? r.rpcSessionId === undefined : r.daemonSessionId === undefined);
 export const writePrimeOwnership = async (path: string, record: PrimeOwnershipRecord) => {
   const id = identify(path);
-  if (
-    !id ||
-    !isRecord(record) ||
-    record.environmentId !== id.environmentId ||
-    record.instanceId !== id.instanceId ||
-    record.threadId !== id.threadId ||
-    (basename(path) === "daemon.json") !== (record.kind === "daemon") ||
-    (record.kind === "daemon"
-      ? record.rpcSessionId !== undefined
-      : record.daemonSessionId !== undefined)
-  )
-    throw new Error("invalid or path-mismatched Prime ownership record");
-  await safeParents(path, id);
-  try {
-    const s = await lstat(path);
-    if (s.isSymbolicLink() || !s.isFile())
-      throw new Error("ownership target is not a regular file");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-  }
-  await atomicWrite(path, { ...record, phase: record.phase ?? "active" });
+  if (!id || !isRecord(record) || !validate(path, record, id))
+    throw Error("invalid or path-mismatched Prime ownership record");
+  await validateChain(dirname(path), true);
+  return withLock(path, async () => {
+    try {
+      const s = await lstat(path);
+      if (s.isSymbolicLink() || !s.isFile()) throw Error("ownership target is not a regular file");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    await atomicWrite(path, {
+      ...record,
+      recordId: record.recordId ?? randomUUID(),
+      operationId: record.operationId ?? randomUUID(),
+    });
+  });
 };
 const decode = (text: string): { record?: PrimeOwnershipRecord; reason?: string } => {
   try {
@@ -238,15 +257,27 @@ const warning = (path: string, reason: string): PrimeOwnershipAction => ({
   kind: "warning",
   warning: { path, reason },
 });
-const removeExact = async (path: string, actions: PrimeOwnershipAction[]) => {
+const removeClaimed = async (path: string, actions: PrimeOwnershipAction[]) => {
+  let before;
   try {
-    const s = await lstat(path);
-    if (s.isSymbolicLink()) throw new Error("refusing to follow resource symlink");
-    await rm(path, { recursive: s.isDirectory(), force: true });
-    actions.push({ kind: "resource-removed", path });
+    before = await lstat(path);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw e;
   }
+  if (before.isSymbolicLink()) throw Error("refusing to follow resource symlink");
+  await validateChain(dirname(path));
+  const claim = join(dirname(path), `.${basename(path)}.cleaning-resource-${randomUUID()}`);
+  await rename(path, claim);
+  const after = await lstat(claim);
+  if (before.dev !== after.dev || before.ino !== after.ino)
+    throw Error("resource identity changed while claimed");
+  const again = await lstat(claim);
+  if (after.dev !== again.dev || after.ino !== again.ino)
+    throw Error("claimed resource was swapped");
+  await rm(claim, { recursive: after.isDirectory() });
+  actions.push({ kind: "resource-removed", path });
+  syncDir(dirname(path));
 };
 export const cleanupPrimeOwnership = async (
   path: string,
@@ -254,158 +285,156 @@ export const cleanupPrimeOwnership = async (
   cleanup: PrimeOwnershipCleanup,
 ): Promise<readonly PrimeOwnershipAction[]> => {
   const id = identify(path);
-  if (!id) throw new Error("ownership path is outside exact Prime layout");
-  const actions: PrimeOwnershipAction[] = [];
-  const claim = `${path}.cleaning`;
+  if (!id) throw Error("ownership path is outside exact Prime layout");
+  await validateChain(dirname(path));
   try {
-    await rename(path, claim);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return actions;
-    return [warning(path, "ownership record could not be claimed; left intact")];
-  }
-  let retain = true;
-  try {
-    const s = await lstat(claim);
-    if (!s.isFile() || s.isSymbolicLink())
-      throw new Error("claimed ownership record is not a regular file");
-    const d = decode(await readFile(claim, "utf8"));
-    if (!d.record) {
-      actions.push(warning(path, d.reason!));
-      return actions;
-    }
-    let r = d.record;
-    if (
-      r.environmentId !== id.environmentId ||
-      r.instanceId !== id.instanceId ||
-      r.threadId !== id.threadId ||
-      (basename(path) === "daemon.json") !== (r.kind === "daemon") ||
-      (r.kind === "daemon" ? r.rpcSessionId !== undefined : r.daemonSessionId !== undefined)
-    ) {
-      actions.push(
-        warning(path, "ownership identity does not match its exact layout path; left intact"),
-      );
-      return actions;
-    }
-    let phase = r.phase ?? "active";
-    if (phase === "stopping") {
-      actions.push(
-        warning(path, "process stop outcome is ambiguous; retained for manual recovery"),
-      );
-      return actions;
-    }
-    if (phase === "active" && r.process) {
-      const process = r.process;
-      let matched = false;
+    return await withLock(path, async () => {
+      const actions: PrimeOwnershipAction[] = [];
+      const claim = `${path}.cleaning`;
       try {
-        matched = await proof.processMatches(process);
+        await lstat(claim);
+        return [warning(path, "retained cleanup claim already exists; active record left intact")];
       } catch (e) {
-        actions.push(warning(path, `process proof threw: ${String(e)}`));
-        return actions;
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       }
-      if (!matched) {
-        actions.push(
-          warning(path, "captured process PID/start token cannot be proven; left intact"),
-        );
-        return actions;
-      }
-      r = { ...r, phase: "stopping" };
-      await atomicWrite(claim, r);
-      actions.push({ kind: "process-stopping", path });
       try {
-        await cleanup.stopProcess(process);
+        await rename(path, claim);
       } catch (e) {
-        actions.push(
-          warning(path, `process stop threw after durable stopping transition: ${String(e)}`),
-        );
-        return actions;
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") return actions;
+        throw e;
       }
-      r = { ...r, phase: "stopped" };
-      await atomicWrite(claim, r);
-      phase = "stopped";
-      actions.push({ kind: "process-stopped", path });
-    } else if (phase === "active") {
-      r = { ...r, phase: "stopped" };
-      await atomicWrite(claim, r);
-      phase = "stopped";
-    }
-    if (phase === "stopped") {
-      for (const [name, value, match, fn, kind] of [
-        [
-          "RPC",
-          r.rpcSessionId,
-          proof.rpcSessionMatches,
-          cleanup.cleanupRpcSession,
-          "rpc-session-cleaned",
-        ],
-        [
-          "daemon",
-          r.daemonSessionId,
-          proof.daemonSessionMatches,
-          cleanup.cleanupDaemonSession,
-          "daemon-session-cleaned",
-        ],
-      ] as const) {
-        if (value) {
+      let retain = true;
+      try {
+        const s = await lstat(claim);
+        if (!s.isFile() || s.isSymbolicLink())
+          throw Error("claimed ownership record is not a regular file");
+        const d = decode(await readFile(claim, "utf8"));
+        if (!d.record) {
+          actions.push(warning(path, d.reason!));
+          return actions;
+        }
+        let r = d.record;
+        if (!validate(path, r, id)) {
+          actions.push(
+            warning(path, "ownership identity does not match its exact layout path; left intact"),
+          );
+          return actions;
+        }
+        r = {
+          ...r,
+          recordId: r.recordId ?? randomUUID(),
+          operationId: r.operationId ?? randomUUID(),
+        };
+        await atomicWrite(claim, r);
+        const persist = async (p: Partial<PrimeOwnershipRecord>) => {
+          r = { ...r, ...p };
+          await atomicWrite(claim, r);
+        };
+        if (r.process && !r.processStopped) {
           let ok = false;
           try {
-            ok = (await match?.(value)) ?? false;
+            ok = await proof.processMatches(r.process);
           } catch (e) {
-            actions.push(warning(path, `${name} proof threw: ${String(e)}`));
+            actions.push(warning(path, `process proof threw: ${String(e)}`));
             return actions;
           }
           if (!ok) {
-            actions.push(warning(path, `${name} identity cannot be proven; left intact`));
+            actions.push(
+              warning(path, "captured process PID/start token cannot be proven; left intact"),
+            );
             return actions;
           }
           try {
-            await fn?.(value);
-            if (!fn) throw new Error("cleanup callback missing");
-            actions.push({ kind, path } as PrimeOwnershipAction);
+            await cleanup.stopProcess(r.process, `${r.operationId}:process`);
           } catch (e) {
-            actions.push(warning(path, `${name} cleanup threw: ${String(e)}`));
+            actions.push(warning(path, `process stop threw: ${String(e)}`));
             return actions;
+          }
+          await persist({ processStopped: true });
+          actions.push({ kind: "process-stopped", path });
+        }
+        if (r.rpcSessionId && !r.rpcCleaned) {
+          let ok = false;
+          try {
+            ok = (await proof.rpcSessionMatches?.(r.rpcSessionId)) ?? false;
+          } catch (e) {
+            actions.push(warning(path, `RPC proof threw: ${String(e)}`));
+            return actions;
+          }
+          if (!ok) {
+            actions.push(warning(path, "RPC identity cannot be proven; left intact"));
+            return actions;
+          }
+          try {
+            if (!cleanup.cleanupRpcSession) throw Error("cleanup callback missing");
+            await cleanup.cleanupRpcSession(r.rpcSessionId, `${r.operationId}:rpc`);
+          } catch (e) {
+            actions.push(warning(path, `RPC cleanup threw: ${String(e)}`));
+            return actions;
+          }
+          await persist({ rpcCleaned: true });
+          actions.push({ kind: "rpc-session-cleaned", path });
+        }
+        if (r.daemonSessionId && !r.daemonCleaned) {
+          let ok = false;
+          try {
+            ok = (await proof.daemonSessionMatches?.(r.daemonSessionId)) ?? false;
+          } catch (e) {
+            actions.push(warning(path, `daemon proof threw: ${String(e)}`));
+            return actions;
+          }
+          if (!ok) {
+            actions.push(warning(path, "daemon identity cannot be proven; left intact"));
+            return actions;
+          }
+          try {
+            if (!cleanup.cleanupDaemonSession) throw Error("cleanup callback missing");
+            await cleanup.cleanupDaemonSession(r.daemonSessionId, `${r.operationId}:daemon`);
+          } catch (e) {
+            actions.push(warning(path, `daemon cleanup threw: ${String(e)}`));
+            return actions;
+          }
+          await persist({ daemonCleaned: true });
+          actions.push({ kind: "daemon-session-cleaned", path });
+        }
+        if (!r.resourcesCleaned) {
+          try {
+            if ((r.kind ?? "thread") === "daemon") await removeClaimed(id.daemon, actions);
+            else {
+              await removeClaimed(join(id.thread, "session"), actions);
+              await removeClaimed(join(id.thread, "config.json"), actions);
+              await removeClaimed(id.thread, actions);
+            }
+          } catch (e) {
+            actions.push(warning(path, `exact resource cleanup failed: ${String(e)}`));
+            return actions;
+          }
+          await persist({ resourcesCleaned: true });
+        }
+        await rm(claim);
+        syncDir(dirname(claim));
+        retain = false;
+        actions.push({ kind: "record-removed", path });
+        return actions;
+      } finally {
+        if (retain) {
+          try {
+            await link(claim, path);
+            await rm(claim);
+            syncDir(dirname(path));
+          } catch (e) {
+            actions.push(
+              warning(
+                path,
+                `claimed record retained without overwriting replacement: ${String(e)}`,
+              ),
+            );
           }
         }
       }
-      r = { ...r, phase: "sessions-cleaned" };
-      await atomicWrite(claim, r);
-      phase = "sessions-cleaned";
-    }
-    if (phase === "sessions-cleaned") {
-      try {
-        if ((r.kind ?? "thread") === "daemon") await removeExact(id.daemon, actions);
-        else {
-          await removeExact(join(id.thread, "session"), actions);
-          await removeExact(join(id.thread, "config.json"), actions);
-          await removeExact(id.thread, actions);
-        }
-      } catch (e) {
-        actions.push(warning(path, `exact resource cleanup failed: ${String(e)}`));
-        return actions;
-      }
-      r = { ...r, phase: "resources-cleaned" };
-      await atomicWrite(claim, r);
-    }
-    try {
-      await rm(claim);
-      syncDir(dirname(claim));
-      retain = false;
-      actions.push({ kind: "record-removed", path });
-    } catch (e) {
-      actions.push(warning(path, `record removal failed after cleanup: ${String(e)}`));
-    }
-    return actions;
+    });
   } catch (e) {
-    actions.push(warning(path, `cleanup failed: ${String(e)}`));
-    return actions;
-  } finally {
-    if (retain) {
-      try {
-        await rename(claim, path);
-      } catch (e) {
-        actions.push(warning(path, `could not restore claimed record: ${String(e)}`));
-      }
-    }
+    return [warning(path, String(e))];
   }
 };
 export const recoverPrimeOwnership = async (
@@ -419,38 +448,43 @@ export const recoverPrimeOwnership = async (
     basename(dirname(expected)) !== "prime" ||
     basename(dirname(dirname(expected))) !== "userdata"
   )
-    throw new Error("recovery root is not exact Prime layout");
+    throw Error("recovery root is not exact Prime layout");
+  await validateChain(expected);
   const actions: PrimeOwnershipAction[] = [];
   const visit = async (dir: string): Promise<void> => {
-    try {
-      for (const e of await readdir(dir, { withFileTypes: true })) {
-        const p = join(dir, e.name);
-        if (e.isSymbolicLink()) continue;
-        if (e.isDirectory()) await visit(p);
-        else if (e.isFile() && e.name.endsWith(".json") && identify(p)?.root === expected) {
-          try {
-            actions.push(...(await cleanupPrimeOwnership(p, proof, cleanup)));
-          } catch (error) {
-            actions.push(warning(p, `record cleanup threw: ${String(error)}`));
-          }
-        } else if (
-          e.isFile() &&
-          e.name.endsWith(".json.cleaning") &&
-          identify(p)?.root === expected
-        ) {
-          try {
-            await rename(p, p.slice(0, -9));
-            actions.push(warning(p, "recovered interrupted cleanup claim"));
-          } catch (error) {
-            actions.push(warning(p, `claim recovery failed: ${String(error)}`));
-          }
-        } else if (e.isFile() && e.name.includes(".tmp")) {
-          actions.push(warning(p, "incomplete atomic write retained for inspection"));
-        }
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isSymbolicLink()) {
+        actions.push(warning(p, "symlink skipped during recovery"));
+        continue;
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-        actions.push(warning(dir, `ownership directory unreadable: ${String(error)}`));
+      if (e.isDirectory()) await visit(p);
+      else if (e.isFile() && e.name.endsWith(".json") && identify(p)?.root === expected) {
+        try {
+          actions.push(...(await cleanupPrimeOwnership(p, proof, cleanup)));
+        } catch (error) {
+          actions.push(warning(p, `record cleanup threw: ${String(error)}`));
+        }
+      } else if (
+        e.isFile() &&
+        e.name.endsWith(".json.cleaning") &&
+        identify(p)?.root === expected
+      ) {
+        const original = p.slice(0, -9);
+        try {
+          await link(p, original);
+          await rm(p);
+          actions.push(
+            warning(p, "recovered interrupted cleanup claim without clobbering active record"),
+          );
+          actions.push(...(await cleanupPrimeOwnership(original, proof, cleanup)));
+        } catch (error) {
+          actions.push(
+            warning(p, `retained cleanup claim recovery failed safely: ${String(error)}`),
+          );
+        }
+      } else if (e.isFile() && e.name.includes(".tmp"))
+        actions.push(warning(p, "incomplete atomic write retained for inspection"));
     }
   };
   await visit(expected);

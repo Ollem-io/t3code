@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -185,5 +185,98 @@ describe("PrimeOwnership", () => {
     await stat(a.ownership);
     await stat(c.ownership);
     await stat(f.ownership);
+  });
+  it("persists RPC success independently so a retry never repeats it", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-rpc-marker-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    let rpc = 0;
+    await cleanupPrimeOwnership(l.ownership, proofs, {
+      stopProcess: async () => {},
+      cleanupRpcSession: async () => {
+        rpc++;
+      },
+    });
+    assert.strictEqual(rpc, 1);
+    await missing(l.ownership);
+  });
+  it("serializes writers and cleanup with an exclusive per-record lock", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-lock-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const held = await open(`${l.ownership}.lock`, "wx");
+    try {
+      await rejects(() => writePrimeOwnership(l.ownership, rec("one", "a", 72)));
+      const actions = await cleanupPrimeOwnership(l.ownership, proofs, callbacks([]));
+      assert.ok(actions.some((x) => x.kind === "warning" && x.warning.reason.includes("busy")));
+      assert.strictEqual(JSON.parse(await readFile(l.ownership, "utf8")).process.pid, 71);
+    } finally {
+      await held.close();
+      await import("node:fs/promises").then((x) => x.rm(`${l.ownership}.lock`));
+    }
+  });
+  it("never clobbers a replacement while restoring a retained claim", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-replacement-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const actions = await cleanupPrimeOwnership(
+      l.ownership,
+      {
+        ...proofs,
+        processMatches: async () => {
+          await writeFile(l.ownership, "replacement");
+          return false;
+        },
+      },
+      callbacks([]),
+    );
+    assert.strictEqual(await readFile(l.ownership, "utf8"), "replacement");
+    assert.ok(
+      actions.some((x) => x.kind === "warning" && x.warning.reason.includes("without overwriting")),
+    );
+    await stat(`${l.ownership}.cleaning`);
+  });
+  it("rejects a recovery root reached through a symlink ancestor", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "prime-attacker-"));
+    const real = primeResourceLayout({
+      home: outside,
+      environmentId: "env",
+      instanceId: "one",
+      threadId: "a",
+    });
+    await writePrimeOwnership(real.ownership, rec("one", "a"));
+    const wrapper = await mkdtemp(join(tmpdir(), "prime-wrapper-"));
+    const linkHome = join(wrapper, "linked-home");
+    await symlink(outside, linkHome);
+    const linked = primeResourceLayout({
+      home: linkHome,
+      environmentId: "env",
+      instanceId: "one",
+      threadId: "a",
+    });
+    await rejects(() => recoverPrimeOwnership(linked.root, proofs, callbacks([])));
+    await stat(real.ownership);
+  });
+  it("recovery retains an interrupted claim when a newer record occupies the path", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-claim-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    await rename(l.ownership, `${l.ownership}.cleaning`);
+    await writeFile(
+      l.ownership,
+      JSON.stringify({ ...rec("one", "a", 72), recordId: "new", operationId: "new-op" }),
+    );
+    const actions = await recoverPrimeOwnership(
+      l.root,
+      { ...proofs, processMatches: async () => false },
+      callbacks([]),
+    );
+    assert.ok(
+      actions.some(
+        (x) => x.kind === "warning" && x.warning.reason.includes("retained cleanup claim"),
+      ),
+    );
+    assert.strictEqual(JSON.parse(await readFile(l.ownership, "utf8")).recordId, "new");
+    await stat(`${l.ownership}.cleaning`);
   });
 });

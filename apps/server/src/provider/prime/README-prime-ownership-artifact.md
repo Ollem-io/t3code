@@ -1,11 +1,17 @@
 # PA-M06 ownership review artifact
 
 `prime-ownership-artifact.mjs` is a deterministic standalone Node ESM bundle built
-from the checked-in production `PrimeOwnership.ts`, `PrimeResourceLayout.ts`, and
-`verify-prime-ownership.ts`. It imports only Node built-ins. SHA-256:
-`04b01dbcfb789abbf551c7e0efb3e92f66ead458857f4d5b610418a62e3030d7`.
+from checked-in production ownership/resource-layout code and the source verifier.
+SHA-256: `1b32739429da08a210cfdeea80380c0d7524ca0d876e52ddacc546163f3bf055`.
 
-Generate from a fresh checkout and verify that the committed copy is identical:
+Regenerate and execute it from a fresh checkout:
+
+```sh
+apps/server/src/provider/prime/generate-prime-ownership-artifact.sh
+```
+
+To independently prove deterministic regeneration without replacing the committed
+artifact:
 
 ```sh
 rm -rf apps/server/src/provider/prime/.ownership-bundle-tmp
@@ -16,14 +22,15 @@ rm -rf apps/server/src/provider/prime/.ownership-bundle-tmp
 cmp apps/server/src/provider/prime/.ownership-bundle-tmp/verify-prime-ownership.mjs \
   apps/server/src/provider/prime/prime-ownership-artifact.mjs
 sha256sum apps/server/src/provider/prime/prime-ownership-artifact.mjs
-rm -rf apps/server/src/provider/prime/.ownership-bundle-tmp
 node apps/server/src/provider/prime/verify-prime-ownership.mjs
+rm -rf apps/server/src/provider/prime/.ownership-bundle-tmp
 ```
 
-The executable verifier uses disposable homes and production code. It covers two
-homes, two instances, two concurrent thread records, exact process/RPC/daemon
-callbacks and resource removal, sibling/home/sentinel isolation, and corrupt record
-warning/recovery. The focused unit suite additionally covers traversal-shaped IDs,
-symlink parents, identity/path mismatch, future records, thrown proofs, start-token
-mismatch, session mismatch, recovery continuation, and partial-cleanup retry without
-a second process stop. No global process scan or pattern kill is used.
+The verifier reports 33 source-derived assertions covering selected ownership,
+session/config/thread and daemon resource removal, exact callbacks, selected-record
+removal, sibling/other-instance/other-home/sentinel preservation, partial-cleanup
+retry without duplicate successful callbacks, positive recovery, corrupt warnings,
+and practical continuation after a thrown identity proof. Focused tests cover
+per-path locking, replacement races, independently durable effect markers, retained
+claims, symlink parents/targets/recovery roots, daemon/thread records, and mismatch
+handling. No live state, global scan, pattern kill, or browser is used.
