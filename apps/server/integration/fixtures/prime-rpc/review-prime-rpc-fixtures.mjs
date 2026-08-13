@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const directory = process.argv[2] ?? dirname(fileURLToPath(import.meta.url));
 const expected = {
-  "normal.jsonl": ["command", "response", "command", "command", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "command"],
+  "normal.jsonl": ["command", "response", "response", "command", "command", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "command"],
   "additive-field.jsonl": ["response", "known-event"],
   "malformed.jsonl": Array(14).fill("malformed"),
   "unknown-event.jsonl": ["unknown-event"],

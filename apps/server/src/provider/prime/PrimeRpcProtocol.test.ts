@@ -7,10 +7,11 @@ const model = {
   cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }, contextWindow: 1000, maxTokens: 100,
 };
 
-it("decodes correlated 0.7.2 success responses and declaration-shaped models", () => {
+it("decodes correlated 0.7.2 responses and declaration-shaped models", () => {
   const result = decodePrimeRpcEnvelope({ id: "request-1", type: "response", command: "get_available_models", success: true, data: { models: [{ ...model, headers: { "x-fixture": "safe" }, compat: { future: true } }] } });
   assert.strictEqual(result._tag, "response");
   if (result._tag === "response") assert.strictEqual(result.value.id, "request-1");
+  assert.strictEqual(decodePrimeRpcEnvelope({ id: "request-failure", type: "response", command: "get_available_models", success: false, error: "Synthetic failure" })._tag, "response");
 });
 
 it("fails missing required fields as a local compatibility error", () => {
@@ -18,6 +19,7 @@ it("fails missing required fields as a local compatibility error", () => {
   assert.strictEqual(result._tag, "malformed");
   if (result._tag === "malformed") assert.strictEqual(result.error._tag, "PrimeRpcCompatibilityError");
   assert.strictEqual(decodePrimeRpcEnvelope({ id: "request-2", type: "response", command: "get_available_models", success: true, data: { models: [{ ...model, cost: { input: 1 } }] } })._tag, "malformed");
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "response", command: "get_available_models", success: false })._tag, "malformed");
 });
 
 it("accepts additive fields and classifies unknown events", () => {

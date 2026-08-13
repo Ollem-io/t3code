@@ -109,6 +109,10 @@ const FailureResponse = Schema.Struct({
   success: Schema.Literal(false),
   error: Schema.String,
 });
+const PrimeRpcAvailableModelsResult = Schema.Union(
+  PrimeRpcAvailableModelsResponse,
+  FailureResponse,
+);
 export const PrimeRpcResponse = Schema.Union(
   PrimeRpcAvailableModelsResponse,
   SuccessResponse,
@@ -209,7 +213,7 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
   if (envelope.type === "response") {
     // Command-specific data is validated before the generic response envelope.
     const response = object.command === "get_available_models"
-      ? decode(PrimeRpcAvailableModelsResponse, value)
+      ? decode(PrimeRpcAvailableModelsResult, value)
       : decode(PrimeRpcResponse, value);
     return response
       ? { _tag: "response", value: response }
