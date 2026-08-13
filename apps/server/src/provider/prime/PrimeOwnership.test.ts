@@ -2,31 +2,188 @@ import { assert, describe, it } from "@effect/vitest";
 import { mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanupPrimeOwnership, recoverPrimeOwnership, writePrimeOwnership } from "./PrimeOwnership.ts";
+import {
+  cleanupPrimeOwnership,
+  recoverPrimeOwnership,
+  writePrimeOwnership,
+} from "./PrimeOwnership.ts";
 import { primeResourceLayout } from "./PrimeResourceLayout.ts";
-
-const record = (instanceId: string, pid = 71) => ({ version: 1 as const, environmentId: "env", instanceId, threadIds: ["thread"], process: { pid, startToken: "captured-start" }, rpcSessionId: "rpc", daemonSessionId: "daemon" });
-async function expectMissing(path: string): Promise<void> { try { await stat(path); throw new Error("expected ENOENT"); } catch (error) { assert.strictEqual((error as NodeJS.ErrnoException).code, "ENOENT"); } }
-
-const proof = { processMatches: async ({ pid }: { pid: number }) => pid === 71, daemonSessionMatches: async () => true, rpcSessionMatches: async () => true };
+const rec = (instanceId: string, threadId: string, pid = 71) => ({
+  version: 1 as const,
+  environmentId: "env",
+  instanceId,
+  threadId,
+  process: { pid, startToken: "captured-start" },
+  rpcSessionId: `rpc-${threadId}`,
+});
+async function missing(path: string) {
+  try {
+    await stat(path);
+    throw Error("exists");
+  } catch (e) {
+    assert.strictEqual((e as NodeJS.ErrnoException).code, "ENOENT");
+  }
+}
+const proofs = {
+  processMatches: async (h: { pid: number; startToken: string }) =>
+    h.pid === 71 && h.startToken === "captured-start",
+  rpcSessionMatches: async (id: string) => id.startsWith("rpc-"),
+  daemonSessionMatches: async (id: string) => id.startsWith("daemon-"),
+};
+async function rejects(run: () => Promise<unknown>) {
+  try {
+    await run();
+    throw Error("expected rejection");
+  } catch (e) {
+    assert.notStrictEqual((e as Error).message, "expected rejection");
+  }
+}
+const callbacks = (events: string[]) => ({
+  stopProcess: async (h: { pid: number }) => {
+    events.push(`stop:${h.pid}`);
+  },
+  cleanupRpcSession: async (id: string) => {
+    events.push(`rpc:${id}`);
+  },
+  cleanupDaemonSession: async (id: string) => {
+    events.push(`daemon:${id}`);
+  },
+});
 describe("PrimeOwnership", () => {
-  it("atomically owns and cleans one selected instance, never an unrelated sentinel or another home", async () => {
-    const homeA = await mkdtemp(join(tmpdir(), "prime-owned-a-")); const homeB = await mkdtemp(join(tmpdir(), "prime-owned-b-"));
-    const a = primeResourceLayout({ home: homeA, environmentId: "env", instanceId: "a", threadId: "thread" }); const b = primeResourceLayout({ home: homeB, environmentId: "env", instanceId: "b", threadId: "thread" });
-    await writePrimeOwnership(a.ownership, record("a")); await writePrimeOwnership(b.ownership, record("b", 72)); const sentinel = join(homeA, "unrelated-prime-sentinel"); await writeFile(sentinel, "alive");
-    const stopped: number[] = []; await cleanupPrimeOwnership(a.ownership, proof, async ({ pid }) => { stopped.push(pid); });
-    assert.deepStrictEqual(stopped, [71]); await expectMissing(a.ownership); assert.ok((await readFile(b.ownership, "utf8")).includes('"instanceId":"b"')); assert.strictEqual(await readFile(sentinel, "utf8"), "alive");
+  it("keeps concurrent thread records independent and removes exact owned resources", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-"));
+    const a = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    const b = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "b" });
+    await Promise.all([
+      writePrimeOwnership(a.ownership, rec("one", "a")),
+      writePrimeOwnership(b.ownership, rec("one", "b", 72)),
+    ]);
+    for (const x of [a, b]) {
+      await mkdir(x.session, { recursive: true });
+      await writeFile(x.config, "config");
+    }
+    const sentinel = join(home, "sentinel");
+    await writeFile(sentinel, "safe");
+    const events: string[] = [];
+    const actions = await cleanupPrimeOwnership(a.ownership, proofs, callbacks(events));
+    assert.deepStrictEqual(events, ["stop:71", "rpc:rpc-a"]);
+    assert.ok(actions.some((a) => a.kind === "process-stopped"));
+    await missing(a.thread);
+    await stat(b.ownership);
+    await stat(b.thread);
+    assert.strictEqual(await readFile(sentinel, "utf8"), "safe");
   });
-  it("recovers complete records, discards partial writes, warns for corrupt/future/stale records, and does not follow symlinks", async () => {
-    const home = await mkdtemp(join(tmpdir(), "prime-recovery-")); const live = primeResourceLayout({ home, environmentId: "env", instanceId: "live", threadId: "t" }); const stale = primeResourceLayout({ home, environmentId: "env", instanceId: "stale", threadId: "t" }); const corrupt = primeResourceLayout({ home, environmentId: "env", instanceId: "corrupt", threadId: "t" }); const future = primeResourceLayout({ home, environmentId: "env", instanceId: "future", threadId: "t" });
-    await writePrimeOwnership(live.ownership, record("live")); await writePrimeOwnership(stale.ownership, record("stale", 99)); await mkdir(corrupt.instance, { recursive: true }); await mkdir(future.instance, { recursive: true }); await writeFile(corrupt.ownership, "{"); await writeFile(future.ownership, JSON.stringify({ ...record("future"), version: 2 })); await writeFile(join(live.instance, ".ownership.json.interrupted.tmp"), "partial");
-    const outside = await mkdtemp(join(tmpdir(), "prime-symlink-sentinel-")); const outsideOwnership = join(outside, "ownership.json"); await writeFile(outsideOwnership, JSON.stringify(record("outside"))); await symlink(outside, join(live.root, "linked-outside"));
-    const stopped: number[] = []; const actions = await recoverPrimeOwnership(live.root, proof, async ({ pid }) => { stopped.push(pid); });
-    assert.deepStrictEqual(stopped, [71]); assert.ok(actions.some((a) => a.kind === "warning" && a.warning.path === stale.ownership)); assert.ok(actions.some((a) => a.kind === "warning" && a.warning.path === corrupt.ownership)); assert.ok(actions.some((a) => a.kind === "warning" && a.warning.path === future.ownership && a.warning.reason.includes("future"))); assert.ok((await readFile(stale.ownership, "utf8")).includes('"pid":99')); assert.strictEqual(await readFile(corrupt.ownership, "utf8"), "{"); await expectMissing(join(live.instance, ".ownership.json.interrupted.tmp")); await stat(outsideOwnership);
+  it("binds record identity to decoded path and rejects symlink parents/targets", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await rejects(() => writePrimeOwnership(l.ownership, rec("wrong", "a")));
+    const outside = await mkdtemp(join(tmpdir(), "outside-"));
+    await mkdir(l.instance, { recursive: true });
+    await symlink(outside, l.ownershipDirectory);
+    await rejects(() => writePrimeOwnership(l.ownership, rec("one", "a")));
+    assert.deepStrictEqual(await import("node:fs/promises").then((x) => x.readdir(outside)), []);
   });
-  it("leaves session/daemon records without a process and malformed records untouched", async () => {
-    const home = await mkdtemp(join(tmpdir(), "prime-validation-")); const location = primeResourceLayout({ home, environmentId: "env", instanceId: "x", threadId: "t" }); await mkdir(location.instance, { recursive: true });
-    await writeFile(location.ownership, JSON.stringify({ version: 1, environmentId: "env", instanceId: "x", threadIds: [], rpcSessionId: "rpc" })); const actions = await cleanupPrimeOwnership(location.ownership, proof, async () => { throw new Error("must not stop"); }); assert.ok(actions[0]?.kind === "warning"); await stat(location.ownership);
-    try { await writePrimeOwnership(location.ownership, { ...record("x"), process: { pid: Number.NaN, startToken: "s" } }); throw new Error("expected validation failure"); } catch (error) { assert.ok((error as Error).message.includes("invalid")); }
+  it("requires PID and start token plus RPC and daemon matches", async () => {
+    for (const [name, p] of [
+      ["process", { ...proofs, processMatches: async () => false }],
+      ["rpc", { ...proofs, rpcSessionMatches: async () => false }],
+    ] as const) {
+      const home = await mkdtemp(join(tmpdir(), `prime-${name}-`));
+      const l = primeResourceLayout({
+        home,
+        environmentId: "env",
+        instanceId: "one",
+        threadId: "a",
+      });
+      await writePrimeOwnership(l.ownership, rec("one", "a"));
+      const e: string[] = [];
+      await cleanupPrimeOwnership(l.ownership, p, callbacks(e));
+      if (name === "process") assert.deepStrictEqual(e, []);
+      else assert.deepStrictEqual(e.slice(0, 1), ["stop:71"]);
+      await stat(l.ownership);
+    }
+    const home = await mkdtemp(join(tmpdir(), "prime-daemon-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.daemonOwnership, {
+      version: 1,
+      environmentId: "env",
+      instanceId: "one",
+      threadId: "__daemon__",
+      kind: "daemon",
+      process: { pid: 71, startToken: "captured-start" },
+      daemonSessionId: "daemon-one",
+    });
+    const e: string[] = [];
+    await cleanupPrimeOwnership(
+      l.daemonOwnership,
+      { ...proofs, daemonSessionMatches: async () => false },
+      callbacks(e),
+    );
+    assert.deepStrictEqual(e, ["stop:71"]);
+    await stat(l.daemonOwnership);
+  });
+  it("durably avoids a second stop after partial cleanup retry", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-retry-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await mkdir(l.session, { recursive: true });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    let stops = 0;
+    await cleanupPrimeOwnership(l.ownership, proofs, {
+      ...callbacks([]),
+      stopProcess: async () => {
+        stops++;
+      },
+      cleanupRpcSession: async () => {
+        throw Error("once");
+      },
+    });
+    await cleanupPrimeOwnership(l.ownership, proofs, {
+      ...callbacks([]),
+      stopProcess: async () => {
+        stops++;
+      },
+    });
+    assert.strictEqual(stops, 1);
+    await missing(l.ownership);
+  });
+  it("recovery warns on one thrown record and continues to the next; retains corrupt/future", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-recover-"));
+    const a = primeResourceLayout({ home, environmentId: "env", instanceId: "a", threadId: "a" });
+    const b = primeResourceLayout({ home, environmentId: "env", instanceId: "b", threadId: "b" });
+    const c = primeResourceLayout({ home, environmentId: "env", instanceId: "c", threadId: "c" });
+    await writePrimeOwnership(a.ownership, rec("a", "a"));
+    await writePrimeOwnership(b.ownership, rec("b", "b"));
+    await mkdir(c.ownershipDirectory, { recursive: true });
+    await writeFile(c.ownership, "{");
+    const f = primeResourceLayout({ home, environmentId: "env", instanceId: "f", threadId: "f" });
+    await mkdir(f.ownershipDirectory, { recursive: true });
+    await writeFile(f.ownership, JSON.stringify({ ...rec("f", "f"), version: 2 }));
+    const stopped: number[] = [];
+    const actions = await recoverPrimeOwnership(
+      a.root,
+      {
+        ...proofs,
+        processMatches: async (h) => {
+          if (h.pid === 71 && stopped.length === 0) {
+            stopped.push(0);
+            throw Error("proof boom");
+          }
+          return true;
+        },
+      },
+      {
+        ...callbacks([]),
+        stopProcess: async (h) => {
+          stopped.push(h.pid);
+        },
+      },
+    );
+    assert.ok(
+      actions.some((x) => x.kind === "warning" && x.warning.reason.includes("proof threw")),
+    );
+    assert.ok(stopped.includes(71));
+    await stat(a.ownership);
+    await stat(c.ownership);
+    await stat(f.ownership);
   });
 });
