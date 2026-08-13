@@ -8,9 +8,9 @@ Field names and shapes were confirmed read-only from the installed Prime Agent 0
 
 ## Cases
 
-- `normal.jsonl`: model discovery, model object, image input, the installed `off` thinking level, core event/tool envelopes, and extension UI envelopes.
+- `normal.jsonl`: model discovery, model object, image input, the installed `off` thinking level, declaration-shaped message start/update/end events, core tool envelopes, and extension UI envelopes.
 - `additive-field.jsonl`: future additive fields which must remain decodable.
-- `malformed.jsonl`: missing/wrong command, image, model, event/tool, and extension UI fields, classified locally as compatibility failures.
+- `malformed.jsonl`: missing/wrong command, image, model, message/event/tool, and extension UI fields, classified locally as compatibility failures.
 - `unknown-event.jsonl`: forward-compatible event classification without a crash.
 - `review-prime-rpc-fixtures.mjs`: source-free Node decoder/classifier review artifact.
 

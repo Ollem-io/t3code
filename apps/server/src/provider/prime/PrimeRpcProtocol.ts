@@ -123,10 +123,18 @@ const TurnEndEvent = Schema.Struct({
   message: Schema.Unknown,
   toolResults: Schema.Array(Schema.Unknown),
 });
-const MessageEvent = Schema.Struct({
-  type: Schema.Literal("message_start", "message_update", "message_end"),
+const MessageStartEvent = Schema.Struct({
+  type: Schema.Literal("message_start"),
+  message: Schema.Unknown,
+});
+const MessageUpdateEvent = Schema.Struct({
+  type: Schema.Literal("message_update"),
   message: Schema.Unknown,
   assistantMessageEvent: Schema.Unknown,
+});
+const MessageEndEvent = Schema.Struct({
+  type: Schema.Literal("message_end"),
+  message: Schema.Unknown,
 });
 const ToolExecutionStart = Schema.Struct({ type: Schema.Literal("tool_execution_start"), toolCallId: Schema.String, toolName: Schema.String, args: Schema.Unknown });
 const ToolExecutionUpdate = Schema.Struct({ type: Schema.Literal("tool_execution_update"), toolCallId: Schema.String, toolName: Schema.String, args: Schema.Unknown, partialResult: Schema.Unknown });
@@ -147,7 +155,9 @@ export const PrimeRpcKnownEvent = Schema.Union(
   AgentEndEvent,
   TurnStartEvent,
   TurnEndEvent,
-  MessageEvent,
+  MessageStartEvent,
+  MessageUpdateEvent,
+  MessageEndEvent,
   ToolExecutionStart,
   ToolExecutionUpdate,
   ToolExecutionEnd,

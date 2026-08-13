@@ -3,6 +3,9 @@
 {"id":"image-1","type":"prompt","message":"","images":[{"type":"image","data":"AA==","mimeType":"image/png"}]}
 {"type":"set_thinking_level","level":"off"}
 {"type":"agent_start"}
+{"type":"message_start","message":{"role":"user","content":"Synthetic","timestamp":1}}
+{"type":"message_update","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"fixture-provider","model":"model-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"x","partial":{"role":"assistant","content":[],"api":"openai-completions","provider":"fixture-provider","model":"model-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1}}}
+{"type":"message_end","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"fixture-provider","model":"model-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1}}
 {"type":"tool_execution_end","toolCallId":"tool-1","toolName":"fixture_tool","result":{"ok":true},"isError":false}
 {"type":"extension_ui_request","id":"status-1","method":"setStatus","statusKey":"fixture-status"}
 {"type":"extension_ui_request","id":"widget-1","method":"setWidget","widgetKey":"fixture-widget"}
