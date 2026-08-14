@@ -687,7 +687,7 @@ export const makePrimeAdapter = (
 
     const adapter: ProviderAdapterShape<ProviderAdapterError> = {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: { sessionModelSwitch: "in-session", conversationRollback: "unsupported" },
       startSession,
       sendTurn,
       interruptTurn,

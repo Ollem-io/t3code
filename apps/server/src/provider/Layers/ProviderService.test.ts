@@ -206,7 +206,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
   const adapter: ProviderAdapterShape<ProviderAdapterError> = {
     provider,
     capabilities: {
-      sessionModelSwitch: "in-session",
+      sessionModelSwitch: "in-session", conversationRollback: "supported",
     },
     startSession,
     sendTurn,

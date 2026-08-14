@@ -112,7 +112,7 @@ function createProviderServiceHarness(
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions,
-    getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+    getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session", conversationRollback: "supported" }),
     getInstanceInfo: (instanceId) =>
       Effect.succeed({
         instanceId,
