@@ -167,8 +167,8 @@ try {
   );
   check(retryStops === 1, "partial cleanup stopped once");
   check(retryRpc === 1, "partial cleanup rpc attempted once");
-  await stat(retry.ownership);
-  check(true, "partial record retained");
+  await stat(`${retry.ownership}.cleaning`);
+  check(true, "partial claim retained");
   await cleanupPrimeOwnership(
     retry.ownership,
     { processMatches: async () => true, rpcSessionMatches: async () => true },
@@ -182,11 +182,9 @@ try {
     },
   );
   check(retryStops === 1, "retry did not duplicate stop");
-  check(equal(retryRpc, 2), "failed rpc retried");
-  await stat(retry.ownership).then(
-    () => check(false, "retry record survived"),
-    () => check(true, "retry record removed"),
-  );
+  check(equal(retryRpc, 1), "failed rpc retained for recovery without unsafe retry");
+  await stat(`${retry.ownership}.cleaning`);
+  check(true, "retry claim remains retained");
 
   const mismatch = primeResourceLayout({
     home: homes[0]!,
@@ -213,8 +211,8 @@ try {
     mismatchActions.some((x) => x.kind === "warning"),
     "identity mismatch throw warned",
   );
-  await stat(mismatch.ownership);
-  check(true, "identity mismatch record retained");
+  await stat(`${mismatch.ownership}.cleaning`);
+  check(true, "identity mismatch claim retained");
   continued = true;
   check(continued, "callback throw continuation practical");
 
@@ -262,8 +260,8 @@ try {
     },
   );
   check(
-    (await readdir(race.thread)).some((name) => name.includes("cleaning-resource")),
-    "raced replacement retained in quarantine",
+    (await readFile(join(race.session, "replacement"), "utf8")) === "visible",
+    "replacement namespace untouched",
   );
   await stat(displaced);
   check(true, "original raced resource retained");
@@ -271,8 +269,8 @@ try {
     raceActions.some((x) => x.kind === "warning"),
     "raced replacement warning surfaced",
   );
-  await stat(race.ownership);
-  check(true, "raced ownership generation retained");
+  await stat(`${race.ownership}.cleaning`);
+  check(true, "raced ownership claim retained");
 
   const ancestorRace = primeResourceLayout({
     home: homes[0]!,
@@ -302,6 +300,45 @@ try {
     (await readdir(movedThread)).some((name) => name.includes("cleaning-resource")),
     "ancestor race retained directory claim",
   );
+  const proofRace = primeResourceLayout({
+    home: homes[0]!,
+    environmentId: "env",
+    instanceId: "proof-race",
+    threadId: "r",
+  });
+  await mkdir(proofRace.session, { recursive: true });
+  await writePrimeOwnership(proofRace.ownership, record("proof-race", "r", 9));
+  const proofOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-proof-outside-"));
+  const proofMoved = `${proofRace.thread}.moved`;
+  let proofStops = 0;
+  let proofRpc = 0;
+  await cleanupPrimeOwnership(
+    proofRace.ownership,
+    {
+      processMatches: async () => {
+        await rename(proofRace.thread, proofMoved);
+        await symlink(proofOutside, proofRace.thread);
+        return true;
+      },
+      rpcSessionMatches: async () => true,
+    },
+    {
+      stopProcess: async () => {
+        proofStops++;
+      },
+      cleanupRpcSession: async () => {
+        proofRpc++;
+      },
+    },
+  );
+  check(proofStops === 0, "process proof race performed no stop");
+  check(proofRpc === 0, "process proof race performed no RPC cleanup");
+  check((await readdir(proofOutside)).length === 0, "process proof race wrote nothing outside");
+  await stat(`${proofRace.ownership}.cleaning`);
+  check(true, "process proof race retained ownership claim");
+  await stat(join(proofMoved, "session"));
+  check(true, "process proof race retained moved source resource");
+
   const recoveryRace = primeResourceLayout({
     home: homes[0]!,
     environmentId: "env",

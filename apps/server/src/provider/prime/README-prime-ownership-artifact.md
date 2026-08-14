@@ -2,7 +2,7 @@
 
 `prime-ownership-artifact.mjs` is a deterministic standalone Node ESM bundle built
 from checked-in production ownership/resource-layout code and the source verifier.
-SHA-256: `4db54cd885cb26c3dc2807e875b143dd0d0cc72d921bac521002f18249b13db9`.
+SHA-256: `6e560626cd133fd17191ae1b5a5c31cce20c9b3254380b17ff2f92a3f8b7bc36`.
 
 Regenerate and execute it from a fresh checkout:
 
@@ -17,7 +17,7 @@ artifact:
 apps/server/src/provider/prime/generate-prime-ownership-artifact.sh --check
 ```
 
-The verifier reports 51 source-derived assertions covering selected ownership,
+The verifier reports 51 source-derived assertions covering proof-callback namespace swaps with zero destructive callbacks, selected ownership,
 session/config/thread and daemon resource removal, exact callbacks, selected-record
 removal, sibling/other-instance/other-home/sentinel preservation, partial-cleanup
 retry without duplicate successful callbacks, safe retained-claim recovery, corrupt warnings,

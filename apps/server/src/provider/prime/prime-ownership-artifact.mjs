@@ -1,5 +1,4 @@
 import {
-  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -166,21 +165,32 @@ const syncDir = (p) => {
     }
   } catch {}
 };
-const atomicWrite = async (path, r) => {
+const atomicWrite = async (path, r, binding) => {
+  if (binding && !(await boundFile(path, binding.chain, binding.identity)))
+    throw Error("ownership record namespace changed before atomic write");
   const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   const h = await open(temp, "wx", 384);
+  const tempIdentity = await h.stat({ bigint: true });
   try {
     await h.writeFile(`${JSON.stringify(r)}\n`);
     await h.sync();
   } finally {
     await h.close();
   }
-  try {
-    await rename(temp, path);
-    syncDir(dirname(path));
-  } finally {
-    await rm(temp, { force: true }).catch(() => {});
-  }
+  if (
+    binding &&
+    (!(await chainUnchanged(binding.chain)) ||
+      !(await boundFile(temp, binding.chain, tempIdentity)))
+  )
+    throw Error("ownership record namespace changed before atomic write rename");
+  await rename(temp, path);
+  if (binding && !(await boundFile(path, binding.chain, tempIdentity)))
+    throw Error("ownership record namespace changed during atomic write rename");
+  syncDir(dirname(path));
+  return {
+    dev: tempIdentity.dev,
+    ino: tempIdentity.ino,
+  };
 };
 const captureChain = async (path, create = false) => {
   const parts = resolve(path).split(sep).filter(Boolean);
@@ -227,8 +237,27 @@ const chainUnchanged = async (before) => {
     return false;
   }
 };
+const sameIdentity = (a, b) => a.dev === b.dev && a.ino === b.ino;
+const boundFile = async (path, chain, identity) => {
+  if (!(await chainUnchanged(chain))) return false;
+  try {
+    return sameIdentity(await lstat(path, { bigint: true }), identity);
+  } catch {
+    return false;
+  }
+};
+const guardedRenameToClaim = async (source, claim, chain, sourceIdentity, before) => {
+  await before?.();
+  if (!(await boundFile(source, chain, sourceIdentity)))
+    throw Error("source namespace changed before destructive claim rename");
+  await rename(source, claim);
+  if (!(await boundFile(claim, chain, sourceIdentity)))
+    throw Error("claim namespace changed during destructive claim rename");
+  return sourceIdentity;
+};
 const withLock = async (path, fn) => {
   const lock = `${path}.lock`;
+  const chain = await captureChain(dirname(lock));
   let h;
   try {
     h = await open(lock, "wx", 384);
@@ -236,12 +265,15 @@ const withLock = async (path, fn) => {
     if (e.code === "EEXIST") throw Error("ownership record is busy (cleanup lock held)");
     throw e;
   }
+  const locked = await lstat(lock, { bigint: true });
   try {
     return await fn();
   } finally {
     await h.close();
-    await rm(lock, { force: true });
-    syncDir(dirname(lock));
+    if (await boundFile(lock, chain, locked)) {
+      await rm(lock, { force: true });
+      syncDir(dirname(lock));
+    }
   }
 };
 const validate = (path, r, id) =>
@@ -294,73 +326,9 @@ const warning = (path, reason) => ({
     reason,
   },
 });
-const restoreClaimNoClobber = async (
-  original,
-  claim,
-  actions,
-  reason,
-  parentChain,
-  hooks,
-  expectedClaim,
-) => {
-  try {
-    if (!parentChain || !(await chainUnchanged(parentChain)))
-      throw Error("original parent chain is unavailable or changed");
-    const claimed = await lstat(claim, { bigint: true });
-    if (expectedClaim && (claimed.dev !== expectedClaim.dev || claimed.ino !== expectedClaim.ino))
-      throw Error("claim identity changed before restore");
-    if (claimed.isDirectory()) {
-      actions.push(
-        warning(
-          claim,
-          `${reason}; retained uniquely named directory claim because Node has no atomic no-replace rename`,
-        ),
-      );
-      return false;
-    }
-    if (!claimed.isFile() || claimed.isSymbolicLink()) throw Error("claim is not a regular file");
-    await hooks?.beforeClaimRestoreLink?.(claim, original);
-    const immediatelyBefore = await lstat(claim, { bigint: true });
-    if (
-      immediatelyBefore.dev !== claimed.dev ||
-      immediatelyBefore.ino !== claimed.ino ||
-      !(await chainUnchanged(parentChain))
-    )
-      throw Error("claim or original parent chain changed before restore");
-    try {
-      await lstat(original);
-      throw Error("original is occupied");
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-    if (!(await chainUnchanged(parentChain)))
-      throw Error("original parent chain changed before no-clobber hard link");
-    await link(claim, original);
-    const [linked, stillClaimed] = await Promise.all([
-      lstat(original, { bigint: true }),
-      lstat(claim, { bigint: true }),
-    ]);
-    if (
-      !(await chainUnchanged(parentChain)) ||
-      linked.dev !== claimed.dev ||
-      linked.ino !== claimed.ino ||
-      stillClaimed.dev !== claimed.dev ||
-      stillClaimed.ino !== claimed.ino
-    )
-      throw Error("restored link or namespace identity changed after no-clobber hard link");
-    await rm(claim);
-    syncDir(dirname(original));
-    actions.push(warning(original, `${reason}; claimed file restored by no-clobber hard link`));
-    return true;
-  } catch (e) {
-    actions.push(
-      warning(
-        claim,
-        `${reason}; retained uniquely named claim because original is occupied or restore failed: ${String(e)}`,
-      ),
-    );
-    return false;
-  }
+const retainClaim = (claim, actions, reason) => {
+  actions.push(warning(claim, `${reason}; retained uniquely named claim for safe recovery`));
+  return false;
 };
 const removeClaimed = async (path, recordId, actions, hooks) => {
   let before;
@@ -372,46 +340,27 @@ const removeClaimed = async (path, recordId, actions, hooks) => {
   }
   if (before.isSymbolicLink()) throw Error("refusing to follow resource symlink");
   const chain = await captureChain(dirname(path));
-  await hooks?.beforeResourceRename?.(path);
   const claim = join(
     dirname(path),
     `.${basename(path)}.cleaning-resource-${primePathComponent(recordId)}-${randomUUID()}`,
   );
   try {
-    await rename(path, claim);
+    await guardedRenameToClaim(
+      path,
+      claim,
+      chain,
+      before,
+      () => hooks?.beforeResourceRename?.(path) ?? Promise.resolve(),
+    );
   } catch (e) {
     actions.push(warning(path, `resource claim rename failed safely: ${String(e)}`));
     return false;
   }
   try {
     await hooks?.afterResourceRename?.(path, claim);
-    const after = await lstat(claim, { bigint: true });
-    if (before.dev !== after.dev || before.ino !== after.ino) {
-      await restoreClaimNoClobber(
-        path,
-        claim,
-        actions,
-        "resource identity changed while claimed",
-        chain,
-      );
-      return false;
-    }
-    if (!(await chainUnchanged(chain))) {
-      await restoreClaimNoClobber(
-        path,
-        claim,
-        actions,
-        "resource ancestor chain changed while claimed",
-        chain,
-      );
-      return false;
-    }
-    const again = await lstat(claim, { bigint: true });
-    if (after.dev !== again.dev || after.ino !== again.ino) {
-      await restoreClaimNoClobber(path, claim, actions, "claimed resource was swapped", chain);
-      return false;
-    }
-    await rm(claim, { recursive: after.isDirectory() });
+    if (!(await boundFile(claim, chain, before)))
+      return retainClaim(claim, actions, "resource namespace changed after claim callback");
+    await rm(claim, { recursive: before.isDirectory() });
     actions.push({
       kind: "resource-removed",
       path,
@@ -419,14 +368,7 @@ const removeClaimed = async (path, recordId, actions, hooks) => {
     syncDir(dirname(path));
     return true;
   } catch (e) {
-    await restoreClaimNoClobber(
-      path,
-      claim,
-      actions,
-      `resource quarantine transaction failed: ${String(e)}`,
-      chain,
-    );
-    return false;
+    return retainClaim(claim, actions, `resource quarantine transaction failed: ${String(e)}`);
   }
 };
 const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
@@ -444,16 +386,26 @@ const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
         if (e.code !== "ENOENT") throw e;
       }
       const parentChain = await captureChain(dirname(path));
-      let claimIdentity;
+      let sourceIdentity;
       try {
-        await rename(path, claim);
+        sourceIdentity = await lstat(path, { bigint: true });
+        await guardedRenameToClaim(
+          path,
+          claim,
+          parentChain,
+          sourceIdentity,
+          () => hooks?.beforeOwnershipRename?.(path, claim) ?? Promise.resolve(),
+        );
       } catch (e) {
         if (e.code === "ENOENT") return actions;
         throw e;
       }
+      let claimIdentity = sourceIdentity;
       let retain = true;
+      let protectedResourceChain;
       const claimStillBound = async () => {
         if (!(await chainUnchanged(parentChain))) return false;
+        if (protectedResourceChain && !(await chainUnchanged(protectedResourceChain))) return false;
         try {
           const current = await lstat(claim, { bigint: true });
           return (
@@ -465,15 +417,9 @@ const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
         }
       };
       try {
-        if (!(await chainUnchanged(parentChain)))
-          throw Error("ownership parent chain changed during record claim rename");
         const claimed = await lstat(claim, { bigint: true });
-        claimIdentity = {
-          dev: claimed.dev,
-          ino: claimed.ino,
-        };
-        if (!(await chainUnchanged(parentChain)))
-          throw Error("ownership parent chain changed while binding record claim");
+        if (!sameIdentity(claimed, sourceIdentity) || !(await chainUnchanged(parentChain)))
+          throw Error("ownership parent chain or claim changed after record claim rename");
         const s = claimed;
         if (!s.isFile() || s.isSymbolicLink())
           throw Error("claimed ownership record is not a regular file");
@@ -489,32 +435,32 @@ const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
           );
           return actions;
         }
+        const protectedResource = (r.kind ?? "thread") === "daemon" ? id.daemon : id.thread;
+        try {
+          protectedResourceChain = await captureChain(protectedResource);
+        } catch (e) {
+          if (e.code !== "ENOENT") throw e;
+        }
+        if (!(await claimStillBound()))
+          throw Error("ownership or resource namespace changed while binding cleanup transaction");
         r = {
           ...r,
           recordId: r.recordId ?? randomUUID(),
           operationId: r.operationId ?? randomUUID(),
         };
-        await atomicWrite(claim, r);
-        const normalizedClaim = await lstat(claim, { bigint: true });
-        claimIdentity = {
-          dev: normalizedClaim.dev,
-          ino: normalizedClaim.ino,
-        };
-        if (!(await claimStillBound()))
-          throw Error("ownership record namespace changed while normalizing record claim");
         const persist = async (p) => {
+          await hooks?.beforeProgressWrite?.(claim);
           if (!(await claimStillBound()))
             throw Error("ownership record namespace changed before cleanup progress write");
-          r = {
+          const next = {
             ...r,
             ...p,
           };
-          await atomicWrite(claim, r);
-          const rebound = await lstat(claim, { bigint: true });
-          claimIdentity = {
-            dev: rebound.dev,
-            ino: rebound.ino,
-          };
+          claimIdentity = await atomicWrite(claim, next, {
+            chain: parentChain,
+            identity: claimIdentity,
+          });
+          r = next;
           if (!(await claimStillBound()))
             throw Error("ownership record namespace changed during cleanup progress write");
         };
@@ -540,6 +486,10 @@ const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
             await cleanup.stopProcess(r.process, `${r.operationId}:process`);
           } catch (e) {
             actions.push(warning(path, `process stop threw: ${String(e)}`));
+            return actions;
+          }
+          if (!(await claimStillBound())) {
+            actions.push(warning(path, "ownership record namespace changed during process stop"));
             return actions;
           }
           await persist({ processStopped: true });
@@ -571,6 +521,10 @@ const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
             actions.push(warning(path, `RPC cleanup threw: ${String(e)}`));
             return actions;
           }
+          if (!(await claimStillBound())) {
+            actions.push(warning(path, "ownership record namespace changed during RPC cleanup"));
+            return actions;
+          }
           await persist({ rpcCleaned: true });
           actions.push({
             kind: "rpc-session-cleaned",
@@ -598,6 +552,10 @@ const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
             await cleanup.cleanupDaemonSession(r.daemonSessionId, `${r.operationId}:daemon`);
           } catch (e) {
             actions.push(warning(path, `daemon cleanup threw: ${String(e)}`));
+            return actions;
+          }
+          if (!(await claimStillBound())) {
+            actions.push(warning(path, "ownership record namespace changed during daemon cleanup"));
             return actions;
           }
           await persist({ daemonCleaned: true });
@@ -631,6 +589,7 @@ const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
             actions.push(warning(path, `exact resource cleanup failed: ${String(e)}`));
             return actions;
           }
+          protectedResourceChain = void 0;
           await persist({ resourcesCleaned: true });
         }
         if (!(await claimStillBound())) {
@@ -647,14 +606,10 @@ const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
         return actions;
       } finally {
         if (retain)
-          await restoreClaimNoClobber(
-            path,
+          retainClaim(
             claim,
             actions,
             "claimed ownership record retained without overwriting replacement",
-            parentChain,
-            void 0,
-            claimIdentity,
           );
       }
     });
@@ -743,25 +698,13 @@ const recoverPrimeOwnership = async (root, proof, cleanup, hooks) => {
           child.isFile() &&
           e.name.endsWith(".json.cleaning") &&
           identify(p)?.root === expected
-        ) {
-          const original = p.slice(0, -9);
-          if (
-            await restoreClaimNoClobber(
-              original,
-              p,
-              actions,
-              "recovered interrupted cleanup claim without clobbering active record",
-              chain,
-              hooks,
-              child,
-            )
-          )
-            try {
-              actions.push(...(await cleanupPrimeOwnership(original, proof, cleanup)));
-            } catch (error) {
-              actions.push(warning(original, `record cleanup threw: ${String(error)}`));
-            }
-        } else if (child.isFile() && e.name.includes(".tmp"))
+        )
+          retainClaim(
+            p,
+            actions,
+            "recovered interrupted cleanup claim without clobbering active record",
+          );
+        else if (child.isFile() && e.name.includes(".tmp"))
           actions.push(warning(p, "incomplete atomic write retained for inspection"));
       } catch (error) {
         actions.push(warning(p, `recovery child retained safely: ${String(error)}`));
@@ -931,8 +874,8 @@ try {
   );
   check(retryStops === 1, "partial cleanup stopped once");
   check(retryRpc === 1, "partial cleanup rpc attempted once");
-  await stat(retry.ownership);
-  check(true, "partial record retained");
+  await stat(`${retry.ownership}.cleaning`);
+  check(true, "partial claim retained");
   await cleanupPrimeOwnership(
     retry.ownership,
     {
@@ -949,11 +892,9 @@ try {
     },
   );
   check(retryStops === 1, "retry did not duplicate stop");
-  check(equal(retryRpc, 2), "failed rpc retried");
-  await stat(retry.ownership).then(
-    () => check(false, "retry record survived"),
-    () => check(true, "retry record removed"),
-  );
+  check(equal(retryRpc, 1), "failed rpc retained for recovery without unsafe retry");
+  await stat(`${retry.ownership}.cleaning`);
+  check(true, "retry claim remains retained");
   const mismatch = primeResourceLayout({
     home: homes[0],
     environmentId: "env",
@@ -980,8 +921,8 @@ try {
     ).some((x) => x.kind === "warning"),
     "identity mismatch throw warned",
   );
-  await stat(mismatch.ownership);
-  check(true, "identity mismatch record retained");
+  await stat(`${mismatch.ownership}.cleaning`);
+  check(true, "identity mismatch claim retained");
   continued = true;
   check(continued, "callback throw continuation practical");
   const bad = primeResourceLayout({
@@ -1035,8 +976,8 @@ try {
     },
   );
   check(
-    (await readdir(race.thread)).some((name) => name.includes("cleaning-resource")),
-    "raced replacement retained in quarantine",
+    (await readFile(join(race.session, "replacement"), "utf8")) === "visible",
+    "replacement namespace untouched",
   );
   await stat(displaced);
   check(true, "original raced resource retained");
@@ -1044,8 +985,8 @@ try {
     raceActions.some((x) => x.kind === "warning"),
     "raced replacement warning surfaced",
   );
-  await stat(race.ownership);
-  check(true, "raced ownership generation retained");
+  await stat(`${race.ownership}.cleaning`);
+  check(true, "raced ownership claim retained");
   const ancestorRace = primeResourceLayout({
     home: homes[0],
     environmentId: "env",
@@ -1080,6 +1021,44 @@ try {
     (await readdir(movedThread)).some((name) => name.includes("cleaning-resource")),
     "ancestor race retained directory claim",
   );
+  const proofRace = primeResourceLayout({
+    home: homes[0],
+    environmentId: "env",
+    instanceId: "proof-race",
+    threadId: "r",
+  });
+  await mkdir(proofRace.session, { recursive: true });
+  await writePrimeOwnership(proofRace.ownership, record("proof-race", "r", 9));
+  const proofOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-proof-outside-"));
+  const proofMoved = `${proofRace.thread}.moved`;
+  let proofStops = 0;
+  let proofRpc = 0;
+  await cleanupPrimeOwnership(
+    proofRace.ownership,
+    {
+      processMatches: async () => {
+        await rename(proofRace.thread, proofMoved);
+        await symlink(proofOutside, proofRace.thread);
+        return true;
+      },
+      rpcSessionMatches: async () => true,
+    },
+    {
+      stopProcess: async () => {
+        proofStops++;
+      },
+      cleanupRpcSession: async () => {
+        proofRpc++;
+      },
+    },
+  );
+  check(proofStops === 0, "process proof race performed no stop");
+  check(proofRpc === 0, "process proof race performed no RPC cleanup");
+  check((await readdir(proofOutside)).length === 0, "process proof race wrote nothing outside");
+  await stat(`${proofRace.ownership}.cleaning`);
+  check(true, "process proof race retained ownership claim");
+  await stat(join(proofMoved, "session"));
+  check(true, "process proof race retained moved source resource");
   const recoveryRace = primeResourceLayout({
     home: homes[0],
     environmentId: "env",

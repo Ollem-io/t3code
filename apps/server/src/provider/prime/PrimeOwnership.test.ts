@@ -111,7 +111,7 @@ describe("PrimeOwnership", () => {
       await cleanupPrimeOwnership(l.ownership, p, callbacks(e));
       if (name === "process") assert.deepStrictEqual(e, []);
       else assert.deepStrictEqual(e.slice(0, 1), ["stop:71"]);
-      await stat(l.ownership);
+      await stat(`${l.ownership}.cleaning`);
     }
     const home = await mkdtemp(join(tmpdir(), "prime-daemon-"));
     const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
@@ -131,7 +131,7 @@ describe("PrimeOwnership", () => {
       callbacks(e),
     );
     assert.deepStrictEqual(e, ["stop:71"]);
-    await stat(l.daemonOwnership);
+    await stat(`${l.daemonOwnership}.cleaning`);
   });
   it("durably avoids a second stop after partial cleanup retry", async () => {
     const home = await mkdtemp(join(tmpdir(), "prime-retry-"));
@@ -193,9 +193,9 @@ describe("PrimeOwnership", () => {
       actions.some((x) => x.kind === "warning" && x.warning.reason.includes("proof threw")),
     );
     assert.ok(stopped.includes(71));
-    await stat(a.ownership);
-    await stat(c.ownership);
-    await stat(f.ownership);
+    await stat(`${a.ownership}.cleaning`);
+    await stat(`${c.ownership}.cleaning`);
+    await stat(`${f.ownership}.cleaning`);
   });
   it("persists RPC success independently so a retry never repeats it", async () => {
     const home = await mkdtemp(join(tmpdir(), "prime-rpc-marker-"));
@@ -277,6 +277,99 @@ describe("PrimeOwnership", () => {
       ),
     );
   });
+  it("does not act when process proof swaps the selected thread ancestor", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-process-thread-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await mkdir(l.session, { recursive: true });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const outside = await mkdtemp(join(tmpdir(), "prime-process-thread-outside-"));
+    const moved = `${l.thread}.moved`;
+    let stops = 0;
+    let rpc = 0;
+    await cleanupPrimeOwnership(
+      l.ownership,
+      {
+        ...proofs,
+        processMatches: async () => {
+          await rename(l.thread, moved);
+          await symlink(outside, l.thread);
+          return true;
+        },
+      },
+      {
+        stopProcess: async () => {
+          stops++;
+        },
+        cleanupRpcSession: async () => {
+          rpc++;
+        },
+      },
+    );
+    assert.strictEqual(stops, 0);
+    assert.strictEqual(rpc, 0);
+    assert.deepStrictEqual(await readdir(outside), []);
+    await stat(join(moved, "session"));
+    await stat(`${l.ownership}.cleaning`);
+  });
+  it("aborts an ownership claim rename if its parent changes in the pre-rename hook", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-record-rename-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const outside = await mkdtemp(join(tmpdir(), "prime-record-rename-outside-"));
+    const moved = `${l.ownershipDirectory}.moved`;
+    const actions = await cleanupPrimeOwnership(l.ownership, proofs, callbacks([]), {
+      beforeOwnershipRename: async () => {
+        await rename(l.ownershipDirectory, moved);
+        await symlink(outside, l.ownershipDirectory);
+      },
+    });
+    assert.deepStrictEqual(await readdir(outside), []);
+    await stat(l.ownership.replace(l.ownershipDirectory, moved));
+    assert.ok(actions.some((x) => x.kind === "warning"));
+  });
+
+  it("retains the moved claim when a progress-write hook swaps its parent", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-progress-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const outside = await mkdtemp(join(tmpdir(), "prime-progress-outside-"));
+    const moved = `${l.ownershipDirectory}.moved`;
+    let swapped = false;
+    const actions = await cleanupPrimeOwnership(l.ownership, proofs, callbacks([]), {
+      beforeProgressWrite: async () => {
+        if (swapped) return;
+        swapped = true;
+        await rename(l.ownershipDirectory, moved);
+        await symlink(outside, l.ownershipDirectory);
+      },
+    });
+    assert.deepStrictEqual(await readdir(outside), []);
+    await stat(`${l.ownership.replace(l.ownershipDirectory, moved)}.cleaning`);
+    assert.ok(actions.some((x) => x.kind === "warning"));
+  });
+
+  it("does not continue to RPC after stop callback changes the protected namespace", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-stop-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await mkdir(l.session, { recursive: true });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const outside = await mkdtemp(join(tmpdir(), "prime-stop-outside-"));
+    const moved = `${l.thread}.moved`;
+    let rpc = 0;
+    await cleanupPrimeOwnership(l.ownership, proofs, {
+      stopProcess: async () => {
+        await rename(l.thread, moved);
+        await symlink(outside, l.thread);
+      },
+      cleanupRpcSession: async () => {
+        rpc++;
+      },
+    });
+    assert.strictEqual(rpc, 0);
+    assert.deepStrictEqual(await readdir(outside), []);
+    await stat(`${l.ownership}.cleaning`);
+  });
+
   it("rejects a recovery root reached through a symlink ancestor", async () => {
     const outside = await mkdtemp(join(tmpdir(), "prime-attacker-"));
     const real = primeResourceLayout({
@@ -336,17 +429,13 @@ describe("PrimeOwnership", () => {
         await writeFile(join(path, "replacement"), "visible");
       },
     });
-    assert.isFalse(
-      await stat(l.session).then(
-        () => true,
-        () => false,
-      ),
-    );
-    assert.ok((await readdir(l.thread)).some((name) => name.includes("cleaning-resource")));
+    assert.strictEqual(await readFile(join(l.session, "replacement"), "utf8"), "visible");
     await stat(displaced);
-    await stat(l.ownership);
+    await stat(`${l.ownership}.cleaning`);
     assert.ok(
-      actions.some((x) => x.kind === "warning" && x.warning.reason.includes("identity changed")),
+      actions.some(
+        (x) => x.kind === "warning" && x.warning.reason.includes("changed before destructive"),
+      ),
     );
   });
   it("retains quarantine and never touches outside when an ancestor changes after rename", async () => {
@@ -370,10 +459,12 @@ describe("PrimeOwnership", () => {
     assert.ok((await readdir(moved)).some((name) => name.includes("cleaning-resource")));
     assert.ok(
       actions.some(
-        (x) => x.kind === "warning" && x.warning.reason.includes("quarantine transaction failed"),
+        (x) =>
+          x.kind === "warning" &&
+          x.warning.reason.includes("namespace changed after claim callback"),
       ),
     );
-    await stat(l.ownership);
+    await stat(`${l.ownership}.cleaning`);
   });
 
   it("recovery enumerates and safely retains a bound directory claim without copy restoration", async () => {
@@ -428,26 +519,15 @@ describe("PrimeOwnership", () => {
     );
   });
 
-  it("retains an interrupted record claim if its parent changes before restore", async () => {
-    const home = await mkdtemp(join(tmpdir(), "prime-recovery-claim-race-"));
+  it("retains an interrupted record claim instead of hard-link restoration", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-recovery-claim-retained-"));
     const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
     await writePrimeOwnership(l.ownership, rec("one", "a"));
     const claim = `${l.ownership}.cleaning`;
     await rename(l.ownership, claim);
-    const outside = await mkdtemp(join(tmpdir(), "prime-recovery-claim-outside-"));
-    const ownership = join(l.instance, "ownership");
-    const moved = `${ownership}.moved`;
-    let swapped = false;
-    const actions = await recoverPrimeOwnership(l.root, proofs, callbacks([]), {
-      beforeClaimRestoreLink: async () => {
-        if (swapped) return;
-        swapped = true;
-        await rename(ownership, moved);
-        await symlink(outside, ownership);
-      },
-    });
-    assert.deepStrictEqual(await readdir(outside), []);
-    await stat(claim.replace(ownership, moved));
+    const actions = await recoverPrimeOwnership(l.root, proofs, callbacks([]));
+    await stat(claim);
+    await missing(l.ownership);
     assert.ok(
       actions.some(
         (x) => x.kind === "warning" && x.warning.reason.includes("retained uniquely named claim"),
