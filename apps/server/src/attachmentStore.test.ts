@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  attachmentBelongsToThread,
   attachmentRelativePath,
   createAttachmentId,
   parseThreadSegmentFromAttachmentId,
@@ -42,7 +43,7 @@ describe("attachmentStore", () => {
     if (!attachmentId) {
       return;
     }
-    expect(parseThreadSegmentFromAttachmentId(attachmentId)).toBe("thread-foo");
+    expect(parseThreadSegmentFromAttachmentId(attachmentId)).toMatch(/^thread-foo-[0-9a-f]{12}$/);
   });
 
   it("resolves attachment path by id using the extension that exists on disk", () => {
@@ -93,6 +94,15 @@ describe("attachmentStore", () => {
       mimeType: "text/plain",
       sizeBytes: 4,
     })).toMatch(/\.log$/);
+  });
+
+  it("keeps colliding readable thread slugs cryptographically distinct", () => {
+    const first = createAttachmentId("a/b");
+    const second = createAttachmentId("a-b");
+    expect(first).toBeTruthy(); expect(second).toBeTruthy();
+    expect(parseThreadSegmentFromAttachmentId(first!)).not.toBe(parseThreadSegmentFromAttachmentId(second!));
+    expect(attachmentBelongsToThread(first!, "a/b")).toBe(true);
+    expect(attachmentBelongsToThread(first!, "a-b")).toBe(false);
   });
 
 });

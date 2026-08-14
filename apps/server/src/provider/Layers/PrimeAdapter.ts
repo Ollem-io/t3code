@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
-import { extname, isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -20,6 +20,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
+
+import { attachmentBelongsToThread, resolveAttachmentPath } from "../../attachmentStore.ts";
 
 import {
   ProviderAdapterProcessError,
@@ -88,33 +90,13 @@ const sanitizedEnvironment = (home: string, source: Readonly<NodeJS.ProcessEnv>)
   };
 };
 
-const threadAttachmentPrefix = (threadId: ThreadId) => threadId
-  .trim().toLowerCase().replace(/[^a-z0-9_-]+/gi, "-").replace(/-+/g, "-")
-  .replace(/^[-_]+|[-_]+$/g, "").slice(0, 80).replace(/[-_]+$/g, "");
-
-const IMAGE_EXTENSION_BY_MIME: Readonly<Record<string, string>> = {
-  "image/avif": ".avif", "image/bmp": ".bmp", "image/gif": ".gif", "image/heic": ".heic",
-  "image/heif": ".heif", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
-  "image/svg+xml": ".svg", "image/tiff": ".tiff", "image/webp": ".webp",
-};
-const TEXT_EXTENSIONS = [".txt", ".md", ".log", ".json", ".xml", ".csv", ".yaml", ".yml", ".js", ".ts"] as const;
 const resolvePrimeAttachmentPath = (
   attachmentsDir: string,
   threadId: ThreadId,
   attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
-) => {
-  const prefix = threadAttachmentPrefix(threadId);
-  const match = attachment.id.toLowerCase().match(/^(.+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-  if (!prefix || match?.[1] !== prefix) return undefined;
-  const nameExtension = extname(attachment.name).toLowerCase();
-  const selected = attachment.type === "image"
-    ? IMAGE_EXTENSION_BY_MIME[attachment.mimeType.toLowerCase()]
-    : TEXT_EXTENSIONS.includes(nameExtension as typeof TEXT_EXTENSIONS[number]) ? nameExtension : ".txt";
-  if (!selected) return undefined;
-  const root = resolve(attachmentsDir);
-  const path = resolve(root, `${attachment.id}${selected}`);
-  return path.startsWith(`${root}${sep}`) ? path : undefined;
-};
+) => attachmentBelongsToThread(attachment.id, threadId)
+  ? resolveAttachmentPath({ attachmentsDir, attachment }) ?? undefined
+  : undefined;
 
 export const makePrimeAdapter = (
   settings: PrimeAgentSettings,

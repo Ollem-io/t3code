@@ -21,18 +21,17 @@ const ATTACHMENT_ID_PATTERN = new RegExp(
 );
 
 export function toSafeThreadAttachmentSegment(threadId: string): string | null {
-  const segment = threadId
-    .trim()
+  const canonicalThreadId = threadId.trim();
+  const readable = canonicalThreadId
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/gi, "-")
     .replace(/-+/g, "-")
     .replace(/^[-_]+|[-_]+$/g, "")
-    .slice(0, ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS)
+    .slice(0, ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS - 13)
     .replace(/[-_]+$/g, "");
-  if (segment.length === 0) {
-    return null;
-  }
-  return segment;
+  if (readable.length === 0) return null;
+  const digest = NodeCrypto.createHash("sha256").update(canonicalThreadId, "utf8").digest("hex").slice(0, 12);
+  return `${readable}-${digest}`;
 }
 
 export function createAttachmentId(threadId: string): string | null {
@@ -53,6 +52,12 @@ export function parseThreadSegmentFromAttachmentId(attachmentId: string): string
     return null;
   }
   return match[1]?.toLowerCase() ?? null;
+}
+
+export function attachmentBelongsToThread(attachmentId: string, threadId: string): boolean {
+  const actual = parseThreadSegmentFromAttachmentId(attachmentId);
+  const expected = toSafeThreadAttachmentSegment(threadId);
+  return actual !== null && expected !== null && actual === expected;
 }
 
 export function attachmentRelativePath(attachment: ChatAttachment): string {
