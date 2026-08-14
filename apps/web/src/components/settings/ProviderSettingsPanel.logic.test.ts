@@ -7,6 +7,8 @@ import {
   resolvePrimaryOperateAccess,
   resolveRemoteOperateAccess,
   resolveSelectedProviderEnvironmentId,
+  providerConfirmationCopy,
+  primeSetupCopy,
 } from "./ProviderSettingsPanel.logic";
 
 const primaryId = EnvironmentId.make("primary");
@@ -256,5 +258,22 @@ describe("remote operate access", () => {
         hasError: false,
       }),
     ).toBe("granted");
+  });
+});
+
+
+describe("Prime Agent settings presentation", () => {
+  it("requires explicit scoped-impact confirmation", () => {
+    const copy = providerConfirmationCopy("remove", { activeThreads: 1, boundThreads: 2 });
+    expect(copy.requiresConfirmation).toBe(true);
+    expect(copy.description).toContain("T3-owned sessions stopped");
+    expect(copy.description).toContain("3 threads retained but unavailable");
+    expect(copy.description).toContain("Credentials untouched");
+  });
+  it("presents host setup states without secrets", () => {
+    expect(primeSetupCopy({ installed: false, compatibility: "unknown", stale: false, enabled: true }).headline).toBe("Setup required");
+    expect(primeSetupCopy({ installed: true, compatibility: "incompatible", stale: false, enabled: true }).headline).toBe("Incompatible");
+    expect(primeSetupCopy({ installed: true, compatibility: "compatible", stale: true, enabled: true }).headline).toBe("Needs refresh");
+    expect(primeSetupCopy({ installed: true, compatibility: "compatible", stale: false, enabled: false }).headline).toBe("Disabled");
   });
 });

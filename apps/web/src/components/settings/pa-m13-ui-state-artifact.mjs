@@ -16,3 +16,16 @@ export function derivePrimeHealthState(snapshot) {
     unavailableMessage: snapshot?.unavailableReason ?? "This provider is unavailable on the bound device.",
   };
 }
+
+export function providerConfirmationCopy(action, impact = { activeThreads: 0, boundThreads: 0 }) {
+  const label = action[0].toUpperCase() + action.slice(1);
+  const count = impact.activeThreads + impact.boundThreads;
+  return { title: `${label} provider instance?`, requiresConfirmation: true, confirmLabel: label, description: count ? `T3-owned sessions stopped. ${count} thread${count === 1 ? "" : "s"} retained but unavailable. Credentials untouched.` : "Threads retained. Credentials untouched." };
+}
+export function primeSetupPresentation({ installed, compatibility = "unknown", stale = false, enabled = true }) {
+  if (!enabled) return { headline: "Disabled", detail: "Prime Agent is disabled for new T3 Code sessions." };
+  if (!installed) return { headline: "Setup required", detail: "Install Prime Agent on this host, then refresh status." };
+  if (compatibility === "incompatible") return { headline: "Incompatible", detail: "This Prime Agent version is incompatible with T3 Code. Update Prime Agent, then refresh status." };
+  if (stale) return { headline: "Needs refresh", detail: "Prime Agent model information is stale. Refresh status to check again." };
+  return { headline: "Ready", detail: "Prime Agent is available on this host." };
+}

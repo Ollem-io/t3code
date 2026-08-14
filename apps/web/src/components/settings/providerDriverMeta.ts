@@ -4,9 +4,11 @@ import {
   CursorSettings,
   GrokSettings,
   OpenCodeSettings,
+  PrimeAgentSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
+import { TerminalIcon } from "lucide-react";
 import { ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
 
 type ProviderSettingsSchema = {
@@ -35,7 +37,12 @@ export interface ProviderClientDefinition {
 }
 
 export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
-  { value: ProviderDriverKind.make("prime-agent"), label: "Prime Agent", icon: OpenCodeIcon, settingsSchema: PrimeAgentSettings },
+  {
+    value: ProviderDriverKind.make("prime-agent"),
+    label: "Prime Agent",
+    icon: TerminalIcon,
+    settingsSchema: PrimeAgentSettings,
+  },
   {
     value: ProviderDriverKind.make("codex"),
     label: "Codex",

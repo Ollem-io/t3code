@@ -27,6 +27,7 @@ import { cn } from "../../lib/utils";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
+import { AlertDialog, AlertDialogClose, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
@@ -394,6 +395,7 @@ export function ProviderInstanceCard({
   onRunUpdate,
   isUpdating = false,
 }: ProviderInstanceCardProps) {
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
   // "disabled"/"warning" based on the local `enabled` flag so the dot
@@ -567,7 +569,7 @@ export function ProviderInstanceCard({
                   size="icon-xs"
                   variant="ghost"
                   className="size-5 rounded-sm p-0 text-muted-foreground hover:text-destructive"
-                  onClick={onDelete}
+                  onClick={() => setDeleteConfirmationOpen(true)}
                   aria-label={`Delete provider instance ${instanceId}`}
                 >
                   <Trash2Icon className="size-3" />
@@ -811,6 +813,20 @@ export function ProviderInstanceCard({
           </div>
         </CollapsibleContent>
       </Collapsible>
+      <AlertDialog open={deleteConfirmationOpen} onOpenChange={setDeleteConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove provider instance?</AlertDialogTitle>
+            <AlertDialogDescription>
+              T3-owned sessions for this instance will be stopped. Bound threads are retained but may become unavailable. Credentials outside T3 Code are untouched.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline">Cancel</Button>} />
+            <AlertDialogClose render={<Button variant="destructive" onClick={() => onDelete?.()}>Remove instance</Button>} />
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
