@@ -2943,4 +2943,38 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
     expect(thread?.session?.activeTurnId).toBeNull();
   });
+  it("serializes concurrent distinct turn starts and rejects the loser", async () => {
+    const releaseStart = await Effect.runPromise(Deferred.make<void>());
+    const harness = await createHarness({
+      startSessionEffect: (session) => Deferred.await(releaseStart).pipe(Effect.as(session)),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const dispatch = (commandId: string, messageId: string) =>
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(commandId),
+        threadId: ThreadId.make("thread-1"),
+        message: { messageId: asMessageId(messageId), role: "user", text: commandId, attachments: [] },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      });
+
+    const first = Effect.runPromise(dispatch("cmd-race-first", "message-race-first"));
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    const second = Effect.runPromise(dispatch("cmd-race-second", "message-race-second"));
+    await Effect.runPromise(Deferred.succeed(releaseStart, undefined));
+    await Promise.all([first, second]);
+    await harness.drain;
+
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.activities.some((activity) =>
+      activity.kind === "provider.turn.start.failed" &&
+      String(activity.payload.detail).includes("authoritative turn start in flight"),
+    )).toBe(true);
+  });
+
 });

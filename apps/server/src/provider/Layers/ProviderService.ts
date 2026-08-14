@@ -1033,7 +1033,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       payload: rawInput,
     });
     if (input.numTurns === 0) {
-      return;
+      return { rewound: false };
     }
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
@@ -1049,11 +1049,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.rollback_turns": input.numTurns,
       });
+      if (routed.adapter.capabilities.conversationRollback === "unsupported") {
+        return { rewound: false } as const;
+      }
       yield* routed.adapter.rollbackThread(routed.threadId, input.numTurns);
       yield* analytics.record("provider.conversation.rolled_back", {
         provider: routed.adapter.provider,
         turns: input.numTurns,
       });
+      return { rewound: true } as const;
     }).pipe(
       withMetrics({
         counter: providerTurnsTotal,

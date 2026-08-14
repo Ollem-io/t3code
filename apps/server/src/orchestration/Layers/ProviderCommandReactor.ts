@@ -337,6 +337,10 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  // A turn start remains authoritative until its provider send settles. This
+  // closes the gap between session startup and the provider request itself,
+  // where concurrent client commands could otherwise both pass preconditions.
+  const inFlightTurnStartThreads = new Set<string>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -1081,6 +1085,20 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    const inFlightKey = String(event.payload.threadId);
+    if (inFlightTurnStartThreads.has(inFlightKey)) {
+      yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.start.failed",
+        summary: "Provider turn start rejected",
+        detail: `Thread '${event.payload.threadId}' already has an authoritative turn start in flight.`,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+      return;
+    }
+    inFlightTurnStartThreads.add(inFlightKey);
+
     const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
     if (!message || message.role !== "user") {
       yield* appendProviderFailureActivity({
@@ -1091,6 +1109,7 @@ const make = Effect.gen(function* () {
         turnId: null,
         createdAt: event.payload.createdAt,
       });
+      inFlightTurnStartThreads.delete(inFlightKey);
       return;
     }
 
@@ -1130,6 +1149,7 @@ const make = Effect.gen(function* () {
         return Effect.void;
       }
       const detail = formatFailureDetail(cause);
+      inFlightTurnStartThreads.delete(String(event.payload.threadId));
       return setThreadSessionErrorOnTurnStartFailure({
         threadId: event.payload.threadId,
         detail,
@@ -1176,12 +1196,17 @@ const make = Effect.gen(function* () {
     );
 
     if (Option.isNone(sendTurnRequest)) {
+      inFlightTurnStartThreads.delete(inFlightKey);
       return;
     }
 
     yield* providerService
       .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+      .pipe(
+        Effect.catchCause(recoverTurnStartFailure),
+        Effect.ensuring(Effect.sync(() => inFlightTurnStartThreads.delete(inFlightKey))),
+        Effect.forkScoped,
+      );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (

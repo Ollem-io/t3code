@@ -1700,7 +1700,7 @@ export function makeOpenCodeAdapter(
     return {
       provider: PROVIDER,
       capabilities: {
-        sessionModelSwitch: "in-session",
+        sessionModelSwitch: "in-session", conversationRollback: "supported",
       },
       startSession,
       sendTurn,
