@@ -18,7 +18,7 @@ createInterface({ input: process.stdin }).on("line", line => { const c=JSON.pars
  * @param {string} home
  * @param {NodeJS.ProcessEnv} source
  */
-const sanitize = (home, source) => Object.fromEntries([
+const sanitize = (home: string, source: NodeJS.ProcessEnv) => Object.fromEntries([
   ...Object.entries(source).filter(([k,v]) => v !== undefined && /^(?:PATH|PATHEXT|SystemRoot|WINDIR|ComSpec|LANG|LC_[A-Za-z0-9_]+)$/i.test(k)),
   ["HOME",home],["USERPROFILE",home],["XDG_CONFIG_HOME",`${home}/.config`],["XDG_DATA_HOME",`${home}/.local/share`],["XDG_STATE_HOME",`${home}/.local/state`],["TMPDIR",`${home}/tmp`],["TMP",`${home}/tmp`],["TEMP",`${home}/tmp`],
 ]);
