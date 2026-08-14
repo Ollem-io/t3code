@@ -38,6 +38,13 @@ import { PrimeEventNormalizer } from "../prime/PrimeEventNormalizer.ts";
 
 const PROVIDER = ProviderDriverKind.make("prime-agent");
 const HANDSHAKE_TIMEOUT_MS = 5_000;
+const MAX_PENDING_REQUESTS = 128;
+const MAX_NATIVE_STRING = 4_096;
+const MAX_SELECT_OPTIONS = 64;
+const cleanNative = (value: string, fallback = ""): string => {
+  const text = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  return text.slice(0, MAX_NATIVE_STRING) || fallback;
+};
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 type SessionContext = {
@@ -49,6 +56,7 @@ type SessionContext = {
   thinkingLevel: string | undefined;
   readonly normalizer: PrimeEventNormalizer;
   eventDrain: Promise<void> | undefined;
+  readonly pendingRequests: Map<string, { readonly method: "select" | "confirm" | "input" | "editor"; readonly title: string; readonly options: ReadonlyArray<string> }>;
 };
 type PendingStart = { readonly key: string; readonly promise: Promise<ProviderSession> };
 
@@ -179,11 +187,28 @@ export const makePrimeAdapter = (
           thinkingLevel: undefined,
           normalizer,
           eventDrain: undefined,
+          pendingRequests: new Map(),
         };
         sessions.set(input.threadId, context);
         context.eventDrain = (async () => {
           for await (const envelope of client.events()) {
-            for (const event of normalizer.drain(envelope)) {
+            let canonicalEnvelope = true;
+            if (envelope._tag === "known-event" && envelope.value.type === "extension_ui_request") {
+              const request = envelope.value;
+              const supported = request.method === "select" || request.method === "confirm" || request.method === "input" || request.method === "editor";
+              if (!supported || context.pendingRequests.has(request.id) || context.pendingRequests.size >= MAX_PENDING_REQUESTS) {
+                canonicalEnvelope = false;
+                await client.command({ type: "extension_ui_response", id: request.id, cancelled: true }).catch(() => undefined);
+                for (const event of normalizer.cancelled(request.id, !supported ? "Prime Agent interactive request was cancelled because this method is unsupported." : "Prime Agent interactive request was cancelled because the request limit was reached.")) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+              } else {
+                context.pendingRequests.set(request.id, {
+                  method: request.method,
+                  title: cleanNative(request.title, "Prime Agent request"),
+                  options: request.method === "select" ? request.options.slice(0, MAX_SELECT_OPTIONS).map((x) => cleanNative(x, "Option")) : [],
+                });
+              }
+            }
+            for (const event of canonicalEnvelope ? normalizer.drain(envelope) : []) {
               await Effect.runPromise(Queue.offer(runtimeEvents, event));
             }
           }
@@ -193,6 +218,7 @@ export const makePrimeAdapter = (
           await context.eventDrain;
           if (sessions.get(input.threadId) !== context) return;
           sessions.delete(input.threadId);
+          context.pendingRequests.clear();
           const graceful = terminal.kind === "exit" && terminal.code === 0;
           const reason =
             terminal.kind === "exit" && terminal.code !== null
@@ -323,6 +349,7 @@ export const makePrimeAdapter = (
           sessions.delete(threadId);
           await closeContext(context);
           await context.eventDrain;
+          context.pendingRequests.clear();
           for (const event of context.normalizer.stop("Prime Agent session was stopped.")) {
             await Effect.runPromise(Queue.offer(runtimeEvents, event));
           }
@@ -533,6 +560,46 @@ export const makePrimeAdapter = (
               }),
       });
 
+    const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (threadId) =>
+      Effect.tryPromise({
+        try: async () => {
+          const context = requireContext(threadId);
+          await expectSuccess(context, { type: "abort" });
+          for (const event of context.normalizer.abort("Prime Agent turn was interrupted.")) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+        },
+        catch: (cause) => new ProviderAdapterProcessError({ provider: PROVIDER, threadId, detail: "Prime Agent interrupt failed.", cause }),
+      });
+
+    const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (threadId, requestId, decision) =>
+      Effect.tryPromise({
+        try: async () => {
+          const context = requireContext(threadId); const id = String(requestId); const pending = context.pendingRequests.get(id);
+          if (!pending || pending.method !== "confirm") throw new Error("Interactive request is not a confirmation.");
+          const value = decision === "accept" || decision === "acceptForSession";
+          await expectSuccess(context, value ? { type: "extension_ui_response", id, confirmed: true } : { type: "extension_ui_response", id, cancelled: true });
+          context.pendingRequests.delete(id);
+          for (const event of context.normalizer.resolved(id, "request", { decision: value ? decision : "cancel" })) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+        },
+        catch: (cause) => new ProviderAdapterProcessError({ provider: PROVIDER, threadId, detail: "Prime Agent approval response failed.", cause }),
+      });
+
+    const respondToUserInput: ProviderAdapterShape<ProviderAdapterError>["respondToUserInput"] = (threadId, requestId, answers) =>
+      Effect.tryPromise({
+        try: async () => {
+          const context = requireContext(threadId); const id = String(requestId); const pending = context.pendingRequests.get(id);
+          if (!pending || pending.method === "confirm") throw new Error("Interactive request is not user input.");
+          if (!Object.prototype.hasOwnProperty.call(answers, id)) throw new Error("Prime Agent input response must name the request id.");
+          const raw = answers[id];
+          const value = Array.isArray(raw) ? raw[0] : raw;
+          if (typeof value !== "string" || value.length > MAX_NATIVE_STRING) throw new Error("Prime Agent input response must be a bounded string.");
+          const clean = cleanNative(value); if (pending.method === "select" && !pending.options.includes(clean)) throw new Error("Prime Agent select answer is invalid.");
+          await expectSuccess(context, { type: "extension_ui_response", id, value: clean });
+          context.pendingRequests.delete(id);
+          for (const event of context.normalizer.resolved(id, "user-input", { answers: { [id]: clean } })) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+        },
+        catch: (cause) => new ProviderAdapterProcessError({ provider: PROVIDER, threadId, detail: "Prime Agent user input response failed.", cause }),
+      });
+
     const unsupported = (operation: string) =>
       Effect.fail(
         new ProviderAdapterValidationError({
@@ -573,9 +640,9 @@ export const makePrimeAdapter = (
       capabilities: { sessionModelSwitch: "in-session" },
       startSession,
       sendTurn,
-      interruptTurn: () => unsupported("interruptTurn"),
-      respondToRequest: () => unsupported("respondToRequest"),
-      respondToUserInput: () => unsupported("respondToUserInput"),
+      interruptTurn,
+      respondToRequest,
+      respondToUserInput,
       stopSession,
       listSessions: () => Effect.succeed(Array.from(sessions.values(), ({ session }) => session)),
       hasSession: (threadId) => Effect.succeed(sessions.has(threadId)),
