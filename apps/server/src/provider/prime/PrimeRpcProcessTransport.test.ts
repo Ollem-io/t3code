@@ -8,16 +8,26 @@ const fixture = fileURLToPath(
 );
 
 describe("PrimeRpcProcessTransport", () => {
-  it("drains adversarial child stdout while its bounded event queue is unread", async () => {
+  it("fails closed without silently dropping when its bounded event queue is unread", async () => {
     const client = new PrimeRpcClient(
       spawnPrimeRpcTransport(process.execPath, [fixture, "--mode", "rpc", "--adversarial"]),
       { requestIdPrefix: "process", maxQueuedEvents: 1 },
     );
-    const first = client.command({ type: "get_state" });
-    const second = client.command({ type: "get_state" });
-    assert.strictEqual((await first).id, "process-1");
-    assert.strictEqual((await second).id, "process-2");
+    const reason = async (request: Promise<unknown>) => {
+      try {
+        await request;
+        return "resolved";
+      } catch (error) {
+        return error instanceof Error && "reason" in error ? error.reason : "unknown";
+      }
+    };
+    const outcomes = await Promise.all([
+      reason(client.command({ type: "get_state" })),
+      reason(client.command({ type: "get_state" })),
+    ]);
+    assert.deepStrictEqual(outcomes, ["resolved", "protocol"]);
     assert.strictEqual(client.diagnostics().droppedEvents, 1);
+    assert.strictEqual(client.diagnostics().closed, true);
     client.close();
   });
 });

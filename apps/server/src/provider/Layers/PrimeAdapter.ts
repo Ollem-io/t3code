@@ -19,6 +19,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
+import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 
 import { attachmentBelongsToThread, resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -31,10 +32,9 @@ import {
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { PrimeRpcClient } from "../prime/PrimeRpcClient.ts";
-import {
-  spawnPrimeRpcTransport,
-} from "../prime/PrimeRpcProcessTransport.ts";
+import { spawnPrimeRpcTransport } from "../prime/PrimeRpcProcessTransport.ts";
 import { primeResourceLayout } from "../prime/PrimeResourceLayout.ts";
+import { PrimeEventNormalizer } from "../prime/PrimeEventNormalizer.ts";
 
 const PROVIDER = ProviderDriverKind.make("prime-agent");
 const HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -47,6 +47,8 @@ type SessionContext = {
   readonly transport: ReturnType<typeof spawnPrimeRpcTransport>;
   selectedModel: { readonly provider: string; readonly modelId: string } | undefined;
   thinkingLevel: string | undefined;
+  readonly normalizer: PrimeEventNormalizer;
+  eventDrain: Promise<void> | undefined;
 };
 type PendingStart = { readonly key: string; readonly promise: Promise<ProviderSession> };
 
@@ -71,7 +73,10 @@ const startKey = (input: ProviderSessionStartInput, cwd: string) =>
     nativeIdentity: input.modelSelection?.nativeIdentity,
   });
 
-const sanitizedEnvironment = (home: string, source: Readonly<NodeJS.ProcessEnv>): NodeJS.ProcessEnv => {
+const sanitizedEnvironment = (
+  home: string,
+  source: Readonly<NodeJS.ProcessEnv>,
+): NodeJS.ProcessEnv => {
   const result: NodeJS.ProcessEnv = {};
   const allowed = /^(?:PATH|PATHEXT|SystemRoot|WINDIR|ComSpec|LANG|LC_[A-Za-z0-9_]+)$/i;
   for (const [key, value] of Object.entries(source)) {
@@ -94,9 +99,10 @@ const resolvePrimeAttachmentPath = (
   attachmentsDir: string,
   threadId: ThreadId,
   attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
-) => attachmentBelongsToThread(attachment.id, threadId)
-  ? resolveAttachmentPath({ attachmentsDir, attachment }) ?? undefined
-  : undefined;
+) =>
+  attachmentBelongsToThread(attachment.id, threadId)
+    ? (resolveAttachmentPath({ attachmentsDir, attachment }) ?? undefined)
+    : undefined;
 
 export const makePrimeAdapter = (
   settings: PrimeAgentSettings,
@@ -106,6 +112,7 @@ export const makePrimeAdapter = (
     const launch = options.launch ?? spawnPrimeRpcTransport;
     const sessions = new Map<ThreadId, SessionContext>();
     const pending = new Map<ThreadId, PendingStart>();
+    const runtimeEvents = yield* Queue.bounded<ProviderRuntimeEvent>(1_024);
     let closed = false;
 
     const closeContext = async (context: SessionContext) => {
@@ -129,11 +136,12 @@ export const makePrimeAdapter = (
       await NodeFSP.mkdir(layout.session, { recursive: true, mode: 0o700 });
       const env = sanitizedEnvironment(layout.instance, options.environment ?? process.env);
       await NodeFSP.mkdir(env.TMPDIR!, { recursive: true, mode: 0o700 });
-      if (closed) throw new ProviderAdapterValidationError({
-        provider: PROVIDER,
-        operation: "startSession",
-        issue: "Prime Agent adapter is closed.",
-      });
+      if (closed)
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "Prime Agent adapter is closed.",
+        });
       const transport = launch(
         settings.binaryPath,
         ["--mode", "rpc", "--session-dir", layout.session],
@@ -145,7 +153,8 @@ export const makePrimeAdapter = (
       });
       try {
         const response = await client.command({ type: "get_state" });
-        if (!response.success || response.command !== "get_state") throw new Error("get_state failed");
+        if (!response.success || response.command !== "get_state")
+          throw new Error("get_state failed");
         if (closed) throw new Error("adapter closed during bootstrap");
         const session: ProviderSession = {
           provider: PROVIDER,
@@ -158,12 +167,43 @@ export const makePrimeAdapter = (
           createdAt: timestamp,
           updatedAt: timestamp,
         };
+        const normalizer = new PrimeEventNormalizer(input.threadId, {
+          providerInstanceId: options.instanceId,
+        });
         const context: SessionContext = {
-          key, session, client, transport, selectedModel: undefined, thinkingLevel: undefined,
+          key,
+          session,
+          client,
+          transport,
+          selectedModel: undefined,
+          thinkingLevel: undefined,
+          normalizer,
+          eventDrain: undefined,
         };
         sessions.set(input.threadId, context);
-        void transport.terminal.then(() => {
-          if (sessions.get(input.threadId) === context) sessions.delete(input.threadId);
+        context.eventDrain = (async () => {
+          for await (const envelope of client.events()) {
+            for (const event of normalizer.drain(envelope)) {
+              await Effect.runPromise(Queue.offer(runtimeEvents, event));
+            }
+          }
+        })();
+        void transport.terminal.then(async (terminal) => {
+          if (sessions.get(input.threadId) !== context) return;
+          await context.eventDrain;
+          if (sessions.get(input.threadId) !== context) return;
+          sessions.delete(input.threadId);
+          const graceful = terminal.kind === "exit" && terminal.code === 0;
+          const reason =
+            terminal.kind === "exit" && terminal.code !== null
+              ? `Prime Agent exited with code ${terminal.code}.`
+              : "Prime Agent RPC session exited.";
+          const terminalEvents = graceful
+            ? normalizer.finishGracefully(reason)
+            : normalizer.stop(reason);
+          for (const event of terminalEvents) {
+            await Effect.runPromise(Queue.offer(runtimeEvents, event));
+          }
         });
         return session;
       } catch (cause) {
@@ -180,29 +220,49 @@ export const makePrimeAdapter = (
     };
 
     const validateStart = async (input: ProviderSessionStartInput) => {
-      if (!options.enabled) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "startSession", issue: "Prime Agent is disabled.",
-      });
-      if (closed) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "startSession", issue: "Prime Agent adapter is closed.",
-      });
-      if (input.provider !== undefined && input.provider !== PROVIDER) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "startSession", issue: "Provider does not match prime-agent.",
-      });
+      if (!options.enabled)
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "Prime Agent is disabled.",
+        });
+      if (closed)
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "Prime Agent adapter is closed.",
+        });
+      if (input.provider !== undefined && input.provider !== PROVIDER)
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "Provider does not match prime-agent.",
+        });
       if (input.providerInstanceId !== undefined && input.providerInstanceId !== options.instanceId)
         throw new ProviderAdapterValidationError({
-          provider: PROVIDER, operation: "startSession", issue: "Provider instance does not match adapter.",
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "Provider instance does not match adapter.",
         });
-      if (input.resumeCursor !== undefined) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "startSession", issue: "Prime Agent resume is unavailable until Beta.",
-      });
-      if (!input.cwd || !isAbsolute(input.cwd)) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "startSession", issue: "An absolute workspace cwd is required.",
-      });
+      if (input.resumeCursor !== undefined)
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "Prime Agent resume is unavailable until Beta.",
+        });
+      if (!input.cwd || !isAbsolute(input.cwd))
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "An absolute workspace cwd is required.",
+        });
       const stat = await NodeFSP.stat(input.cwd).catch(() => undefined);
-      if (!stat?.isDirectory()) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "startSession", issue: "Workspace cwd must be an existing directory.",
-      });
+      if (!stat?.isDirectory())
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "Workspace cwd must be an existing directory.",
+        });
       return input.cwd;
     };
 
@@ -215,26 +275,34 @@ export const makePrimeAdapter = (
               const key = startKey(input, cwd);
               const live = sessions.get(input.threadId);
               if (live) {
-                if (live.key !== key) throw new ProviderAdapterValidationError({
-                  provider: PROVIDER, operation: "startSession", issue: "Thread already has a different Prime session binding.",
-                });
+                if (live.key !== key)
+                  throw new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "startSession",
+                    issue: "Thread already has a different Prime session binding.",
+                  });
                 return live.session;
               }
               const inFlight = pending.get(input.threadId);
               if (inFlight) {
-                if (inFlight.key !== key) throw new ProviderAdapterValidationError({
-                  provider: PROVIDER, operation: "startSession", issue: "Thread has a conflicting pending Prime start.",
-                });
+                if (inFlight.key !== key)
+                  throw new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "startSession",
+                    issue: "Thread has a conflicting pending Prime start.",
+                  });
                 return inFlight.promise;
               }
               const promise = startOwned(input, cwd, key, timestamp).finally(() => {
-                if (pending.get(input.threadId)?.promise === promise) pending.delete(input.threadId);
+                if (pending.get(input.threadId)?.promise === promise)
+                  pending.delete(input.threadId);
               });
               pending.set(input.threadId, { key, promise });
               return promise;
             },
             catch: (cause) =>
-              cause instanceof ProviderAdapterValidationError || cause instanceof ProviderAdapterProcessError
+              cause instanceof ProviderAdapterValidationError ||
+              cause instanceof ProviderAdapterProcessError
                 ? cause
                 : new ProviderAdapterProcessError({
                     provider: PROVIDER,
@@ -254,10 +322,18 @@ export const makePrimeAdapter = (
           if (!context) return;
           sessions.delete(threadId);
           await closeContext(context);
+          await context.eventDrain;
+          for (const event of context.normalizer.stop("Prime Agent session was stopped.")) {
+            await Effect.runPromise(Queue.offer(runtimeEvents, event));
+          }
         },
-        catch: (cause) => new ProviderAdapterProcessError({
-          provider: PROVIDER, threadId, detail: "Prime Agent RPC process did not stop cleanly.", cause,
-        }),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: "Prime Agent RPC process did not stop cleanly.",
+            cause,
+          }),
       });
 
     const requireContext = (threadId: ThreadId): SessionContext => {
@@ -266,75 +342,141 @@ export const makePrimeAdapter = (
       return context;
     };
 
-    const expectSuccess = async (context: SessionContext, command: Parameters<PrimeRpcClient["command"]>[0]) => {
+    const expectSuccess = async (
+      context: SessionContext,
+      command: Parameters<PrimeRpcClient["command"]>[0],
+    ) => {
       const response = await context.client.command(command);
-      if (!response.success || response.command !== command.type) throw new Error(`${command.type} failed`);
+      if (!response.success || response.command !== command.type)
+        throw new Error(`${command.type} failed`);
     };
 
     const resolveTurnInput = async (input: ProviderSendTurnInput, context: SessionContext) => {
-      if (!input.input && (input.attachments?.length ?? 0) === 0) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "sendTurn", issue: "A prompt or attachment is required.",
-      });
-      if (!input.modelSelection || input.modelSelection.instanceId !== options.instanceId) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "sendTurn", issue: "A Prime model selection for this instance is required.",
-      });
+      if (!input.input && (input.attachments?.length ?? 0) === 0)
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: "A prompt or attachment is required.",
+        });
+      if (!input.modelSelection || input.modelSelection.instanceId !== options.instanceId)
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: "A Prime model selection for this instance is required.",
+        });
       const modelsResponse = await context.client.command({ type: "get_available_models" });
-      if (!modelsResponse.success || modelsResponse.command !== "get_available_models" ||
-          !modelsResponse.data || typeof modelsResponse.data !== "object" || !("models" in modelsResponse.data)) {
+      if (
+        !modelsResponse.success ||
+        modelsResponse.command !== "get_available_models" ||
+        !modelsResponse.data ||
+        typeof modelsResponse.data !== "object" ||
+        !("models" in modelsResponse.data)
+      ) {
         throw new Error("get_available_models failed");
       }
-      const models = (modelsResponse.data as { models: ReadonlyArray<{
-        id: string; provider: string; input: ReadonlyArray<"text" | "image">;
-        thinkingLevelMap?: Readonly<Record<string, string | null>>;
-      }> }).models;
+      const models = (
+        modelsResponse.data as {
+          models: ReadonlyArray<{
+            id: string;
+            provider: string;
+            input: ReadonlyArray<"text" | "image">;
+            thinkingLevelMap?: Readonly<Record<string, string | null>>;
+          }>;
+        }
+      ).models;
       let identity = input.modelSelection.nativeIdentity;
       if (!identity) {
         const matching = models.filter((model) => model.id === input.modelSelection!.model);
-        if (matching.length !== 1) throw new ProviderAdapterValidationError({
-          provider: PROVIDER, operation: "sendTurn", issue: "Legacy model selection is unavailable or ambiguous; reselect the model.",
-        });
+        if (matching.length !== 1)
+          throw new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue: "Legacy model selection is unavailable or ambiguous; reselect the model.",
+          });
         identity = { provider: matching[0]!.provider, modelId: matching[0]!.id };
       }
-      const model = models.find((candidate) => candidate.provider === identity.provider && candidate.id === identity.modelId);
-      if (!model) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "sendTurn", issue: "Selected Prime model is unavailable; reselect the model.",
-      });
-      if (!model.input.includes("text")) throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "sendTurn", issue: `Model '${input.modelSelection.model}' does not support text input.`,
-      });
+      const model = models.find(
+        (candidate) =>
+          candidate.provider === identity.provider && candidate.id === identity.modelId,
+      );
+      if (!model)
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: "Selected Prime model is unavailable; reselect the model.",
+        });
+      if (!model.input.includes("text"))
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: `Model '${input.modelSelection.model}' does not support text input.`,
+        });
       const textParts = input.input ? [input.input] : [];
       const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
       for (const attachment of input.attachments ?? []) {
-        if (!options.attachmentsDir) throw new ProviderAdapterValidationError({
-          provider: PROVIDER, operation: "sendTurn", issue: `Attachment '${attachment.name}' cannot be resolved.`,
-        });
+        if (!options.attachmentsDir)
+          throw new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue: `Attachment '${attachment.name}' cannot be resolved.`,
+          });
         const path = resolvePrimeAttachmentPath(options.attachmentsDir, input.threadId, attachment);
-        if (!path) throw new ProviderAdapterValidationError({
-          provider: PROVIDER, operation: "sendTurn", issue: `Attachment '${attachment.name}' has an invalid id.`,
-        });
+        if (!path)
+          throw new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue: `Attachment '${attachment.name}' has an invalid id.`,
+          });
         const stat = await NodeFSP.stat(path).catch(() => undefined);
-        const limit = attachment.type === "image" ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES : PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES;
-        if (!stat?.isFile() || stat.size !== attachment.sizeBytes || stat.size > limit) throw new ProviderAdapterValidationError({
-          provider: PROVIDER, operation: "sendTurn", issue: `Attachment '${attachment.name}' is missing, unreadable, or oversized.`,
-        });
+        const limit =
+          attachment.type === "image"
+            ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
+            : PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES;
+        if (!stat?.isFile() || stat.size !== attachment.sizeBytes || stat.size > limit)
+          throw new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue: `Attachment '${attachment.name}' is missing, unreadable, or oversized.`,
+          });
         const bytes = await NodeFSP.readFile(path);
         if (attachment.type === "image") {
-          if (!model.input.includes("image")) throw new ProviderAdapterValidationError({
-            provider: PROVIDER, operation: "sendTurn", issue: `Model '${input.modelSelection.model}' does not support image attachment '${attachment.name}'.`,
+          if (!model.input.includes("image"))
+            throw new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue: `Model '${input.modelSelection.model}' does not support image attachment '${attachment.name}'.`,
+            });
+          images.push({
+            type: "image",
+            data: bytes.toString("base64"),
+            mimeType: attachment.mimeType,
           });
-          images.push({ type: "image", data: bytes.toString("base64"), mimeType: attachment.mimeType });
         } else {
           const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-          textParts.push(`Attachment: ${attachment.name} (${attachment.mimeType})\n---\n${decoded}\n---`);
+          textParts.push(
+            `Attachment: ${attachment.name} (${attachment.mimeType})\n---\n${decoded}\n---`,
+          );
         }
       }
-      const thinking = input.modelSelection.options?.find((option) => option.id === "thinkingLevel")?.value;
-      if (thinking !== undefined && typeof thinking !== "string") throw new ProviderAdapterValidationError({
-        provider: PROVIDER, operation: "sendTurn", issue: "Prime thinkingLevel must be a string.",
-      });
-      if (thinking !== undefined && (!model.thinkingLevelMap || !(thinking in model.thinkingLevelMap) || model.thinkingLevelMap[thinking] === null)) {
+      const thinking = input.modelSelection.options?.find(
+        (option) => option.id === "thinkingLevel",
+      )?.value;
+      if (thinking !== undefined && typeof thinking !== "string")
         throw new ProviderAdapterValidationError({
-          provider: PROVIDER, operation: "sendTurn", issue: `Thinking level '${thinking}' is unavailable for the selected model.`,
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: "Prime thinkingLevel must be a string.",
+        });
+      if (
+        thinking !== undefined &&
+        (!model.thinkingLevelMap ||
+          !(thinking in model.thinkingLevelMap) ||
+          model.thinkingLevelMap[thinking] === null)
+      ) {
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: `Thinking level '${thinking}' is unavailable for the selected model.`,
         });
       }
       return { identity, thinking, message: textParts.join("\n\n"), images };
@@ -345,46 +487,85 @@ export const makePrimeAdapter = (
         try: async () => {
           const context = requireContext(input.threadId);
           const resolved = await resolveTurnInput(input, context);
-          if (!context.selectedModel || context.selectedModel.provider !== resolved.identity.provider || context.selectedModel.modelId !== resolved.identity.modelId) {
-            await expectSuccess(context, { type: "set_model", provider: resolved.identity.provider, modelId: resolved.identity.modelId });
+          if (
+            !context.selectedModel ||
+            context.selectedModel.provider !== resolved.identity.provider ||
+            context.selectedModel.modelId !== resolved.identity.modelId
+          ) {
+            await expectSuccess(context, {
+              type: "set_model",
+              provider: resolved.identity.provider,
+              modelId: resolved.identity.modelId,
+            });
             context.selectedModel = resolved.identity;
             context.thinkingLevel = undefined;
           }
           if (resolved.thinking !== undefined && context.thinkingLevel !== resolved.thinking) {
-            await expectSuccess(context, { type: "set_thinking_level", level: resolved.thinking as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" });
+            await expectSuccess(context, {
+              type: "set_thinking_level",
+              level: resolved.thinking as
+                | "off"
+                | "minimal"
+                | "low"
+                | "medium"
+                | "high"
+                | "xhigh"
+                | "max",
+            });
             context.thinkingLevel = resolved.thinking;
           }
           await expectSuccess(context, {
-            type: "prompt", message: resolved.message,
+            type: "prompt",
+            message: resolved.message,
             ...(resolved.images.length > 0 ? { images: resolved.images } : {}),
           });
           return { threadId: input.threadId, turnId: TurnId.make(randomUUID()) };
         },
-        catch: (cause) => cause instanceof ProviderAdapterValidationError || cause instanceof ProviderAdapterSessionNotFoundError
-          ? cause : new ProviderAdapterProcessError({ provider: PROVIDER, threadId: input.threadId, detail: "Prime Agent turn input failed.", cause }),
+        catch: (cause) =>
+          cause instanceof ProviderAdapterValidationError ||
+          cause instanceof ProviderAdapterSessionNotFoundError
+            ? cause
+            : new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: "Prime Agent turn input failed.",
+                cause,
+              }),
       });
 
-    const unsupported = (operation: string) => Effect.fail(new ProviderAdapterValidationError({
-      provider: PROVIDER,
-      operation,
-      issue: "This operation belongs to a later Prime Agent milestone.",
-    }));
+    const unsupported = (operation: string) =>
+      Effect.fail(
+        new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation,
+          issue: "This operation belongs to a later Prime Agent milestone.",
+        }),
+      );
 
     const stopAll = () =>
       Effect.tryPromise({
         try: async () => {
           closed = true;
-          await Promise.all(Array.from(pending.values(), (entry) => entry.promise.catch(() => undefined)));
+          await Promise.all(
+            Array.from(pending.values(), (entry) => entry.promise.catch(() => undefined)),
+          );
           const contexts = Array.from(sessions.values());
           sessions.clear();
           await Promise.all(contexts.map(closeContext));
+          await Promise.all(contexts.map((context) => context.eventDrain));
+          for (const context of contexts) {
+            for (const event of context.normalizer.stop("Prime Agent adapter was stopped.")) {
+              await Effect.runPromise(Queue.offer(runtimeEvents, event));
+            }
+          }
         },
-        catch: (cause) => new ProviderAdapterProcessError({
-          provider: PROVIDER,
-          threadId: ThreadId.make("adapter"),
-          detail: "Prime Agent adapter teardown failed.",
-          cause,
-        }),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: ThreadId.make("adapter"),
+            detail: "Prime Agent adapter teardown failed.",
+            cause,
+          }),
       });
 
     const adapter: ProviderAdapterShape<ProviderAdapterError> = {
@@ -407,7 +588,7 @@ export const makePrimeAdapter = (
           ? unsupported("rollbackThread")
           : Effect.fail(new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId })),
       stopAll,
-      streamEvents: Stream.empty,
+      streamEvents: Stream.fromQueue(runtimeEvents),
     };
     yield* Effect.addFinalizer(() => stopAll().pipe(Effect.ignore));
     return adapter;
