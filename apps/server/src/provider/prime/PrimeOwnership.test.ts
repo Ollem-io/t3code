@@ -94,6 +94,58 @@ describe("PrimeOwnership", () => {
     await rejects(() => writePrimeOwnership(l.ownership, rec("one", "a")));
     assert.deepStrictEqual(await import("node:fs/promises").then((x) => x.readdir(outside)), []);
   });
+
+  it("binds ownership writes before temp creation and retains opened temps after a parent swap", async () => {
+    for (const phase of ["before", "after"] as const) {
+      const home = await mkdtemp(join(tmpdir(), `prime-write-${phase}-`));
+      const l = primeResourceLayout({
+        home,
+        environmentId: "env",
+        instanceId: "one",
+        threadId: "a",
+      });
+      await mkdir(l.ownershipDirectory, { recursive: true });
+      const outside = await mkdtemp(join(tmpdir(), `prime-write-${phase}-outside-`));
+      const moved = `${l.ownershipDirectory}.moved`;
+      const swap = async () => {
+        await rename(l.ownershipDirectory, moved);
+        await symlink(outside, l.ownershipDirectory);
+      };
+      await rejects(() =>
+        writePrimeOwnership(
+          l.ownership,
+          rec("one", "a"),
+          phase === "before" ? { beforeTempOpen: swap } : { afterTempOpen: swap },
+        ),
+      );
+      assert.deepStrictEqual(await readdir(outside), []);
+      const retained = await readdir(moved);
+      assert.ok(retained.some((name) => name.endsWith(".lock")));
+      assert.strictEqual(
+        retained.some((name) => name.endsWith(".tmp")),
+        phase === "after",
+      );
+    }
+  });
+
+  it("never overwrites a target replaced immediately before ownership publish", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-write-target-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const original = await readFile(l.ownership, "utf8");
+    const displaced = `${l.ownership}.original`;
+    await rejects(() =>
+      writePrimeOwnership(l.ownership, rec("one", "a", 72), {
+        beforePublish: async () => {
+          await rename(l.ownership, displaced);
+          await writeFile(l.ownership, "outside-sentinel");
+        },
+      }),
+    );
+    assert.strictEqual(await readFile(l.ownership, "utf8"), "outside-sentinel");
+    assert.strictEqual(await readFile(displaced, "utf8"), original);
+    assert.ok((await readdir(l.ownershipDirectory)).some((name) => name.endsWith(".tmp")));
+  });
   it("requires PID and start token plus RPC and daemon matches", async () => {
     for (const [name, p] of [
       ["process", { ...proofs, processMatches: async () => false }],

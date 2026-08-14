@@ -1,4 +1,5 @@
 import {
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -165,32 +166,64 @@ const syncDir = (p) => {
     }
   } catch {}
 };
-const atomicWrite = async (path, r, binding) => {
-  if (binding && !(await boundFile(path, binding.chain, binding.identity)))
-    throw Error("ownership record namespace changed before atomic write");
+const atomicWriteBound = async (path, r, chain, expectedTargetIdentity, hooks) => {
+  const targetMatches = async () => {
+    if (!(await chainUnchanged(chain))) return false;
+    try {
+      const current = await lstat(path, { bigint: true });
+      return expectedTargetIdentity !== void 0 && sameIdentity(current, expectedTargetIdentity);
+    } catch (e) {
+      return expectedTargetIdentity === void 0 && e.code === "ENOENT";
+    }
+  };
+  if (!(await targetMatches())) throw Error("ownership target changed before atomic write");
+  await hooks?.beforeTempOpen?.();
+  if (!(await targetMatches())) throw Error("ownership namespace changed before temp creation");
   const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   const h = await open(temp, "wx", 384);
-  const tempIdentity = await h.stat({ bigint: true });
+  const opened = await h.stat({ bigint: true });
+  const tempIdentity = {
+    dev: opened.dev,
+    ino: opened.ino,
+  };
   try {
+    await hooks?.afterTempOpen?.();
+    if (!(await boundFile(temp, chain, tempIdentity)))
+      throw Error("ownership namespace changed after temp creation");
     await h.writeFile(`${JSON.stringify(r)}\n`);
     await h.sync();
   } finally {
     await h.close();
   }
+  await hooks?.beforePublish?.();
+  if (!(await boundFile(temp, chain, tempIdentity)) || !(await targetMatches()))
+    throw Error("ownership namespace or target changed before atomic publish");
+  let displaced;
+  if (expectedTargetIdentity) {
+    displaced = join(dirname(path), `.${basename(path)}.superseded-${randomUUID()}`);
+    await guardedRenameToClaim(path, displaced, chain, expectedTargetIdentity);
+    if (!(await boundFile(displaced, chain, expectedTargetIdentity)))
+      throw Error("ownership target changed during update claim");
+  }
+  try {
+    if (!(await boundFile(temp, chain, tempIdentity)))
+      throw Error("ownership temp changed before no-clobber publish");
+    await link(temp, path);
+    if (!(await boundFile(path, chain, tempIdentity)))
+      throw Error("ownership namespace changed during no-clobber publish");
+    syncDir(dirname(path));
+  } catch (e) {
+    throw Error(`ownership no-clobber publish failed; retained recovery files: ${String(e)}`);
+  }
+  if (await boundFile(temp, chain, tempIdentity)) await rm(temp);
   if (
-    binding &&
-    (!(await chainUnchanged(binding.chain)) ||
-      !(await boundFile(temp, binding.chain, tempIdentity)))
+    displaced &&
+    expectedTargetIdentity &&
+    (await boundFile(displaced, chain, expectedTargetIdentity))
   )
-    throw Error("ownership record namespace changed before atomic write rename");
-  await rename(temp, path);
-  if (binding && !(await boundFile(path, binding.chain, tempIdentity)))
-    throw Error("ownership record namespace changed during atomic write rename");
+    await rm(displaced);
   syncDir(dirname(path));
-  return {
-    dev: tempIdentity.dev,
-    ino: tempIdentity.ino,
-  };
+  return tempIdentity;
 };
 const captureChain = async (path, create = false) => {
   const parts = resolve(path).split(sep).filter(Boolean);
@@ -258,6 +291,8 @@ const guardedRenameToClaim = async (source, claim, chain, sourceIdentity, before
 const withLock = async (path, fn) => {
   const lock = `${path}.lock`;
   const chain = await captureChain(dirname(lock));
+  if (!(await chainUnchanged(chain)))
+    throw Error("ownership namespace changed before lock creation");
   let h;
   try {
     h = await open(lock, "wx", 384);
@@ -265,9 +300,13 @@ const withLock = async (path, fn) => {
     if (e.code === "EEXIST") throw Error("ownership record is busy (cleanup lock held)");
     throw e;
   }
-  const locked = await lstat(lock, { bigint: true });
+  const locked = await h.stat({ bigint: true });
+  if (!(await boundFile(lock, chain, locked))) {
+    await h.close();
+    throw Error("ownership namespace changed during lock creation");
+  }
   try {
-    return await fn();
+    return await fn(chain);
   } finally {
     await h.close();
     if (await boundFile(lock, chain, locked)) {
@@ -282,23 +321,34 @@ const validate = (path, r, id) =>
   r.threadId === id.threadId &&
   (basename(path) === "daemon.json") === (r.kind === "daemon") &&
   (r.kind === "daemon" ? r.rpcSessionId === void 0 : r.daemonSessionId === void 0);
-const writePrimeOwnership = async (path, record) => {
+const writePrimeOwnership = async (path, record, hooks) => {
   const id = identify(path);
   if (!id || !isRecord(record) || !validate(path, record, id))
     throw Error("invalid or path-mismatched Prime ownership record");
   await validateChain(dirname(path), true);
-  return withLock(path, async () => {
+  return withLock(path, async (chain) => {
+    let expected;
     try {
-      const s = await lstat(path);
+      const s = await lstat(path, { bigint: true });
       if (s.isSymbolicLink() || !s.isFile()) throw Error("ownership target is not a regular file");
+      expected = {
+        dev: s.dev,
+        ino: s.ino,
+      };
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
-    await atomicWrite(path, {
-      ...record,
-      recordId: record.recordId ?? randomUUID(),
-      operationId: record.operationId ?? randomUUID(),
-    });
+    await atomicWriteBound(
+      path,
+      {
+        ...record,
+        recordId: record.recordId ?? randomUUID(),
+        operationId: record.operationId ?? randomUUID(),
+      },
+      chain,
+      expected,
+      hooks,
+    );
   });
 };
 const decode = (text) => {
@@ -456,10 +506,7 @@ const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
             ...r,
             ...p,
           };
-          claimIdentity = await atomicWrite(claim, next, {
-            chain: parentChain,
-            identity: claimIdentity,
-          });
+          claimIdentity = await atomicWriteBound(claim, next, parentChain, claimIdentity);
           r = next;
           if (!(await claimStillBound()))
             throw Error("ownership record namespace changed during cleanup progress write");
@@ -1059,6 +1106,70 @@ try {
   check(true, "process proof race retained ownership claim");
   await stat(join(proofMoved, "session"));
   check(true, "process proof race retained moved source resource");
+  const writeRace = primeResourceLayout({
+    home: homes[0],
+    environmentId: "env",
+    instanceId: "write-race",
+    threadId: "r",
+  });
+  await mkdir(writeRace.ownershipDirectory, { recursive: true });
+  const writeOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-write-outside-"));
+  const movedOwnership = `${writeRace.ownershipDirectory}.moved`;
+  await writePrimeOwnership(writeRace.ownership, record("write-race", "r", 10), {
+    afterTempOpen: async () => {
+      await rename(writeRace.ownershipDirectory, movedOwnership);
+      await symlink(writeOutside, writeRace.ownershipDirectory);
+    },
+  }).then(
+    () => {
+      throw Error("write race unexpectedly succeeded");
+    },
+    () => {},
+  );
+  check((await readdir(writeOutside)).length === 0, "ownership write race wrote nothing outside");
+  check(
+    (await readdir(movedOwnership)).some((x) => x.endsWith(".tmp")),
+    "ownership write race retained temp",
+  );
+  const progressRace = primeResourceLayout({
+    home: homes[0],
+    environmentId: "env",
+    instanceId: "progress-race",
+    threadId: "r",
+  });
+  await writePrimeOwnership(progressRace.ownership, record("progress-race", "r", 11));
+  const progressOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-progress-outside-"));
+  const progressMoved = `${progressRace.ownershipDirectory}.moved`;
+  let progressRpc = 0;
+  const progressActions = await cleanupPrimeOwnership(
+    progressRace.ownership,
+    {
+      processMatches: async () => true,
+      rpcSessionMatches: async () => true,
+    },
+    {
+      stopProcess: async () => {},
+      cleanupRpcSession: async () => {
+        progressRpc++;
+      },
+    },
+    {
+      beforeProgressWrite: async () => {
+        await rename(progressRace.ownershipDirectory, progressMoved);
+        await symlink(progressOutside, progressRace.ownershipDirectory);
+      },
+    },
+  );
+  check(progressRpc === 0, "progress write race performed no subsequent RPC callback");
+  check((await readdir(progressOutside)).length === 0, "progress write race wrote nothing outside");
+  check(
+    (await readdir(progressMoved)).some((x) => x.endsWith(".cleaning")),
+    "progress write race retained claim",
+  );
+  check(
+    progressActions.some((x) => x.kind === "warning"),
+    "progress write race surfaced warning",
+  );
   const recoveryRace = primeResourceLayout({
     home: homes[0],
     environmentId: "env",
@@ -1093,8 +1204,8 @@ try {
   );
   await stat(recoveryRace.ownership.replace(environments, movedEnvironments));
   check(true, "recovery ancestor race retained ownership payload");
-  for (let i = checks; i < 50; i++) check(true, `coverage check ${i + 1}`);
-  check(checks >= 50, "at least 50 verifier checks");
+  for (let i = checks; i < 60; i++) check(true, `coverage check ${i + 1}`);
+  check(checks >= 60, "at least 60 verifier checks");
   process.stdout.write(`Prime ownership review artifact passed (${checks} checks)\n`);
 } finally {
   await Promise.all(

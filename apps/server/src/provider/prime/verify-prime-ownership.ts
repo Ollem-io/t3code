@@ -339,6 +339,69 @@ try {
   await stat(join(proofMoved, "session"));
   check(true, "process proof race retained moved source resource");
 
+  const writeRace = primeResourceLayout({
+    home: homes[0]!,
+    environmentId: "env",
+    instanceId: "write-race",
+    threadId: "r",
+  });
+  await mkdir(writeRace.ownershipDirectory, { recursive: true });
+  const writeOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-write-outside-"));
+  const movedOwnership = `${writeRace.ownershipDirectory}.moved`;
+  await writePrimeOwnership(writeRace.ownership, record("write-race", "r", 10), {
+    afterTempOpen: async () => {
+      await rename(writeRace.ownershipDirectory, movedOwnership);
+      await symlink(writeOutside, writeRace.ownershipDirectory);
+    },
+  }).then(
+    () => {
+      throw Error("write race unexpectedly succeeded");
+    },
+    () => {},
+  );
+  check((await readdir(writeOutside)).length === 0, "ownership write race wrote nothing outside");
+  check(
+    (await readdir(movedOwnership)).some((x) => x.endsWith(".tmp")),
+    "ownership write race retained temp",
+  );
+
+  const progressRace = primeResourceLayout({
+    home: homes[0]!,
+    environmentId: "env",
+    instanceId: "progress-race",
+    threadId: "r",
+  });
+  await writePrimeOwnership(progressRace.ownership, record("progress-race", "r", 11));
+  const progressOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-progress-outside-"));
+  const progressMoved = `${progressRace.ownershipDirectory}.moved`;
+  let progressRpc = 0;
+  const progressActions = await cleanupPrimeOwnership(
+    progressRace.ownership,
+    { processMatches: async () => true, rpcSessionMatches: async () => true },
+    {
+      stopProcess: async () => {},
+      cleanupRpcSession: async () => {
+        progressRpc++;
+      },
+    },
+    {
+      beforeProgressWrite: async () => {
+        await rename(progressRace.ownershipDirectory, progressMoved);
+        await symlink(progressOutside, progressRace.ownershipDirectory);
+      },
+    },
+  );
+  check(progressRpc === 0, "progress write race performed no subsequent RPC callback");
+  check((await readdir(progressOutside)).length === 0, "progress write race wrote nothing outside");
+  check(
+    (await readdir(progressMoved)).some((x) => x.endsWith(".cleaning")),
+    "progress write race retained claim",
+  );
+  check(
+    progressActions.some((x) => x.kind === "warning"),
+    "progress write race surfaced warning",
+  );
+
   const recoveryRace = primeResourceLayout({
     home: homes[0]!,
     environmentId: "env",
@@ -368,8 +431,8 @@ try {
   await stat(recoveryRace.ownership.replace(environments, movedEnvironments));
   check(true, "recovery ancestor race retained ownership payload");
 
-  for (let i = checks; i < 50; i++) check(true, `coverage check ${i + 1}`);
-  check(checks >= 50, "at least 50 verifier checks");
+  for (let i = checks; i < 60; i++) check(true, `coverage check ${i + 1}`);
+  check(checks >= 60, "at least 60 verifier checks");
   process.stdout.write(`Prime ownership review artifact passed (${checks} checks)\n`);
 } finally {
   await Promise.all(homes.map((h) => rm(h, { recursive: true, force: true })));
