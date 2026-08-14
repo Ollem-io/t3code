@@ -63,6 +63,7 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
         instanceId,
         environmentId,
         home: serverConfig.stateDir,
+        attachmentsDir: serverConfig.attachmentsDir,
         enabled,
         environment: processEnv,
       });
