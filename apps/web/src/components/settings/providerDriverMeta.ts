@@ -35,6 +35,7 @@ export interface ProviderClientDefinition {
 }
 
 export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
+  { value: ProviderDriverKind.make("prime-agent"), label: "Prime Agent", icon: OpenCodeIcon, settingsSchema: PrimeAgentSettings },
   {
     value: ProviderDriverKind.make("codex"),
     label: "Codex",

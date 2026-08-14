@@ -410,6 +410,10 @@ export function ProviderInstanceCard({
     : null;
   const summary = rawSummary;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
+  const compatibilityLabel = liveProvider?.compatibility && liveProvider.compatibility !== "unknown"
+    ? liveProvider.compatibility === "compatible" ? "Compatible" : liveProvider.compatibility === "advisory" ? "Compatibility advisory" : "Incompatible"
+    : null;
+  const staleModelCount = liveProvider?.models.filter((model) => model.availability === "stale").length ?? 0;
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const FallbackIconComponent = driverOption?.icon;
@@ -705,6 +709,12 @@ export function ProviderInstanceCard({
               {titleTailNode}
             </div>
             {authRowNode}
+ <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+ {versionLabel ? <span>Version {versionLabel}</span> : null}
+ {compatibilityLabel ? <span>{compatibilityLabel}</span> : null}
+ {staleModelCount > 0 ? <span>{staleModelCount} stale model{staleModelCount === 1 ? "" : "s"}</span> : null}
+ {liveProvider?.checkedAt ? <time dateTime={liveProvider.checkedAt}>Last checked {new Date(liveProvider.checkedAt).toLocaleString()}</time> : null}
+ </div>
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button
