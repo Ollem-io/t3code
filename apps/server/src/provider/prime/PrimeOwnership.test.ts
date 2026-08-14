@@ -376,4 +376,52 @@ describe("PrimeOwnership", () => {
       ),
     );
   });
+  it("stops a recovery subtree when an enumerated ancestor is replaced", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-recovery-ancestor-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const outside = await mkdtemp(join(tmpdir(), "prime-recovery-outside-"));
+    const moved = `${join(l.root, "environments")}.moved`;
+    let swapped = false;
+    const actions = await recoverPrimeOwnership(l.root, proofs, callbacks([]), {
+      afterDirectoryRead: async (dir) => {
+        if (dir !== join(l.root, "environments") || swapped) return;
+        swapped = true;
+        await rename(dir, moved);
+        await symlink(outside, dir);
+      },
+    });
+    assert.deepStrictEqual(await readdir(outside), []);
+    await stat(l.ownership.replace(join(l.root, "environments"), moved));
+    assert.ok(
+      actions.some((x) => x.kind === "warning" && x.warning.reason.includes("ancestry changed")),
+    );
+  });
+
+  it("retains an interrupted record claim if its parent changes before restore", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-recovery-claim-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const claim = `${l.ownership}.cleaning`;
+    await rename(l.ownership, claim);
+    const outside = await mkdtemp(join(tmpdir(), "prime-recovery-claim-outside-"));
+    const ownership = join(l.instance, "ownership");
+    const moved = `${ownership}.moved`;
+    let swapped = false;
+    const actions = await recoverPrimeOwnership(l.root, proofs, callbacks([]), {
+      beforeClaimRestoreLink: async () => {
+        if (swapped) return;
+        swapped = true;
+        await rename(ownership, moved);
+        await symlink(outside, ownership);
+      },
+    });
+    assert.deepStrictEqual(await readdir(outside), []);
+    await stat(claim.replace(ownership, moved));
+    assert.ok(
+      actions.some(
+        (x) => x.kind === "warning" && x.warning.reason.includes("retained uniquely named claim"),
+      ),
+    );
+  });
 });

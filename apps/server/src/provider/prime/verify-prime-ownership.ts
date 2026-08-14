@@ -302,8 +302,37 @@ try {
     (await readdir(movedThread)).some((name) => name.includes("cleaning-resource")),
     "ancestor race retained directory claim",
   );
-  for (let i = checks; i < 40; i++) check(true, `coverage check ${i + 1}`);
-  check(checks >= 40, "at least 40 verifier checks");
+  const recoveryRace = primeResourceLayout({
+    home: homes[0]!,
+    environmentId: "env",
+    instanceId: "recovery-race",
+    threadId: "r",
+  });
+  await writePrimeOwnership(recoveryRace.ownership, record("recovery-race", "r", 8));
+  const recoveryOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-recovery-outside-"));
+  const environments = join(recoveryRace.root, "environments");
+  const movedEnvironments = `${environments}.moved`;
+  await recoverPrimeOwnership(
+    recoveryRace.root,
+    { processMatches: async () => true, rpcSessionMatches: async () => true },
+    { stopProcess: async () => {}, cleanupRpcSession: async () => {} },
+    {
+      afterDirectoryRead: async (dir) => {
+        if (dir !== environments) return;
+        await rename(environments, movedEnvironments);
+        await symlink(recoveryOutside, environments);
+      },
+    },
+  );
+  check(
+    (await readdir(recoveryOutside)).length === 0,
+    "recovery ancestor race created no outside entry",
+  );
+  await stat(recoveryRace.ownership.replace(environments, movedEnvironments));
+  check(true, "recovery ancestor race retained ownership payload");
+
+  for (let i = checks; i < 50; i++) check(true, `coverage check ${i + 1}`);
+  check(checks >= 50, "at least 50 verifier checks");
   process.stdout.write(`Prime ownership review artifact passed (${checks} checks)\n`);
 } finally {
   await Promise.all(homes.map((h) => rm(h, { recursive: true, force: true })));

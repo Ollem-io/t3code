@@ -294,9 +294,19 @@ const warning = (path, reason) => ({
     reason,
   },
 });
-const restoreClaimNoClobber = async (original, claim, actions, reason, parentChain) => {
+const restoreClaimNoClobber = async (
+  original,
+  claim,
+  actions,
+  reason,
+  parentChain,
+  hooks,
+  expectedClaim,
+) => {
   try {
-    const claimed = await lstat(claim);
+    const claimed = await lstat(claim, { bigint: true });
+    if (expectedClaim && (claimed.dev !== expectedClaim.dev || claimed.ino !== expectedClaim.ino))
+      throw Error("claim identity changed before restore");
     if (claimed.isDirectory()) {
       actions.push(
         warning(
@@ -309,9 +319,27 @@ const restoreClaimNoClobber = async (original, claim, actions, reason, parentCha
     if (!claimed.isFile() || claimed.isSymbolicLink()) throw Error("claim is not a regular file");
     if (!parentChain || !(await chainUnchanged(parentChain)))
       throw Error("original parent chain is unavailable or changed");
+    await hooks?.beforeClaimRestoreLink?.(claim, original);
+    const immediatelyBefore = await lstat(claim, { bigint: true });
+    if (
+      immediatelyBefore.dev !== claimed.dev ||
+      immediatelyBefore.ino !== claimed.ino ||
+      !(await chainUnchanged(parentChain))
+    )
+      throw Error("claim or original parent chain changed before restore");
     await link(claim, original);
-    if (!(await chainUnchanged(parentChain)))
-      throw Error("original parent chain changed after no-clobber hard link");
+    const [linked, stillClaimed] = await Promise.all([
+      lstat(original, { bigint: true }),
+      lstat(claim, { bigint: true }),
+    ]);
+    if (
+      !(await chainUnchanged(parentChain)) ||
+      linked.dev !== claimed.dev ||
+      linked.ino !== claimed.ino ||
+      stillClaimed.dev !== claimed.dev ||
+      stillClaimed.ino !== claimed.ino
+    )
+      throw Error("restored link or namespace identity changed after no-clobber hard link");
     await rm(claim);
     syncDir(dirname(original));
     actions.push(warning(original, `${reason}; claimed file restored by no-clobber hard link`));
@@ -572,53 +600,21 @@ const recoverResourceClaim = async (claim, expectedRoot, actions) => {
   const name = basename(claim);
   const markerAt = name.indexOf(".cleaning-resource-id-");
   if (!name.startsWith(".") || markerAt < 2) return false;
-  const original = join(dirname(claim), name.slice(1, markerAt));
   const relativeParts = relative(expectedRoot, claim).split(sep);
   const instancesAt = relativeParts.indexOf("instances");
   if (instancesAt < 0 || !relativeParts[instancesAt + 1]) {
     actions.push(warning(claim, "retained unbound resource claim outside an instance"));
     return true;
   }
-  const ownership = join(
-    join(expectedRoot, ...relativeParts.slice(0, instancesAt + 2)),
-    "ownership",
+  actions.push(
+    warning(
+      claim,
+      "retained uniquely named directory claim/resource claim because recovery namespace identity is uncertain",
+    ),
   );
-  let bound = false;
-  try {
-    for (const entry of await readdir(ownership, { withFileTypes: true })) {
-      if (
-        !entry.isFile() ||
-        (!entry.name.endsWith(".json") && !entry.name.endsWith(".json.cleaning"))
-      )
-        continue;
-      const decoded = decode(await readFile(join(ownership, entry.name), "utf8"));
-      if (!decoded.record?.recordId) continue;
-      if (name.includes(`${primePathComponent(decoded.record.recordId)}-`)) {
-        bound = true;
-        if (decoded.record.resourcesCleaned) {
-          actions.push(
-            warning(claim, "retained resource claim bound to completed generation for inspection"),
-          );
-          return true;
-        }
-        await restoreClaimNoClobber(
-          original,
-          claim,
-          actions,
-          "recovered resource claim bound to incomplete ownership generation",
-        );
-        return true;
-      }
-    }
-  } catch (e) {
-    actions.push(warning(claim, `resource claim recovery inspection failed safely: ${String(e)}`));
-    return true;
-  }
-  if (!bound)
-    actions.push(warning(claim, "retained resource claim with no matching ownership generation"));
   return true;
 };
-const recoverPrimeOwnership = async (root, proof, cleanup) => {
+const recoverPrimeOwnership = async (root, proof, cleanup, hooks) => {
   const expected = resolve(root);
   if (
     basename(expected) !== "v1" ||
@@ -626,43 +622,87 @@ const recoverPrimeOwnership = async (root, proof, cleanup) => {
     basename(dirname(dirname(expected))) !== "userdata"
   )
     throw Error("recovery root is not exact Prime layout");
-  await validateChain(expected);
+  const rootChain = await captureChain(expected);
   const actions = [];
-  const visit = async (dir) => {
-    for (const e of await readdir(dir, { withFileTypes: true })) {
+  const visit = async (dir, chain) => {
+    if (!(await chainUnchanged(rootChain)) || !(await chainUnchanged(chain))) {
+      actions.push(warning(dir, "recovery directory ancestry changed; subtree retained"));
+      return;
+    }
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+      await hooks?.afterDirectoryRead?.(dir);
+      if (!(await chainUnchanged(rootChain)) || !(await chainUnchanged(chain)))
+        throw Error("directory ancestry changed during enumeration");
+    } catch (error) {
+      actions.push(warning(dir, `recovery directory retained safely: ${String(error)}`));
+      return;
+    }
+    for (const e of entries) {
       const p = join(dir, e.name);
-      if (e.isSymbolicLink()) {
-        actions.push(warning(p, "symlink skipped during recovery"));
-        continue;
+      try {
+        await hooks?.beforeChild?.(p);
+        if (!(await chainUnchanged(rootChain)) || !(await chainUnchanged(chain)))
+          throw Error("directory ancestry changed before child processing");
+        const child = await lstat(p, { bigint: true });
+        if (child.isSymbolicLink()) {
+          actions.push(warning(p, "symlink skipped during recovery"));
+          continue;
+        }
+        if (e.name.includes(".cleaning-resource-") && (child.isFile() || child.isDirectory()))
+          await recoverResourceClaim(p, expected, actions);
+        else if (child.isDirectory()) {
+          const childChain = [
+            ...chain,
+            {
+              path: p,
+              dev: child.dev,
+              ino: child.ino,
+            },
+          ];
+          if (!(await chainUnchanged(childChain)))
+            throw Error("child directory identity changed after enumeration");
+          await visit(p, childChain);
+        } else if (child.isFile() && e.name.endsWith(".json") && identify(p)?.root === expected) {
+          const check = await lstat(p, { bigint: true });
+          if (check.dev !== child.dev || check.ino !== child.ino || !(await chainUnchanged(chain)))
+            throw Error("ownership record identity changed after enumeration");
+          try {
+            actions.push(...(await cleanupPrimeOwnership(p, proof, cleanup)));
+          } catch (error) {
+            actions.push(warning(p, `record cleanup threw: ${String(error)}`));
+          }
+        } else if (
+          child.isFile() &&
+          e.name.endsWith(".json.cleaning") &&
+          identify(p)?.root === expected
+        ) {
+          const original = p.slice(0, -9);
+          if (
+            await restoreClaimNoClobber(
+              original,
+              p,
+              actions,
+              "recovered interrupted cleanup claim without clobbering active record",
+              chain,
+              hooks,
+              child,
+            )
+          )
+            try {
+              actions.push(...(await cleanupPrimeOwnership(original, proof, cleanup)));
+            } catch (error) {
+              actions.push(warning(original, `record cleanup threw: ${String(error)}`));
+            }
+        } else if (child.isFile() && e.name.includes(".tmp"))
+          actions.push(warning(p, "incomplete atomic write retained for inspection"));
+      } catch (error) {
+        actions.push(warning(p, `recovery child retained safely: ${String(error)}`));
       }
-      if (e.name.includes(".cleaning-resource-") && (e.isFile() || e.isDirectory()))
-        await recoverResourceClaim(p, expected, actions);
-      else if (e.isDirectory()) await visit(p);
-      else if (e.isFile() && e.name.endsWith(".json") && identify(p)?.root === expected)
-        try {
-          actions.push(...(await cleanupPrimeOwnership(p, proof, cleanup)));
-        } catch (error) {
-          actions.push(warning(p, `record cleanup threw: ${String(error)}`));
-        }
-      else if (e.isFile() && e.name.endsWith(".json.cleaning") && identify(p)?.root === expected) {
-        const original = p.slice(0, -9);
-        try {
-          await link(p, original);
-          await rm(p);
-          actions.push(
-            warning(p, "recovered interrupted cleanup claim without clobbering active record"),
-          );
-          actions.push(...(await cleanupPrimeOwnership(original, proof, cleanup)));
-        } catch (error) {
-          actions.push(
-            warning(p, `retained cleanup claim recovery failed safely: ${String(error)}`),
-          );
-        }
-      } else if (e.isFile() && e.name.includes(".tmp"))
-        actions.push(warning(p, "incomplete atomic write retained for inspection"));
     }
   };
-  await visit(expected);
+  await visit(expected, rootChain);
   return actions;
 };
 //#endregion
@@ -974,8 +1014,42 @@ try {
     (await readdir(movedThread)).some((name) => name.includes("cleaning-resource")),
     "ancestor race retained directory claim",
   );
-  for (let i = checks; i < 40; i++) check(true, `coverage check ${i + 1}`);
-  check(checks >= 40, "at least 40 verifier checks");
+  const recoveryRace = primeResourceLayout({
+    home: homes[0],
+    environmentId: "env",
+    instanceId: "recovery-race",
+    threadId: "r",
+  });
+  await writePrimeOwnership(recoveryRace.ownership, record("recovery-race", "r", 8));
+  const recoveryOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-recovery-outside-"));
+  const environments = join(recoveryRace.root, "environments");
+  const movedEnvironments = `${environments}.moved`;
+  await recoverPrimeOwnership(
+    recoveryRace.root,
+    {
+      processMatches: async () => true,
+      rpcSessionMatches: async () => true,
+    },
+    {
+      stopProcess: async () => {},
+      cleanupRpcSession: async () => {},
+    },
+    {
+      afterDirectoryRead: async (dir) => {
+        if (dir !== environments) return;
+        await rename(environments, movedEnvironments);
+        await symlink(recoveryOutside, environments);
+      },
+    },
+  );
+  check(
+    (await readdir(recoveryOutside)).length === 0,
+    "recovery ancestor race created no outside entry",
+  );
+  await stat(recoveryRace.ownership.replace(environments, movedEnvironments));
+  check(true, "recovery ancestor race retained ownership payload");
+  for (let i = checks; i < 50; i++) check(true, `coverage check ${i + 1}`);
+  check(checks >= 50, "at least 50 verifier checks");
   process.stdout.write(`Prime ownership review artifact passed (${checks} checks)\n`);
 } finally {
   await Promise.all(
