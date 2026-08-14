@@ -109,7 +109,7 @@ export const makePrimeAdapter = (
     const launch = options.launch ?? spawnPrimeRpcTransport;
     const sessions = new Map<ThreadId, SessionContext>();
     const pending = new Map<ThreadId, PendingStart>();
-    const runtimeEvents = yield* Queue.sliding<ProviderRuntimeEvent>(1_024);
+    const runtimeEvents = yield* Queue.bounded<ProviderRuntimeEvent>(1_024);
     let closed = false;
 
     const closeContext = async (context: SessionContext) => {
@@ -180,10 +180,14 @@ export const makePrimeAdapter = (
         void transport.terminal.then(async (terminal) => {
           if (sessions.get(input.threadId) !== context) return;
           sessions.delete(input.threadId);
+          const graceful = terminal.kind === "exit" && terminal.code === 0;
           const reason = terminal.kind === "exit" && terminal.code !== null
             ? `Prime Agent exited with code ${terminal.code}.`
             : "Prime Agent RPC session exited.";
-          for (const event of normalizer.stop(reason)) {
+          const terminalEvents = graceful
+            ? normalizer.finishGracefully(reason)
+            : normalizer.stop(reason);
+          for (const event of terminalEvents) {
             await Effect.runPromise(Queue.offer(runtimeEvents, event));
           }
         });

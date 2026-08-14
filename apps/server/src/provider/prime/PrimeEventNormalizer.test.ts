@@ -15,4 +15,8 @@ describe("PrimeEventNormalizer",()=>{
 
  it("emits contract-valid canonical records",()=>{const n=make();const records=[...n.drain(known({type:"turn_start"}) as any),...n.drain(known({type:"message_start",message:{role:"assistant"}}) as any),...n.drain(known({type:"message_update",message:{role:"assistant",usage:{totalTokens:2}},assistantMessageEvent:{type:"reasoning_delta",delta:"x"}}) as any),...n.stop("boom")];for(const record of records)expect(()=>Schema.decodeUnknownSync(ProviderRuntimeEvent)(record)).not.toThrow();});
 
+ it("classifies clean process exit as graceful exactly once",()=>{const n=make();n.drain(known({type:"turn_start"}) as any);const first=n.finishGracefully("clean"),second=n.finishGracefully("late");expect(first.map(x=>x.type)).toEqual(["turn.completed","session.exited"]);expect((first.at(-1) as any).payload.exitKind).toBe("graceful");expect(second).toEqual([]);});
+
+ it("maps nested retry and provider error semantics",()=>{const n=make();n.drain(known({type:"turn_start"}) as any);n.drain(known({type:"message_start",message:{role:"assistant"}}) as any);const retry=n.drain(known({type:"message_update",message:{role:"assistant"},assistantMessageEvent:{type:"auto_retry",delta:""}}) as any);const failed=n.drain(known({type:"message_end",message:{role:"assistant",stopReason:"error"}}) as any);expect(retry[0]?.type).toBe("runtime.warning");expect(failed.map(x=>x.type)).toEqual(["item.completed","runtime.error"]);});
+
 });
