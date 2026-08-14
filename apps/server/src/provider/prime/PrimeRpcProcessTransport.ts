@@ -4,6 +4,7 @@ import {
   type ChildProcessWithoutNullStreams,
   type SpawnOptionsWithoutStdio,
 } from "node:child_process";
+import { clearTimeout, setTimeout } from "node:timers";
 import type { PrimeRpcTransport } from "./PrimeRpcClient.ts";
 
 /**
@@ -87,7 +88,14 @@ export const spawnPrimeRpcTransport = (
       child.stdin.destroy();
       child.stdout.destroy();
       child.stderr.destroy();
-      if (child.exitCode === null && child.signalCode === null && !child.killed) child.kill();
+      if (child.exitCode === null && child.signalCode === null && !child.killed) {
+        child.kill();
+        const escalation = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        }, 1_000);
+        escalation.unref?.();
+        void terminal.finally(() => clearTimeout(escalation));
+      }
     },
   };
 };

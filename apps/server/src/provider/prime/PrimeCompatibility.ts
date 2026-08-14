@@ -16,5 +16,8 @@ export const classifyPrimeCompatibility = (version: string): PrimeCompatibilityB
   ) {
     return "incompatible";
   }
-  return version === MINIMUM_PRIME_AGENT_VERSION ? "compatible" : "advisory";
+  const semanticVersion = version.split("+", 1)[0]!;
+  return compareSemverVersions(semanticVersion, MINIMUM_PRIME_AGENT_VERSION) === 0
+    ? "compatible"
+    : "advisory";
 };

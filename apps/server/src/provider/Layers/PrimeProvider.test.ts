@@ -5,6 +5,8 @@ import * as NodeURL from "node:url";
 import {
   PRIME_PROVIDER_CHECKING_SUMMARY,
   PrimeProviderProbeCache,
+  type PrimeProbeSummary,
+  primeModelToServerModel,
   primeProbeToSnapshot,
   probePrimeProvider,
 } from "./PrimeProvider.ts";
@@ -19,6 +21,9 @@ const testEnvironment = (scenario: string, version = "0.7.2", marker?: string) =
   T3_TEST_PRIME_VERSION: version,
   ...(marker ? { T3_TEST_PRIME_MARKER: marker } : {}),
   PRIME_AGENT_TOKEN: "must-not-leak",
+  OPENAI_API_KEY: "must-not-leak",
+  ANTHROPIC_API_KEY: "must-not-leak",
+  SECRET_TOKEN: "must-not-leak",
   XDG_CONFIG_HOME: "/must-not-leak",
 });
 const probe = (scenario: string, version = "0.7.2", extra = {}) =>
@@ -44,6 +49,31 @@ describe("PrimeProvider", () => {
         return descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [];
       })(),
       ["off", "low", "high"],
+    );
+  });
+  it("does not invent image capabilities or defaults and ignores inherited thinking keys", () => {
+    const inherited = Object.create({ high: "high" }) as Record<string, string>;
+    inherited.low = "low";
+    const model = primeModelToServerModel({
+      id: "model-b",
+      name: "Model B",
+      api: "api",
+      provider: "prime",
+      baseUrl: "https://example.invalid",
+      reasoning: true,
+      input: ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 1000,
+      maxTokens: 100,
+      thinkingLevelMap: inherited,
+      featured: false,
+    });
+    assert.ok(!("isDefault" in model));
+    assert.ok(!("image" in model));
+    const descriptor = model.capabilities?.optionDescriptors?.[0];
+    assert.deepStrictEqual(
+      descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [],
+      ["low"],
     );
   });
   it("blocks old versions before spawning RPC and advises a passing newer version", async () => {
@@ -85,12 +115,21 @@ describe("PrimeProvider", () => {
         argv: string[];
         home: string;
         primeToken?: string;
+        openAiKey?: string;
+        anthropicKey?: string;
+        secretToken?: string;
         xdg: string;
+        session: string;
       };
       const session = observed.argv[observed.argv.indexOf("--session-dir") + 1]!;
       assert.ok(observed.home.includes("t3-prime-probe-"));
       assert.strictEqual(observed.primeToken, undefined);
+      assert.strictEqual(observed.openAiKey, undefined);
+      assert.strictEqual(observed.anthropicKey, undefined);
+      assert.strictEqual(observed.secretToken, undefined);
       assert.ok(observed.xdg.includes("t3-prime-probe-"));
+      assert.ok(!observed.session.includes("userdata/prime"));
+      assert.ok(!observed.session.includes("threads"));
       assert.ok(!NodeFS.existsSync(session));
     } finally {
       try {
@@ -100,6 +139,7 @@ describe("PrimeProvider", () => {
   });
   it("rejects prerelease, adversarial, mismatched, and unusable responses", async () => {
     assert.strictEqual((await probe("ready", "0.7.2-beta.1")).readiness, "incompatible");
+    assert.strictEqual((await probe("split-version")).readiness, "incompatible");
     assert.strictEqual(
       (await probe("ready", "0.7.2\nprime-agent 99.0.0")).readiness,
       "incompatible",
@@ -110,6 +150,7 @@ describe("PrimeProvider", () => {
   it("classifies only known setup failures as setup-required without leaking details", async () => {
     const failed = await probe("runtime-failure");
     assert.strictEqual(failed.readiness, "runtime-error");
+    assert.strictEqual((await probe("runtime-required")).readiness, "runtime-error");
     assert.ok(!JSON.stringify(failed).includes("account@example.com"));
   });
   it("cleans isolated resources after abort", async () => {
@@ -120,15 +161,43 @@ describe("PrimeProvider", () => {
       "runtime-error",
     );
   });
-  it("cleans isolated resources after a hanging version check", async () => {
-    const before = new Set(
-      NodeFS.readdirSync("/tmp").filter((name) => name.startsWith("t3-prime-probe-")),
-    );
-    await probe("version-timeout", "0.7.2", { timeoutMs: 20 });
-    const after = NodeFS.readdirSync("/tmp").filter(
-      (name) => name.startsWith("t3-prime-probe-") && !before.has(name),
-    );
-    assert.deepStrictEqual(after, []);
+  it("cleans isolated resources across version and RPC failures", async () => {
+    for (const [scenario, version] of [
+      ["version-timeout", "0.7.2"],
+      ["missing-version", "0.7.2"],
+      ["ready", "0.7.1"],
+      ["malformed", "0.7.2"],
+    ] as const) {
+      const before = new Set(
+        NodeFS.readdirSync("/tmp").filter((name) => name.startsWith("t3-prime-probe-")),
+      );
+      await probe(scenario, version, { timeoutMs: 20 });
+      const after = NodeFS.readdirSync("/tmp").filter(
+        (name) => name.startsWith("t3-prime-probe-") && !before.has(name),
+      );
+      assert.deepStrictEqual(after, []);
+    }
+  });
+  it("waits for the exact RPC child to close before removing its root", async () => {
+    const marker = `/tmp/t3-prime-exit-marker-${process.pid}`;
+    try {
+      await probePrimeProvider({
+        settings,
+        enabled: true,
+        environment: {
+          ...testEnvironment("delayed-close"),
+          T3_TEST_PRIME_EXIT_MARKER: marker,
+        },
+      });
+      const observed = JSON.parse(NodeFS.readFileSync(marker, "utf8")) as {
+        rootExistedAtExit: boolean;
+      };
+      assert.strictEqual(observed.rootExistedAtExit, true);
+    } finally {
+      try {
+        NodeFS.unlinkSync(marker);
+      } catch {}
+    }
   });
   it("exports a truthful checking snapshot", () => {
     const snapshot = primeProbeToSnapshot({
@@ -180,5 +249,47 @@ describe("PrimeProvider", () => {
       staleModels: [model],
     });
     assert.strictEqual(snapshot.models[0]?.availability, "stale");
+  });
+  it("invalidates in-flight ownership without allowing stale repopulation", async () => {
+    const cache = new PrimeProviderProbeCache(100);
+    let resolveOld!: (value: PrimeProbeSummary) => void;
+    let resolveNew!: (value: PrimeProbeSummary) => void;
+    const old = cache.refresh(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+      0,
+    );
+    cache.invalidate();
+    const newer = cache.refresh(
+      () =>
+        new Promise((resolve) => {
+          resolveNew = resolve;
+        }),
+      1,
+    );
+    assert.notStrictEqual(old, newer);
+    const newSummary: PrimeProbeSummary = {
+      version: "0.8.0",
+      compatibility: "advisory",
+      readiness: "advisory",
+      models: [],
+    };
+    resolveNew(newSummary);
+    await newer;
+    const oldSummary: PrimeProbeSummary = {
+      version: "0.7.2",
+      compatibility: "compatible",
+      readiness: "ready",
+      models: [],
+    };
+    resolveOld(oldSummary);
+    await old;
+    assert.strictEqual(cache.stale, newSummary);
+    assert.strictEqual(
+      await cache.refresh(() => Promise.reject(new Error("not called")), 2),
+      newSummary,
+    );
   });
 });

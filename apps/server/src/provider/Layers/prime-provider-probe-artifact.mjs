@@ -4,9 +4,11 @@ import { spawn } from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeTimers from "node:timers/promises";
 import * as NodeUtil from "node:util";
 import * as NodeFS from "node:fs";
 import * as NodeBuffer from "node:buffer";
+import { clearTimeout as clearTimeout$1, setTimeout as setTimeout$1 } from "node:timers";
 //#region node_modules/.pnpm/effect@4.0.0-beta.103_patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6/node_modules/effect/dist/Pipeable.js
 /**
  * The `Pipeable` module defines the shared interface and implementation helpers
@@ -35630,7 +35632,8 @@ const classifyPrimeCompatibility = (version) => {
     compareSemverVersions(version, "0.7.2") < 0
   )
     return "incompatible";
-  return version === "0.7.2" ? "compatible" : "advisory";
+  const semanticVersion = version.split("+", 1)[0];
+  return compareSemverVersions(semanticVersion, "0.7.2") === 0 ? "compatible" : "advisory";
 };
 /** A transport-boundary error which deliberately never retains raw payloads. */
 var PrimeRpcFramingError = class extends Error {
@@ -36539,7 +36542,14 @@ const spawnPrimeRpcTransport = (command, args, options = {}) => {
       child.stdin.destroy();
       child.stdout.destroy();
       child.stderr.destroy();
-      if (child.exitCode === null && child.signalCode === null && !child.killed) child.kill();
+      if (child.exitCode === null && child.signalCode === null && !child.killed) {
+        child.kill();
+        const escalation = setTimeout$1(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        }, 1e3);
+        escalation.unref?.();
+        terminal.finally(() => clearTimeout$1(escalation));
+      }
     },
   };
 };
@@ -36551,23 +36561,14 @@ const parseVersion = (value) => {
   return value.trim().match(/^prime-agent\s+(\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?)$/)?.[1] ?? null;
 };
 const commandOptions = (signal) => (signal === void 0 ? {} : { signal });
+const CLEANUP_TIMEOUT_MS = 2e3;
+const cleanupTimer = (ms) => NodeTimers.setTimeout(ms, "timeout", { ref: false });
 const isolatedProbeEnvironment = (home, source) => {
   const env = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (
-      key.startsWith("PRIME_") ||
-      key === "PRIME" ||
-      key.startsWith("T3_") ||
-      key === "XDG_CONFIG_HOME" ||
-      key === "XDG_DATA_HOME" ||
-      key === "XDG_STATE_HOME" ||
-      key === "HOME" ||
-      key === "USERPROFILE" ||
-      key === "TMPDIR"
-    )
-      continue;
-    if (value !== void 0) env[key] = value;
-  }
+  const allowed =
+    /^(?:PATH|PATHEXT|SystemRoot|WINDIR|ComSpec|LANG|LC_[A-Za-z0-9_]+|NO_COLOR|FORCE_COLOR)$/i;
+  for (const [key, value] of Object.entries(source))
+    if (allowed.test(key) && value !== void 0) env[key] = value;
   return {
     ...env,
     HOME: home,
@@ -36576,10 +36577,12 @@ const isolatedProbeEnvironment = (home, source) => {
     XDG_DATA_HOME: NodePath.join(home, ".local", "share"),
     XDG_STATE_HOME: NodePath.join(home, ".local", "state"),
     TMPDIR: home,
+    TMP: home,
+    TEMP: home,
   };
 };
 const isSetupFailure = (error) =>
-  /(?:setup|required|not[ -]?authenticated|unauthorized|login|required|no credentials|missing credentials)/i.test(
+  /(?:setup required|authentication required|not[ -]?authenticated|unauthorized|log[ -]?in required|credentials? (?:are )?(?:required|missing)|no credentials)/i.test(
     error,
   );
 const primeModelToServerModel = (model) => {
@@ -36657,15 +36660,16 @@ const probePrimeProvider = async (input) => {
     };
     let stdout;
     try {
-      const result = await execFileAsync(input.settings.binaryPath, ["--version"], {
-        cwd: root,
-        env: environment,
-        timeout: timeoutMs,
-        ...(input.signal === void 0 ? {} : { signal: input.signal }),
-        windowsHide: true,
-        maxBuffer: 16 * 1024,
-      });
-      stdout = `${result.stdout}${result.stderr}`;
+      stdout = (
+        await execFileAsync(input.settings.binaryPath, ["--version"], {
+          cwd: root,
+          env: environment,
+          timeout: timeoutMs,
+          ...(input.signal === void 0 ? {} : { signal: input.signal }),
+          windowsHide: true,
+          maxBuffer: 16 * 1024,
+        })
+      ).stdout;
     } catch (error) {
       return (error && typeof error === "object" && "code" in error ? String(error.code) : "") ===
         "ENOENT"
@@ -36783,7 +36787,12 @@ const probePrimeProvider = async (input) => {
     };
   } finally {
     client?.close();
-    await Promise.resolve(transport?.close?.()).catch(() => void 0);
+    if (transport) {
+      await Promise.resolve(transport.close?.()).catch(() => void 0);
+      await Promise.race([transport.terminal, cleanupTimer(CLEANUP_TIMEOUT_MS)]).catch(
+        () => void 0,
+      );
+    }
     await NodeFSP.rm(root, {
       recursive: true,
       force: true,

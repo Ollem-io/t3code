@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeTimers from "node:timers/promises";
 import * as NodeUtil from "node:util";
 import {
   type PrimeAgentSettings,
@@ -54,25 +55,19 @@ const parseVersion = (value: string): string | null => {
 const commandOptions = (signal: AbortSignal | undefined) =>
   signal === undefined ? {} : { signal };
 
+const CLEANUP_TIMEOUT_MS = 2_000;
+const cleanupTimer = (ms: number): Promise<"timeout"> =>
+  NodeTimers.setTimeout(ms, "timeout" as const, { ref: false });
+
 const isolatedProbeEnvironment = (
   home: string,
   source: Readonly<NodeJS.ProcessEnv>,
 ): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = {};
+  const allowed =
+    /^(?:PATH|PATHEXT|SystemRoot|WINDIR|ComSpec|LANG|LC_[A-Za-z0-9_]+|NO_COLOR|FORCE_COLOR)$/i;
   for (const [key, value] of Object.entries(source)) {
-    if (
-      key.startsWith("PRIME_") ||
-      key === "PRIME" ||
-      key.startsWith("T3_") ||
-      key === "XDG_CONFIG_HOME" ||
-      key === "XDG_DATA_HOME" ||
-      key === "XDG_STATE_HOME" ||
-      key === "HOME" ||
-      key === "USERPROFILE" ||
-      key === "TMPDIR"
-    )
-      continue;
-    if (value !== undefined) env[key] = value;
+    if (allowed.test(key) && value !== undefined) env[key] = value;
   }
   return {
     ...env,
@@ -82,11 +77,13 @@ const isolatedProbeEnvironment = (
     XDG_DATA_HOME: NodePath.join(home, ".local", "share"),
     XDG_STATE_HOME: NodePath.join(home, ".local", "state"),
     TMPDIR: home,
+    TMP: home,
+    TEMP: home,
   };
 };
 
 const isSetupFailure = (error: string): boolean =>
-  /(?:setup|required|not[ -]?authenticated|unauthorized|login|required|no credentials|missing credentials)/i.test(
+  /(?:setup required|authentication required|not[ -]?authenticated|unauthorized|log[ -]?in required|credentials? (?:are )?(?:required|missing)|no credentials)/i.test(
     error,
   );
 
@@ -168,7 +165,7 @@ export const probePrimeProvider = async (input: {
         windowsHide: true,
         maxBuffer: 16 * 1024,
       });
-      stdout = `${result.stdout}${result.stderr}`;
+      stdout = result.stdout;
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
       return code === "ENOENT"
@@ -272,7 +269,14 @@ export const probePrimeProvider = async (input: {
     return { version, compatibility, models: [], ...coarseFailure(error) };
   } finally {
     client?.close();
-    await Promise.resolve(transport?.close?.()).catch(() => undefined);
+    if (transport) {
+      await Promise.resolve(transport.close?.()).catch(() => undefined);
+      // `terminal` settles only after the exact child's stdio and process have closed.
+      // Bound cleanup so a broken executable cannot hold provider discovery forever.
+      await Promise.race([transport.terminal, cleanupTimer(CLEANUP_TIMEOUT_MS)]).catch(
+        () => undefined,
+      );
+    }
     await NodeFSP.rm(root, { recursive: true, force: true });
   }
 };
@@ -334,6 +338,7 @@ export class PrimeProviderProbeCache {
   #value: { summary: PrimeProbeSummary; checkedAt: number } | undefined;
   #inFlight: Promise<PrimeProbeSummary> | undefined;
   #controller: AbortController | undefined;
+  #generation = 0;
   readonly ttlMs: number;
   constructor(ttlMs = PRIME_PROVIDER_CACHE_TTL_MS) {
     this.ttlMs = ttlMs;
@@ -346,14 +351,19 @@ export class PrimeProviderProbeCache {
       return Promise.resolve(this.#value.summary);
     if (this.#inFlight) return this.#inFlight;
     const controller = new AbortController();
+    const generation = this.#generation;
     this.#controller = controller;
     const promise = run(controller.signal)
       .then((summary) => {
-        if (summary.readiness !== "runtime-error" || !this.#value)
+        if (
+          generation === this.#generation &&
+          (summary.readiness !== "runtime-error" || !this.#value)
+        )
           this.#value = { summary, checkedAt: now };
         return summary;
       })
       .finally(() => {
+        if (generation !== this.#generation) return;
         if (this.#inFlight === promise) this.#inFlight = undefined;
         if (this.#controller === controller) this.#controller = undefined;
       });
@@ -361,8 +371,12 @@ export class PrimeProviderProbeCache {
     return promise;
   }
   invalidate(): void {
+    this.#generation += 1;
     this.#value = undefined;
-    this.#controller?.abort();
+    const controller = this.#controller;
+    this.#inFlight = undefined;
+    this.#controller = undefined;
+    controller?.abort();
   }
   get stale(): PrimeProbeSummary | undefined {
     return this.#value?.summary;
