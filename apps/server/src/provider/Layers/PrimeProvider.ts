@@ -60,8 +60,7 @@ const isolatedProbeEnvironment = (
   source: Readonly<NodeJS.ProcessEnv>,
 ): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = {};
-  const allowed =
-    /^(?:PATH|PATHEXT|SystemRoot|WINDIR|ComSpec|LANG|LC_[A-Za-z0-9_]+|NO_COLOR|FORCE_COLOR)$/i;
+  const allowed = /^(?:PATH|PATHEXT|SystemRoot|WINDIR|ComSpec|LANG|LC_[A-Za-z0-9_]+)$/i;
   for (const [key, value] of Object.entries(source)) {
     if (allowed.test(key) && value !== undefined) env[key] = value;
   }

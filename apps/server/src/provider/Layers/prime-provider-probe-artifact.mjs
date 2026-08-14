@@ -36604,8 +36604,7 @@ const parseVersion = (value) => {
 const commandOptions = (signal) => (signal === void 0 ? {} : { signal });
 const isolatedProbeEnvironment = (home, source) => {
   const env = {};
-  const allowed =
-    /^(?:PATH|PATHEXT|SystemRoot|WINDIR|ComSpec|LANG|LC_[A-Za-z0-9_]+|NO_COLOR|FORCE_COLOR)$/i;
+  const allowed = /^(?:PATH|PATHEXT|SystemRoot|WINDIR|ComSpec|LANG|LC_[A-Za-z0-9_]+)$/i;
   for (const [key, value] of Object.entries(source))
     if (allowed.test(key) && value !== void 0) env[key] = value;
   return {
@@ -36843,11 +36842,12 @@ const probePrimeProvider = async (input) => {
 };
 //#endregion
 //#region apps/server/src/provider/Layers/prime-provider-probe-artifact.ts
+const enabled = process.env.PRIME_AGENT_ENABLED !== "0";
 const binaryPath = process.env.PRIME_AGENT_BIN;
-if (!binaryPath) throw new Error("PRIME_AGENT_BIN is required");
+if (enabled && !binaryPath) throw new Error("PRIME_AGENT_BIN is required");
 const result = await probePrimeProvider({
-  settings: { binaryPath },
-  enabled: true,
+  settings: { binaryPath: binaryPath ?? "prime-agent" },
+  enabled,
 });
 process.stdout.write(
   JSON.stringify({
