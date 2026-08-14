@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-nocheck -- intentionally byte-identical dependency-free JavaScript artifact.
 import assert from "node:assert/strict";
 const models=[{id:"same",provider:"alpha",input:["text","image"],thinkingLevelMap:{high:"high"}},{id:"same",provider:"beta",input:["text"]}];
 const resolve=(selection)=>{if(selection.nativeIdentity)return models.find(m=>m.provider===selection.nativeIdentity.provider&&m.id===selection.nativeIdentity.modelId);const hit=models.filter(m=>m.id===selection.model);if(hit.length!==1)throw Error("ambiguous");return hit[0]};
