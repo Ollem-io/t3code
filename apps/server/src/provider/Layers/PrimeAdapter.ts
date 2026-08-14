@@ -198,7 +198,7 @@ export const makePrimeAdapter = (
               const supported = request.method === "select" || request.method === "confirm" || request.method === "input" || request.method === "editor";
               if (!supported || context.pendingRequests.has(request.id) || context.pendingRequests.size >= MAX_PENDING_REQUESTS) {
                 canonicalEnvelope = false;
-                await client.command({ type: "extension_ui_response", id: request.id, cancelled: true }).catch(() => undefined);
+                await client.command({ type: "extension_ui_response", id: request.id, cancelled: true }, { requestId: request.id }).catch(() => undefined);
                 for (const event of normalizer.cancelled(request.id, !supported ? "Prime Agent interactive request was cancelled because this method is unsupported." : "Prime Agent interactive request was cancelled because the request limit was reached.")) await Effect.runPromise(Queue.offer(runtimeEvents, event));
               } else {
                 context.pendingRequests.set(request.id, {
@@ -372,8 +372,9 @@ export const makePrimeAdapter = (
     const expectSuccess = async (
       context: SessionContext,
       command: Parameters<PrimeRpcClient["command"]>[0],
+      commandOptions?: Parameters<PrimeRpcClient["command"]>[1],
     ) => {
-      const response = await context.client.command(command);
+      const response = await context.client.command(command, commandOptions);
       if (!response.success || response.command !== command.type)
         throw new Error(`${command.type} failed`);
     };
@@ -576,7 +577,7 @@ export const makePrimeAdapter = (
           const context = requireContext(threadId); const id = String(requestId); const pending = context.pendingRequests.get(id);
           if (!pending || pending.method !== "confirm") throw new Error("Interactive request is not a confirmation.");
           const value = decision === "accept" || decision === "acceptForSession";
-          await expectSuccess(context, value ? { type: "extension_ui_response", id, confirmed: true } : { type: "extension_ui_response", id, cancelled: true });
+          await expectSuccess(context, value ? { type: "extension_ui_response", id, confirmed: true } : { type: "extension_ui_response", id, cancelled: true }, { requestId: id });
           context.pendingRequests.delete(id);
           for (const event of context.normalizer.resolved(id, "request", { decision: value ? decision : "cancel" })) await Effect.runPromise(Queue.offer(runtimeEvents, event));
         },
@@ -593,7 +594,7 @@ export const makePrimeAdapter = (
           const value = Array.isArray(raw) ? raw[0] : raw;
           if (typeof value !== "string" || value.length > MAX_NATIVE_STRING) throw new Error("Prime Agent input response must be a bounded string.");
           const clean = cleanNative(value); if (pending.method === "select" && !pending.options.includes(clean)) throw new Error("Prime Agent select answer is invalid.");
-          await expectSuccess(context, { type: "extension_ui_response", id, value: clean });
+          await expectSuccess(context, { type: "extension_ui_response", id, value: clean }, { requestId: id });
           context.pendingRequests.delete(id);
           for (const event of context.normalizer.resolved(id, "user-input", { answers: { [id]: clean } })) await Effect.runPromise(Queue.offer(runtimeEvents, event));
         },

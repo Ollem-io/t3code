@@ -68,6 +68,8 @@ export type PrimeRpcOutboundCommand = CommandWithoutId<PrimeRpcCommand>;
 export interface PrimeRpcCommandOptions {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+  /** Preserve a native correlation id when the RPC operation requires it (extension UI responses). */
+  readonly requestId?: string;
 }
 export interface PrimeRpcClientOptions {
   readonly requestIdPrefix?: string;
@@ -170,7 +172,9 @@ export class PrimeRpcClient {
     if (this.#closed)
       return Promise.reject(this.#closeError ?? new PrimeRpcClientError("exit", { closed: true }));
     const timeout = safeInteger(options.timeoutMs ?? this.#defaultTimeoutMs, 1, "timeoutMs");
-    const id = `${this.#prefix}-${++this.#nextRequest}`;
+    const id = options.requestId ?? `${this.#prefix}-${++this.#nextRequest}`;
+    if (this.#pending.has(id))
+      return Promise.reject(new PrimeRpcClientError("protocol", { id, duplicatePendingRequest: true }));
     let record: Uint8Array;
     try {
       record = encodePrimeRpcJsonlRecord({ ...command, id } as PrimeRpcCommand, {
