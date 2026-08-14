@@ -9,6 +9,9 @@ const expected = {
   "additive-field.jsonl": ["response", "known-event"],
   "malformed.jsonl": Array(17).fill("malformed"),
   "unknown-event.jsonl": ["unknown-event"],
+  "pa-m09-redacted-events.jsonl": ["known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "unknown-event"],
+  "pa-m10-redacted-lifecycle.jsonl": ["known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "known-event", "unknown-event"],
+  "pa-m11-redacted-text-generation.jsonl": ["response", "response", "response", "response", "known-event", "known-event", "known-event", "known-event"],
 } as const;
 
 it("decodes the append-only 0.7.2 fixture corpus", () => {

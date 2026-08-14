@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck -- byte-identical dependency-free PA-M11 artifact.
 import assert from "node:assert/strict";
-const fixtureSha256="3e04facf0c6cecf5dc39d04720fb19ee1ef117947aa52e1cfe5ded40d536be2d";assert.equal(fixtureSha256.length,64);
+const fixtureSha256="8b0b0a0aabc9a5d17df6656b8b55887238a574a9db269307d91e682887e3ad47";assert.equal(fixtureSha256.length,64);
 const commands=["get_state","get_available_models","set_model","prompt"], model={provider:"provider",modelId:"model"};
 assert.deepStrictEqual(commands,["get_state","get_available_models","set_model","prompt"]);assert.deepStrictEqual(model,{provider:"provider",modelId:"model"});
 const deltas=['{"title":"Useful ','title"}'],snapshot='{"title":"Useful title"}';let output=deltas.join('');if(snapshot.startsWith(output))output+=snapshot.slice(output.length);else output=snapshot;assert.deepStrictEqual(JSON.parse(output),{title:"Useful title"});
