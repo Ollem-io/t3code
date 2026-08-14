@@ -103,7 +103,7 @@ export interface ProviderServiceShape {
   readonly rollbackConversation: (input: {
     readonly threadId: ThreadId;
     readonly numTurns: number;
-  }) => Effect.Effect<void, ProviderServiceError>;
+  }) => Effect.Effect<{ readonly rewound: boolean }, ProviderServiceError>;
 
   /**
    * Canonical provider runtime event stream.

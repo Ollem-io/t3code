@@ -85,7 +85,7 @@ function createProviderServiceHarness(
   const now = "2026-01-01T00:00:00.000Z";
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const rollbackConversation = vi.fn(
-    (_input: { readonly threadId: ThreadId; readonly numTurns: number }) => Effect.void,
+    (_input: { readonly threadId: ThreadId; readonly numTurns: number }) => Effect.succeed({ rewound: true }),
   );
 
   const unsupported = <A>() =>
@@ -1237,7 +1237,7 @@ describe("CheckpointReactor", () => {
   it("completes filesystem revert with an explicit provider-history disclaimer when rollback is unsupported", async () => {
     const harness = await createHarness();
     harness.provider.rollbackConversation.mockImplementation(() =>
-      Effect.die(new Error("Provider rollback is not supported")) as never,
+      Effect.succeed({ rewound: false }) as never,
     );
     const createdAt = "2026-01-01T00:00:00.000Z";
     await Effect.runPromise(harness.engine.dispatch({
