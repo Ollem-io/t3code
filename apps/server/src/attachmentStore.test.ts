@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  attachmentRelativePath,
   createAttachmentId,
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPathById,
@@ -77,4 +78,21 @@ describe("attachmentStore", () => {
       NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
     }
   });
+  it("uses canonical MIME extension for images and safe filename extension for text", () => {
+    expect(attachmentRelativePath({
+      type: "image",
+      id: "thread-1-00000000-0000-4000-8000-000000000001",
+      name: "misleading.jpg",
+      mimeType: "image/png",
+      sizeBytes: 3,
+    })).toMatch(/\.png$/);
+    expect(attachmentRelativePath({
+      type: "text",
+      id: "thread-1-00000000-0000-4000-8000-000000000002",
+      name: "error.log",
+      mimeType: "text/plain",
+      sizeBytes: 4,
+    })).toMatch(/\.log$/);
+  });
+
 });
