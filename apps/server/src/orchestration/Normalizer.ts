@@ -8,6 +8,7 @@ import {
   type OrchestrationCommand,
   OrchestrationDispatchCommandError,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES,
 } from "@t3tools/contracts";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -109,16 +110,23 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       (attachment) =>
         Effect.gen(function* () {
           const parsed = parseBase64DataUrl(attachment.dataUrl);
-          if (!parsed || !parsed.mimeType.startsWith("image/")) {
+          const expectedMime = attachment.mimeType.toLowerCase();
+          const validKind = attachment.type === "image"
+            ? parsed?.mimeType.startsWith("image/") === true
+            : parsed?.mimeType === expectedMime && /^(?:text\/|application\/(?:json|xml|javascript|x-yaml)$)/i.test(expectedMime);
+          if (!parsed || !validKind || parsed.mimeType !== expectedMime) {
             return yield* new OrchestrationDispatchCommandError({
-              message: `Invalid image attachment payload for '${attachment.name}'.`,
+              message: `Invalid ${attachment.type} attachment payload for '${attachment.name}'.`,
             });
           }
 
           const bytes = Buffer.from(parsed.base64, "base64");
-          if (bytes.byteLength === 0 || bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+          const maxBytes = attachment.type === "image"
+            ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
+            : PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES;
+          if (bytes.byteLength === 0 || bytes.byteLength > maxBytes || bytes.byteLength !== attachment.sizeBytes) {
             return yield* new OrchestrationDispatchCommandError({
-              message: `Image attachment '${attachment.name}' is empty or too large.`,
+              message: `${attachment.type === "image" ? "Image" : "Text"} attachment '${attachment.name}' is empty, mismatched, or too large.`,
             });
           }
 
@@ -130,7 +138,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
           }
 
           const persistedAttachment = {
-            type: "image" as const,
+            type: attachment.type,
             id: attachmentId,
             name: attachment.name,
             mimeType: parsed.mimeType.toLowerCase(),
