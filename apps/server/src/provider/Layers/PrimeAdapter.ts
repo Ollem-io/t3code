@@ -50,6 +50,7 @@ type SessionContext = {
   selectedModel: { readonly provider: string; readonly modelId: string } | undefined;
   thinkingLevel: string | undefined;
   readonly normalizer: PrimeEventNormalizer;
+  eventDrain: Promise<void> | undefined;
 };
 type PendingStart = { readonly key: string; readonly promise: Promise<ProviderSession> };
 
@@ -166,10 +167,10 @@ export const makePrimeAdapter = (
           providerInstanceId: options.instanceId,
         });
         const context: SessionContext = {
-          key, session, client, transport, selectedModel: undefined, thinkingLevel: undefined, normalizer,
+          key, session, client, transport, selectedModel: undefined, thinkingLevel: undefined, normalizer, eventDrain: undefined,
         };
         sessions.set(input.threadId, context);
-        void (async () => {
+        context.eventDrain = (async () => {
           for await (const envelope of client.events()) {
             if (sessions.get(input.threadId) !== context) break;
             for (const event of normalizer.drain(envelope)) {
@@ -178,6 +179,8 @@ export const makePrimeAdapter = (
           }
         })();
         void transport.terminal.then(async (terminal) => {
+          if (sessions.get(input.threadId) !== context) return;
+          await context.eventDrain;
           if (sessions.get(input.threadId) !== context) return;
           sessions.delete(input.threadId);
           const graceful = terminal.kind === "exit" && terminal.code === 0;
@@ -278,6 +281,9 @@ export const makePrimeAdapter = (
           await pending.get(threadId)?.promise.catch(() => undefined);
           const context = sessions.get(threadId);
           if (!context) return;
+          for (const event of context.normalizer.stop("Prime Agent session was stopped.")) {
+            await Effect.runPromise(Queue.offer(runtimeEvents, event));
+          }
           sessions.delete(threadId);
           await closeContext(context);
         },
@@ -402,6 +408,11 @@ export const makePrimeAdapter = (
           closed = true;
           await Promise.all(Array.from(pending.values(), (entry) => entry.promise.catch(() => undefined)));
           const contexts = Array.from(sessions.values());
+          for (const context of contexts) {
+            for (const event of context.normalizer.stop("Prime Agent adapter was stopped.")) {
+              await Effect.runPromise(Queue.offer(runtimeEvents, event));
+            }
+          }
           sessions.clear();
           await Promise.all(contexts.map(closeContext));
         },

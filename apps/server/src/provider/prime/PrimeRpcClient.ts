@@ -355,8 +355,9 @@ export class PrimeRpcClient {
       return;
     }
     if (this.#events.length === this.#maxQueuedEvents) {
-      this.#events.shift();
       this.#droppedEvents += 1;
+      this.#close("protocol", { eventOverflow: true, maxQueuedEvents: this.#maxQueuedEvents });
+      return;
     }
     this.#events.push(event);
   }

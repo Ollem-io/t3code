@@ -121,7 +121,7 @@ describe("PrimeRpcClient", () => {
     assert.strictEqual(client.diagnostics().duplicateResponses, 3);
   });
 
-  it("fans out EOF and child exit, bounds stderr, and never lets a slow event consumer stop stdout", async () => {
+  it("fans out EOF and child exit, bounds stderr, and fails closed rather than dropping when a slow event consumer overflows", async () => {
     const { client, stdout, stderr, terminal } = fixture();
     const exitPending = client.command({ type: "get_state" });
     const eofPending = client.command({ type: "abort" });
@@ -131,8 +131,10 @@ describe("PrimeRpcClient", () => {
       '{"type":"agent_start"}\n{"type":"turn_start"}\n{"type":"message_start","message":{}}\n',
     );
     terminal.resolve({ kind: "exit", code: 17 });
-    await rejection(exitPending, "exit");
-    await rejection(eofPending, "exit");
+    await Promise.all([
+      rejection(exitPending, "protocol"),
+      rejection(eofPending, "protocol"),
+    ]);
     await flush();
     assert.deepStrictEqual(client.diagnostics(), {
       pendingRequests: 0,
