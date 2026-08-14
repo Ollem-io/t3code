@@ -234,7 +234,14 @@ export const makePrimeAdapter = (
             if (envelope._tag === "known-event" && envelope.value.type === "extension_ui_request") {
               const request = envelope.value;
               const supported = request.method === "select" || request.method === "confirm" || request.method === "input" || request.method === "editor";
-              if (!supported || context.pendingRequests.has(request.id) || context.pendingRequests.size >= MAX_PENDING_REQUESTS) {
+              if (context.pendingRequests.has(request.id)) {
+                // A duplicate native correlation id is malformed protocol state: cancelling it could
+                // accidentally resolve the original request. Fail this exact session closed instead.
+                canonicalEnvelope = false;
+                client.close();
+                await Promise.resolve(transport.close?.()).catch(() => undefined);
+                for (const event of normalizer.cancelled(request.id, "Prime Agent interactive request reused an active correlation id; the session was closed.")) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+              } else if (!supported || context.pendingRequests.size >= MAX_PENDING_REQUESTS) {
                 canonicalEnvelope = false;
                 await client.command({ type: "extension_ui_response", cancelled: true }, { requestId: request.id }).catch(() => undefined);
                 for (const event of normalizer.cancelled(request.id, !supported ? "Prime Agent interactive request was cancelled because this method is unsupported." : "Prime Agent interactive request was cancelled because the request limit was reached.")) await Effect.runPromise(Queue.offer(runtimeEvents, event));
