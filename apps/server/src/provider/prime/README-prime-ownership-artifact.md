@@ -2,7 +2,7 @@
 
 `prime-ownership-artifact.mjs` is a deterministic standalone Node ESM bundle built
 from checked-in production ownership/resource-layout code and the source verifier.
-SHA-256: `45a51414eaf47301609ff419558d002e6f755d7c2c1cbe218c9d8e4ac1c9f92e`.
+SHA-256: `e2e00a7ca7c0a5cba444f6c52e5d1475de6ba7da310d928f9199cf5a8e573e30`.
 
 Regenerate and execute it from a fresh checkout:
 
