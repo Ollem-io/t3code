@@ -14,6 +14,7 @@ import * as Stream from "effect/Stream";
 import { ServerConfig } from "../../config.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import type { TextGeneration } from "../../textGeneration/TextGeneration.ts";
+import { makePrimeTextGeneration } from "../../textGeneration/PrimeTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makePrimeAdapter } from "../Layers/PrimeAdapter.ts";
 import { primeProbeToSnapshot, probePrimeProvider } from "../Layers/PrimeProvider.ts";
@@ -116,7 +117,7 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
           streamChanges: Stream.empty,
         },
         adapter,
-        textGeneration: unsupportedTextGeneration(),
+        textGeneration: yield* makePrimeTextGeneration(config, { instanceId, environment: processEnv }),
       } satisfies ProviderInstance;
     }),
 };
