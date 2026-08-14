@@ -23,6 +23,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -1654,6 +1655,51 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         received.map((event) => event.eventId),
         [asEventId("evt-seq-1"), asEventId("evt-seq-2"), asEventId("evt-seq-3")],
       );
+    }),
+  );
+
+
+
+  it.effect("delivers every canonical event to a fast subscriber despite a stalled subscriber", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const session = yield* provider.startSession(asThreadId("thread-stalled"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-stalled"),
+        runtimeMode: "full-access",
+      });
+      const eventCount = 1025;
+      const stalledGate = yield* Deferred.make<void>();
+      const received = yield* Ref.make<Array<EventId>>([]);
+
+      const stalled = yield* Stream.take(provider.streamEvents, eventCount).pipe(
+        Stream.runForEach(() => Deferred.await(stalledGate)),
+        Effect.forkChild,
+      );
+      const fast = yield* Stream.take(provider.streamEvents, eventCount).pipe(
+        Stream.runForEach((event) => Ref.update(received, (current) => [...current, event.eventId])),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      for (let index = 0; index < eventCount; index += 1) {
+        fanout.codex.emit({
+          type: "turn.completed",
+          eventId: asEventId(`evt-stalled-${index}`),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId: session.threadId,
+          turnId: asTurnId("turn-stalled"),
+          status: "completed",
+        });
+      }
+
+      yield* Fiber.join(fast);
+      const ids = yield* Ref.get(received);
+      assert.equal(ids.length, eventCount);
+      assert.deepEqual(ids, Array.from({ length: eventCount }, (_, index) => asEventId(`evt-stalled-${index}`)));
+      yield* Fiber.interrupt(stalled);
     }),
   );
 
