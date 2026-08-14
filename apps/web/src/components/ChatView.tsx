@@ -187,7 +187,7 @@ import {
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import { resolveAppModelSelectionForInstance, resolveBoundModelSelectionState } from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { preventRepeatedTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
@@ -4824,8 +4824,8 @@ function ChatViewContent(props: ChatViewProps) {
       }
       const confirmed = await localApi.dialogs.confirm(
         [
-          `Revert this thread to checkpoint ${turnCount}?`,
-          "This will discard newer messages and turn diffs in this thread.",
+          `Restore workspace checkpoint ${turnCount}?`,
+          "This restores T3-owned workspace files. Thread messages and provider conversation history are retained unless the provider explicitly supports rewind.",
           "This action cannot be undone.",
         ].join("\n"),
         { variant: "destructive" },
@@ -5823,6 +5823,10 @@ function ChatViewContent(props: ChatViewProps) {
       if (!activeThread) {
         return null;
       }
+      const targetProvider = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
+      if (!targetProvider) {
+        return "This provider is no longer available. Open the model picker and re-select an available provider/model.";
+      }
       const reason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
         hasStartedSession: activeThread.session !== null,
@@ -5842,7 +5846,16 @@ function ChatViewContent(props: ChatViewProps) {
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
       const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-      const resolvedDriverKind = entry?.driver ?? null;
+      if (!entry) {
+        toastManager.add({
+          type: "warning",
+          title: "Provider unavailable",
+          description: "Open the model picker and re-select an available provider/model.",
+        });
+        scheduleComposerFocus();
+        return;
+      }
+      const resolvedDriverKind = entry.driver;
       if (
         lockedProvider !== null &&
         resolvedDriverKind !== null &&
@@ -6349,7 +6362,7 @@ function ChatViewContent(props: ChatViewProps) {
                             phase={phase}
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
-                            sendDisabledReason={threadDetailLoading ? "Messages loading" : null}
+                            sendDisabledReason={threadDetailLoading ? "Messages loading" : activeThread?.modelSelection ? resolveBoundModelSelectionState(settings, providerStatuses as ServerProvider[], activeThread.modelSelection).sendDisabledReason : null}
                             isPreparingWorktree={isPreparingWorktree}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}

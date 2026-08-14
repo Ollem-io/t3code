@@ -176,10 +176,26 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             />
           ) : null}
           <Tooltip>
-            <TooltipTrigger render={<span className="min-w-0 flex-1 overflow-hidden truncate" />}>
-              {triggerTitle}
+            <TooltipTrigger
+              render={
+                <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden truncate" />
+              }
+            >
+              <span className="min-w-0 truncate">{triggerTitle}</span>
+              {showInstanceBadge && activeEntry ? (
+                <span
+                  className="shrink-0 truncate text-[10px] font-normal text-muted-foreground"
+                  data-provider-instance-label
+                >
+                  · {activeEntry.displayName}
+                </span>
+              ) : null}
             </TooltipTrigger>
-            <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
+            <TooltipPopup side="top">
+              {showInstanceBadge && activeEntry
+                ? `${triggerLabel} · ${activeEntry.displayName}`
+                : triggerLabel}
+            </TooltipPopup>
           </Tooltip>
         </span>
         <span aria-hidden="true" className="flex items-center">
