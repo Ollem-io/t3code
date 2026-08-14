@@ -69,6 +69,21 @@ function readInstanceCustomModels(
   return legacyProviders[driverKind]?.customModels ?? [];
 }
 
+/** Returns whether an instance-scoped model is currently offered by the instance.
+ * Identity is the pair (instanceId, model), never the driver kind alone.
+ */
+export function isModelSelectionAvailable(
+  settings: UnifiedSettings,
+  providers: ReadonlyArray<ServerProvider>,
+  selection: Pick<ModelSelection, "instanceId" | "model">,
+): boolean {
+  const entry = deriveProviderInstanceEntries(providers).find(
+    (candidate) => candidate.instanceId === selection.instanceId,
+  );
+  if (!entry || !entry.enabled || !entry.isAvailable || entry.status !== "ready") return false;
+  return getAppModelOptionsForInstance(settings, entry).some((option) => option.slug === selection.model);
+}
+
 export interface AppModelOption {
   slug: string;
   name: string;

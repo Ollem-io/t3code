@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
   getAppModelOptionsForInstance,
+  isModelSelectionAvailable,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
 } from "./modelSelection";
@@ -55,6 +56,21 @@ function settingsWithProviderInstances(): UnifiedSettings {
 }
 
 describe("instance-scoped model selection", () => {
+  it("treats identical slugs on different instances as distinct available identities", () => {
+    const providers = [
+      provider({ instanceId: "claudeAgent", models: ["same-model"] }),
+      provider({ instanceId: "claude_personal", models: ["same-model"] }),
+    ];
+    const settings = settingsWithProviderInstances();
+    expect(isModelSelectionAvailable(settings, providers, {
+      instanceId: ProviderInstanceId.make("claudeAgent"), model: "same-model",
+    })).toBe(true);
+    expect(isModelSelectionAvailable(settings, providers, {
+      instanceId: ProviderInstanceId.make("missing"), model: "same-model",
+    })).toBe(false);
+  });
+
+
   it("preserves server-provided legacy model metadata", () => {
     const baseProvider = provider({
       instanceId: "claudeAgent",
