@@ -306,7 +306,13 @@ describe("PrimeOwnership", () => {
         await writeFile(join(path, "replacement"), "visible");
       },
     });
-    assert.strictEqual(await readFile(join(l.session, "replacement"), "utf8"), "visible");
+    assert.isFalse(
+      await stat(l.session).then(
+        () => true,
+        () => false,
+      ),
+    );
+    assert.ok((await readdir(l.thread)).some((name) => name.includes("cleaning-resource")));
     await stat(displaced);
     await stat(l.ownership);
     assert.ok(
@@ -317,10 +323,9 @@ describe("PrimeOwnership", () => {
     const home = await mkdtemp(join(tmpdir(), "prime-ancestor-race-"));
     const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
     await mkdir(l.session, { recursive: true });
+    await writeFile(join(l.session, "owned"), "must-not-escape");
     await writePrimeOwnership(l.ownership, rec("one", "a"));
     const outside = await mkdtemp(join(tmpdir(), "prime-outside-"));
-    const sentinel = join(outside, "sentinel");
-    await writeFile(sentinel, "safe");
     const moved = `${l.thread}.moved`;
     let swapped = false;
     const actions = await cleanupPrimeOwnership(l.ownership, proofs, callbacks([]), {
@@ -331,7 +336,7 @@ describe("PrimeOwnership", () => {
         await symlink(outside, l.thread);
       },
     });
-    assert.strictEqual(await readFile(sentinel, "utf8"), "safe");
+    assert.deepStrictEqual(await readdir(outside), []);
     assert.ok((await readdir(moved)).some((name) => name.includes("cleaning-resource")));
     assert.ok(
       actions.some(
@@ -341,7 +346,7 @@ describe("PrimeOwnership", () => {
     await stat(l.ownership);
   });
 
-  it("recovery enumerates retained resource claims and restores the bound generation safely", async () => {
+  it("recovery enumerates and safely retains a bound directory claim without copy restoration", async () => {
     const home = await mkdtemp(join(tmpdir(), "prime-resource-recover-"));
     const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
     await mkdir(l.session, { recursive: true });
@@ -356,10 +361,18 @@ describe("PrimeOwnership", () => {
       { ...proofs, processMatches: async () => false },
       callbacks([]),
     );
-    assert.strictEqual(await readFile(join(l.session, "owned"), "utf8"), "data");
+    assert.isFalse(
+      await stat(l.session).then(
+        () => true,
+        () => false,
+      ),
+    );
+    assert.strictEqual(await readFile(join(claim, "owned"), "utf8"), "data");
     assert.ok(
       actions.some(
-        (x) => x.kind === "warning" && x.warning.reason.includes("recovered resource claim"),
+        (x) =>
+          x.kind === "warning" &&
+          x.warning.reason.includes("retained uniquely named directory claim"),
       ),
     );
   });

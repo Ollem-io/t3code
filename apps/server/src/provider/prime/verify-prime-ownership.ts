@@ -1,4 +1,14 @@
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -252,8 +262,8 @@ try {
     },
   );
   check(
-    (await readFile(join(race.session, "replacement"), "utf8")) === "visible",
-    "raced replacement visible",
+    (await readdir(race.thread)).some((name) => name.includes("cleaning-resource")),
+    "raced replacement retained in quarantine",
   );
   await stat(displaced);
   check(true, "original raced resource retained");
@@ -263,8 +273,37 @@ try {
   );
   await stat(race.ownership);
   check(true, "raced ownership generation retained");
-  for (let i = checks; i < 38; i++) check(true, `coverage check ${i + 1}`);
-  check(checks >= 38, "at least 38 verifier checks");
+
+  const ancestorRace = primeResourceLayout({
+    home: homes[0]!,
+    environmentId: "env",
+    instanceId: "ancestor-race",
+    threadId: "r",
+  });
+  await mkdir(ancestorRace.session, { recursive: true });
+  await writeFile(join(ancestorRace.session, "owned"), "must-not-escape");
+  await writePrimeOwnership(ancestorRace.ownership, record("ancestor-race", "r", 7));
+  const outside = await mkdtemp(join(tmpdir(), "t3-pa-m06-outside-"));
+  const movedThread = `${ancestorRace.thread}.moved`;
+  await cleanupPrimeOwnership(
+    ancestorRace.ownership,
+    { processMatches: async () => true, rpcSessionMatches: async () => true },
+    { stopProcess: async () => {}, cleanupRpcSession: async () => {} },
+    {
+      afterResourceRename: async (path) => {
+        if (path !== ancestorRace.session) return;
+        await rename(ancestorRace.thread, movedThread);
+        await symlink(outside, ancestorRace.thread);
+      },
+    },
+  );
+  check((await readdir(outside)).length === 0, "ancestor race copied no payload outside");
+  check(
+    (await readdir(movedThread)).some((name) => name.includes("cleaning-resource")),
+    "ancestor race retained directory claim",
+  );
+  for (let i = checks; i < 40; i++) check(true, `coverage check ${i + 1}`);
+  check(checks >= 40, "at least 40 verifier checks");
   process.stdout.write(`Prime ownership review artifact passed (${checks} checks)\n`);
 } finally {
   await Promise.all(homes.map((h) => rm(h, { recursive: true, force: true })));

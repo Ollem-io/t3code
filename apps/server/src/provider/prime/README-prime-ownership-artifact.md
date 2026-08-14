@@ -17,10 +17,10 @@ artifact:
 apps/server/src/provider/prime/generate-prime-ownership-artifact.sh --check
 ```
 
-The verifier reports 39 source-derived assertions covering selected ownership,
+The verifier reports 41 source-derived assertions covering selected ownership,
 session/config/thread and daemon resource removal, exact callbacks, selected-record
 removal, sibling/other-instance/other-home/sentinel preservation, partial-cleanup
-retry without duplicate successful callbacks, positive recovery, corrupt warnings,
+retry without duplicate successful callbacks, safe retained-claim recovery, corrupt warnings,
 and practical continuation after a thrown identity proof. Focused tests cover
 per-path locking, hook-controlled resource/ancestor replacement races, retained resource-claim recovery, outside-sentinel preservation, independently durable effect markers, retained
 claims, symlink parents/targets/recovery roots, daemon/thread records, and mismatch

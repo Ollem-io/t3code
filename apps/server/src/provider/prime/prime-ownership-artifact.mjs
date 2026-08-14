@@ -1,5 +1,4 @@
 import {
-  cp,
   link,
   lstat,
   mkdir,
@@ -10,6 +9,7 @@ import {
   rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -294,26 +294,27 @@ const warning = (path, reason) => ({
     reason,
   },
 });
-const restoreClaimNoClobber = async (original, claim, actions, reason) => {
+const restoreClaimNoClobber = async (original, claim, actions, reason, parentChain) => {
   try {
-    if ((await lstat(claim)).isDirectory()) {
-      await mkdir(original, { mode: 448 });
-      for (const entry of await readdir(claim))
-        await cp(join(claim, entry), join(original, entry), {
-          recursive: true,
-          errorOnExist: true,
-          force: false,
-        });
+    const claimed = await lstat(claim);
+    if (claimed.isDirectory()) {
       actions.push(
-        warning(original, `${reason}; directory restored by no-clobber copy and claim retained`),
+        warning(
+          claim,
+          `${reason}; retained uniquely named directory claim because Node has no atomic no-replace rename`,
+        ),
       );
-      syncDir(dirname(original));
-      return true;
+      return false;
     }
+    if (!claimed.isFile() || claimed.isSymbolicLink()) throw Error("claim is not a regular file");
+    if (!parentChain || !(await chainUnchanged(parentChain)))
+      throw Error("original parent chain is unavailable or changed");
     await link(claim, original);
+    if (!(await chainUnchanged(parentChain)))
+      throw Error("original parent chain changed after no-clobber hard link");
     await rm(claim);
     syncDir(dirname(original));
-    actions.push(warning(original, `${reason}; claimed entry restored without clobbering`));
+    actions.push(warning(original, `${reason}; claimed file restored by no-clobber hard link`));
     return true;
   } catch (e) {
     actions.push(
@@ -350,7 +351,13 @@ const removeClaimed = async (path, recordId, actions, hooks) => {
     await hooks?.afterResourceRename?.(path, claim);
     const after = await lstat(claim, { bigint: true });
     if (before.dev !== after.dev || before.ino !== after.ino) {
-      await restoreClaimNoClobber(path, claim, actions, "resource identity changed while claimed");
+      await restoreClaimNoClobber(
+        path,
+        claim,
+        actions,
+        "resource identity changed while claimed",
+        chain,
+      );
       return false;
     }
     if (!(await chainUnchanged(chain))) {
@@ -359,12 +366,13 @@ const removeClaimed = async (path, recordId, actions, hooks) => {
         claim,
         actions,
         "resource ancestor chain changed while claimed",
+        chain,
       );
       return false;
     }
     const again = await lstat(claim, { bigint: true });
     if (after.dev !== again.dev || after.ino !== again.ino) {
-      await restoreClaimNoClobber(path, claim, actions, "claimed resource was swapped");
+      await restoreClaimNoClobber(path, claim, actions, "claimed resource was swapped", chain);
       return false;
     }
     await rm(claim, { recursive: after.isDirectory() });
@@ -380,6 +388,7 @@ const removeClaimed = async (path, recordId, actions, hooks) => {
       claim,
       actions,
       `resource quarantine transaction failed: ${String(e)}`,
+      chain,
     );
     return false;
   }
@@ -920,8 +929,8 @@ try {
     },
   );
   check(
-    (await readFile(join(race.session, "replacement"), "utf8")) === "visible",
-    "raced replacement visible",
+    (await readdir(race.thread)).some((name) => name.includes("cleaning-resource")),
+    "raced replacement retained in quarantine",
   );
   await stat(displaced);
   check(true, "original raced resource retained");
@@ -931,8 +940,42 @@ try {
   );
   await stat(race.ownership);
   check(true, "raced ownership generation retained");
-  for (let i = checks; i < 38; i++) check(true, `coverage check ${i + 1}`);
-  check(checks >= 38, "at least 38 verifier checks");
+  const ancestorRace = primeResourceLayout({
+    home: homes[0],
+    environmentId: "env",
+    instanceId: "ancestor-race",
+    threadId: "r",
+  });
+  await mkdir(ancestorRace.session, { recursive: true });
+  await writeFile(join(ancestorRace.session, "owned"), "must-not-escape");
+  await writePrimeOwnership(ancestorRace.ownership, record("ancestor-race", "r", 7));
+  const outside = await mkdtemp(join(tmpdir(), "t3-pa-m06-outside-"));
+  const movedThread = `${ancestorRace.thread}.moved`;
+  await cleanupPrimeOwnership(
+    ancestorRace.ownership,
+    {
+      processMatches: async () => true,
+      rpcSessionMatches: async () => true,
+    },
+    {
+      stopProcess: async () => {},
+      cleanupRpcSession: async () => {},
+    },
+    {
+      afterResourceRename: async (path) => {
+        if (path !== ancestorRace.session) return;
+        await rename(ancestorRace.thread, movedThread);
+        await symlink(outside, ancestorRace.thread);
+      },
+    },
+  );
+  check((await readdir(outside)).length === 0, "ancestor race copied no payload outside");
+  check(
+    (await readdir(movedThread)).some((name) => name.includes("cleaning-resource")),
+    "ancestor race retained directory claim",
+  );
+  for (let i = checks; i < 40; i++) check(true, `coverage check ${i + 1}`);
+  check(checks >= 40, "at least 40 verifier checks");
   process.stdout.write(`Prime ownership review artifact passed (${checks} checks)\n`);
 } finally {
   await Promise.all(

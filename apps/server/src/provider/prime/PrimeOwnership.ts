@@ -1,17 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync } from "node:fs";
-import {
-  cp,
-  lstat,
-  link,
-  mkdir,
-  open,
-  readdir,
-  readFile,
-  rename,
-  rm,
-  stat,
-} from "node:fs/promises";
+import { lstat, link, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { decodePrimePathComponent, primePathComponent } from "./PrimeResourceLayout.ts";
 
@@ -299,27 +288,28 @@ const restoreClaimNoClobber = async (
   claim: string,
   actions: PrimeOwnershipAction[],
   reason: string,
+  parentChain?: ChainIdentity,
 ) => {
   try {
     const claimed = await lstat(claim);
     if (claimed.isDirectory()) {
-      await mkdir(original, { mode: 0o700 });
-      for (const entry of await readdir(claim))
-        await cp(join(claim, entry), join(original, entry), {
-          recursive: true,
-          errorOnExist: true,
-          force: false,
-        });
       actions.push(
-        warning(original, `${reason}; directory restored by no-clobber copy and claim retained`),
+        warning(
+          claim,
+          `${reason}; retained uniquely named directory claim because Node has no atomic no-replace rename`,
+        ),
       );
-      syncDir(dirname(original));
-      return true;
+      return false;
     }
+    if (!claimed.isFile() || claimed.isSymbolicLink()) throw Error("claim is not a regular file");
+    if (!parentChain || !(await chainUnchanged(parentChain)))
+      throw Error("original parent chain is unavailable or changed");
     await link(claim, original);
+    if (!(await chainUnchanged(parentChain)))
+      throw Error("original parent chain changed after no-clobber hard link");
     await rm(claim);
     syncDir(dirname(original));
-    actions.push(warning(original, `${reason}; claimed entry restored without clobbering`));
+    actions.push(warning(original, `${reason}; claimed file restored by no-clobber hard link`));
     return true;
   } catch (e) {
     actions.push(
@@ -361,7 +351,13 @@ const removeClaimed = async (
     await hooks?.afterResourceRename?.(path, claim);
     const after = await lstat(claim, { bigint: true });
     if (before.dev !== after.dev || before.ino !== after.ino) {
-      await restoreClaimNoClobber(path, claim, actions, "resource identity changed while claimed");
+      await restoreClaimNoClobber(
+        path,
+        claim,
+        actions,
+        "resource identity changed while claimed",
+        chain,
+      );
       return false;
     }
     if (!(await chainUnchanged(chain))) {
@@ -370,12 +366,13 @@ const removeClaimed = async (
         claim,
         actions,
         "resource ancestor chain changed while claimed",
+        chain,
       );
       return false;
     }
     const again = await lstat(claim, { bigint: true });
     if (after.dev !== again.dev || after.ino !== again.ino) {
-      await restoreClaimNoClobber(path, claim, actions, "claimed resource was swapped");
+      await restoreClaimNoClobber(path, claim, actions, "claimed resource was swapped", chain);
       return false;
     }
     await rm(claim, { recursive: after.isDirectory() });
@@ -388,6 +385,7 @@ const removeClaimed = async (
       claim,
       actions,
       `resource quarantine transaction failed: ${String(e)}`,
+      chain,
     );
     return false;
   }
