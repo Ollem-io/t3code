@@ -1,5 +1,16 @@
 import { assert, describe, it } from "@effect/vitest";
-import { mkdir, mkdtemp, open, readFile, rename, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -278,5 +289,78 @@ describe("PrimeOwnership", () => {
     );
     assert.strictEqual(JSON.parse(await readFile(l.ownership, "utf8")).recordId, "new");
     await stat(`${l.ownership}.cleaning`);
+  });
+  it("quarantines a raced replacement without deleting or hiding it", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-resource-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await mkdir(l.session, { recursive: true });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const displaced = `${l.session}.owned`;
+    let swapped = false;
+    const actions = await cleanupPrimeOwnership(l.ownership, proofs, callbacks([]), {
+      beforeResourceRename: async (path) => {
+        if (path !== l.session || swapped) return;
+        swapped = true;
+        await rename(path, displaced);
+        await mkdir(path);
+        await writeFile(join(path, "replacement"), "visible");
+      },
+    });
+    assert.strictEqual(await readFile(join(l.session, "replacement"), "utf8"), "visible");
+    await stat(displaced);
+    await stat(l.ownership);
+    assert.ok(
+      actions.some((x) => x.kind === "warning" && x.warning.reason.includes("identity changed")),
+    );
+  });
+  it("retains quarantine and never touches outside when an ancestor changes after rename", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-ancestor-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await mkdir(l.session, { recursive: true });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const outside = await mkdtemp(join(tmpdir(), "prime-outside-"));
+    const sentinel = join(outside, "sentinel");
+    await writeFile(sentinel, "safe");
+    const moved = `${l.thread}.moved`;
+    let swapped = false;
+    const actions = await cleanupPrimeOwnership(l.ownership, proofs, callbacks([]), {
+      afterResourceRename: async (path) => {
+        if (path !== l.session || swapped) return;
+        swapped = true;
+        await rename(l.thread, moved);
+        await symlink(outside, l.thread);
+      },
+    });
+    assert.strictEqual(await readFile(sentinel, "utf8"), "safe");
+    assert.ok((await readdir(moved)).some((name) => name.includes("cleaning-resource")));
+    assert.ok(
+      actions.some(
+        (x) => x.kind === "warning" && x.warning.reason.includes("quarantine transaction failed"),
+      ),
+    );
+    await stat(l.ownership);
+  });
+
+  it("recovery enumerates retained resource claims and restores the bound generation safely", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-resource-recover-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await mkdir(l.session, { recursive: true });
+    await writeFile(join(l.session, "owned"), "data");
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const record = JSON.parse(await readFile(l.ownership, "utf8"));
+    const encoded = Buffer.from(record.recordId, "utf8").toString("base64url");
+    const claim = join(l.thread, `.session.cleaning-resource-id-${encoded}-retained`);
+    await rename(l.session, claim);
+    const actions = await recoverPrimeOwnership(
+      l.root,
+      { ...proofs, processMatches: async () => false },
+      callbacks([]),
+    );
+    assert.strictEqual(await readFile(join(l.session, "owned"), "utf8"), "data");
+    assert.ok(
+      actions.some(
+        (x) => x.kind === "warning" && x.warning.reason.includes("recovered resource claim"),
+      ),
+    );
   });
 });

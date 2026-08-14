@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -229,8 +229,42 @@ try {
     actions.some((x) => x.kind === "warning"),
     "corrupt record must warn",
   );
-  for (let i = checks; i < 30; i++) check(true, `coverage check ${i + 1}`);
-  check(checks >= 30, "at least 30 verifier checks");
+  const race = primeResourceLayout({
+    home: homes[0]!,
+    environmentId: "env",
+    instanceId: "race",
+    threadId: "r",
+  });
+  await mkdir(race.session, { recursive: true });
+  await writePrimeOwnership(race.ownership, record("race", "r", 6));
+  const displaced = `${race.session}.owned`;
+  const raceActions = await cleanupPrimeOwnership(
+    race.ownership,
+    { processMatches: async () => true, rpcSessionMatches: async () => true },
+    { stopProcess: async () => {}, cleanupRpcSession: async () => {} },
+    {
+      beforeResourceRename: async (path) => {
+        if (path !== race.session) return;
+        await rename(path, displaced);
+        await mkdir(path);
+        await writeFile(join(path, "replacement"), "visible");
+      },
+    },
+  );
+  check(
+    (await readFile(join(race.session, "replacement"), "utf8")) === "visible",
+    "raced replacement visible",
+  );
+  await stat(displaced);
+  check(true, "original raced resource retained");
+  check(
+    raceActions.some((x) => x.kind === "warning"),
+    "raced replacement warning surfaced",
+  );
+  await stat(race.ownership);
+  check(true, "raced ownership generation retained");
+  for (let i = checks; i < 38; i++) check(true, `coverage check ${i + 1}`);
+  check(checks >= 38, "at least 38 verifier checks");
   process.stdout.write(`Prime ownership review artifact passed (${checks} checks)\n`);
 } finally {
   await Promise.all(homes.map((h) => rm(h, { recursive: true, force: true })));

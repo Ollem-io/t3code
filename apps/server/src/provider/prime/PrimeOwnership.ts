@@ -1,6 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync } from "node:fs";
-import { lstat, link, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import {
+  cp,
+  lstat,
+  link,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { decodePrimePathComponent, primePathComponent } from "./PrimeResourceLayout.ts";
 
@@ -170,16 +181,23 @@ const atomicWrite = async (path: string, r: PrimeOwnershipRecord) => {
     await rm(temp, { force: true }).catch(() => {});
   }
 };
-const validateChain = async (path: string, create = false) => {
+type ChainIdentity = readonly {
+  readonly path: string;
+  readonly dev: bigint;
+  readonly ino: bigint;
+}[];
+const captureChain = async (path: string, create = false): Promise<ChainIdentity> => {
   const absolute = resolve(path);
   const parts = absolute.split(sep).filter(Boolean);
+  const result: { path: string; dev: bigint; ino: bigint }[] = [];
   let cur: string = sep;
   for (const part of parts) {
     cur = join(cur, part);
     try {
-      const s = await lstat(cur);
+      const s = await lstat(cur, { bigint: true });
       if (s.isSymbolicLink() || !s.isDirectory())
         throw Error(`unsafe symlink/non-directory: ${cur}`);
+      result.push({ path: cur, dev: s.dev, ino: s.ino });
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT" || !create) throw e;
       try {
@@ -187,10 +205,29 @@ const validateChain = async (path: string, create = false) => {
       } catch (m) {
         if ((m as NodeJS.ErrnoException).code !== "EEXIST") throw m;
       }
-      const s = await lstat(cur);
+      const s = await lstat(cur, { bigint: true });
       if (s.isSymbolicLink() || !s.isDirectory()) throw Error("unsafe created directory");
+      result.push({ path: cur, dev: s.dev, ino: s.ino });
     }
   }
+  return result;
+};
+const validateChain = async (path: string, create = false) =>
+  void (await captureChain(path, create));
+const chainUnchanged = async (before: ChainIdentity) => {
+  try {
+    const after = await captureChain(before.at(-1)?.path ?? sep);
+    return (
+      before.length === after.length &&
+      before.every((entry, i) => entry.dev === after[i]?.dev && entry.ino === after[i]?.ino)
+    );
+  } catch {
+    return false;
+  }
+};
+export type PrimeOwnershipTransactionHooks = {
+  readonly beforeResourceRename?: (path: string) => Promise<void>;
+  readonly afterResourceRename?: (path: string, claim: string) => Promise<void>;
 };
 const withLock = async <T>(path: string, fn: () => Promise<T>): Promise<T> => {
   const lock = `${path}.lock`;
@@ -257,32 +294,109 @@ const warning = (path: string, reason: string): PrimeOwnershipAction => ({
   kind: "warning",
   warning: { path, reason },
 });
-const removeClaimed = async (path: string, actions: PrimeOwnershipAction[]) => {
+const restoreClaimNoClobber = async (
+  original: string,
+  claim: string,
+  actions: PrimeOwnershipAction[],
+  reason: string,
+) => {
+  try {
+    const claimed = await lstat(claim);
+    if (claimed.isDirectory()) {
+      await mkdir(original, { mode: 0o700 });
+      for (const entry of await readdir(claim))
+        await cp(join(claim, entry), join(original, entry), {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+        });
+      actions.push(
+        warning(original, `${reason}; directory restored by no-clobber copy and claim retained`),
+      );
+      syncDir(dirname(original));
+      return true;
+    }
+    await link(claim, original);
+    await rm(claim);
+    syncDir(dirname(original));
+    actions.push(warning(original, `${reason}; claimed entry restored without clobbering`));
+    return true;
+  } catch (e) {
+    actions.push(
+      warning(
+        claim,
+        `${reason}; retained uniquely named claim because original is occupied or restore failed: ${String(e)}`,
+      ),
+    );
+    return false;
+  }
+};
+const removeClaimed = async (
+  path: string,
+  recordId: string,
+  actions: PrimeOwnershipAction[],
+  hooks?: PrimeOwnershipTransactionHooks,
+) => {
   let before;
   try {
-    before = await lstat(path);
+    before = await lstat(path, { bigint: true });
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return true;
     throw e;
   }
   if (before.isSymbolicLink()) throw Error("refusing to follow resource symlink");
-  await validateChain(dirname(path));
-  const claim = join(dirname(path), `.${basename(path)}.cleaning-resource-${randomUUID()}`);
-  await rename(path, claim);
-  const after = await lstat(claim);
-  if (before.dev !== after.dev || before.ino !== after.ino)
-    throw Error("resource identity changed while claimed");
-  const again = await lstat(claim);
-  if (after.dev !== again.dev || after.ino !== again.ino)
-    throw Error("claimed resource was swapped");
-  await rm(claim, { recursive: after.isDirectory() });
-  actions.push({ kind: "resource-removed", path });
-  syncDir(dirname(path));
+  const chain = await captureChain(dirname(path));
+  await hooks?.beforeResourceRename?.(path);
+  const claim = join(
+    dirname(path),
+    `.${basename(path)}.cleaning-resource-${primePathComponent(recordId)}-${randomUUID()}`,
+  );
+  try {
+    await rename(path, claim);
+  } catch (e) {
+    actions.push(warning(path, `resource claim rename failed safely: ${String(e)}`));
+    return false;
+  }
+  try {
+    await hooks?.afterResourceRename?.(path, claim);
+    const after = await lstat(claim, { bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino) {
+      await restoreClaimNoClobber(path, claim, actions, "resource identity changed while claimed");
+      return false;
+    }
+    if (!(await chainUnchanged(chain))) {
+      await restoreClaimNoClobber(
+        path,
+        claim,
+        actions,
+        "resource ancestor chain changed while claimed",
+      );
+      return false;
+    }
+    const again = await lstat(claim, { bigint: true });
+    if (after.dev !== again.dev || after.ino !== again.ino) {
+      await restoreClaimNoClobber(path, claim, actions, "claimed resource was swapped");
+      return false;
+    }
+    await rm(claim, { recursive: after.isDirectory() });
+    actions.push({ kind: "resource-removed", path });
+    syncDir(dirname(path));
+    return true;
+  } catch (e) {
+    await restoreClaimNoClobber(
+      path,
+      claim,
+      actions,
+      `resource quarantine transaction failed: ${String(e)}`,
+    );
+    return false;
+  }
 };
 export const cleanupPrimeOwnership = async (
   path: string,
   proof: PrimeOwnershipProof,
   cleanup: PrimeOwnershipCleanup,
+  hooks?: PrimeOwnershipTransactionHooks,
 ): Promise<readonly PrimeOwnershipAction[]> => {
   const id = identify(path);
   if (!id) throw Error("ownership path is outside exact Prime layout");
@@ -399,12 +513,18 @@ export const cleanupPrimeOwnership = async (
         }
         if (!r.resourcesCleaned) {
           try {
-            if ((r.kind ?? "thread") === "daemon") await removeClaimed(id.daemon, actions);
-            else {
-              await removeClaimed(join(id.thread, "session"), actions);
-              await removeClaimed(join(id.thread, "config.json"), actions);
-              await removeClaimed(id.thread, actions);
-            }
+            const cleaned =
+              (r.kind ?? "thread") === "daemon"
+                ? await removeClaimed(id.daemon, r.recordId!, actions, hooks)
+                : (await removeClaimed(join(id.thread, "session"), r.recordId!, actions, hooks)) &&
+                  (await removeClaimed(
+                    join(id.thread, "config.json"),
+                    r.recordId!,
+                    actions,
+                    hooks,
+                  )) &&
+                  (await removeClaimed(id.thread, r.recordId!, actions, hooks));
+            if (!cleaned) return actions;
           } catch (e) {
             actions.push(warning(path, `exact resource cleanup failed: ${String(e)}`));
             return actions;
@@ -437,6 +557,59 @@ export const cleanupPrimeOwnership = async (
     return [warning(path, String(e))];
   }
 };
+const recoverResourceClaim = async (
+  claim: string,
+  expectedRoot: string,
+  actions: PrimeOwnershipAction[],
+) => {
+  const name = basename(claim);
+  const marker = ".cleaning-resource-id-";
+  const markerAt = name.indexOf(marker);
+  if (!name.startsWith(".") || markerAt < 2) return false;
+  const original = join(dirname(claim), name.slice(1, markerAt));
+  const relativeParts = relative(expectedRoot, claim).split(sep);
+  const instancesAt = relativeParts.indexOf("instances");
+  if (instancesAt < 0 || !relativeParts[instancesAt + 1]) {
+    actions.push(warning(claim, "retained unbound resource claim outside an instance"));
+    return true;
+  }
+  const instance = join(expectedRoot, ...relativeParts.slice(0, instancesAt + 2));
+  const ownership = join(instance, "ownership");
+  let bound = false;
+  try {
+    for (const entry of await readdir(ownership, { withFileTypes: true })) {
+      if (
+        !entry.isFile() ||
+        (!entry.name.endsWith(".json") && !entry.name.endsWith(".json.cleaning"))
+      )
+        continue;
+      const decoded = decode(await readFile(join(ownership, entry.name), "utf8"));
+      if (!decoded.record?.recordId) continue;
+      if (name.includes(`${primePathComponent(decoded.record.recordId)}-`)) {
+        bound = true;
+        if (decoded.record.resourcesCleaned) {
+          actions.push(
+            warning(claim, "retained resource claim bound to completed generation for inspection"),
+          );
+          return true;
+        }
+        await restoreClaimNoClobber(
+          original,
+          claim,
+          actions,
+          "recovered resource claim bound to incomplete ownership generation",
+        );
+        return true;
+      }
+    }
+  } catch (e) {
+    actions.push(warning(claim, `resource claim recovery inspection failed safely: ${String(e)}`));
+    return true;
+  }
+  if (!bound)
+    actions.push(warning(claim, "retained resource claim with no matching ownership generation"));
+  return true;
+};
 export const recoverPrimeOwnership = async (
   root: string,
   proof: PrimeOwnershipProof,
@@ -458,7 +631,9 @@ export const recoverPrimeOwnership = async (
         actions.push(warning(p, "symlink skipped during recovery"));
         continue;
       }
-      if (e.isDirectory()) await visit(p);
+      if (e.name.includes(".cleaning-resource-") && (e.isFile() || e.isDirectory())) {
+        await recoverResourceClaim(p, expected, actions);
+      } else if (e.isDirectory()) await visit(p);
       else if (e.isFile() && e.name.endsWith(".json") && identify(p)?.root === expected) {
         try {
           actions.push(...(await cleanupPrimeOwnership(p, proof, cleanup)));
