@@ -156,6 +156,21 @@ describe("ProviderSendTurnInput", () => {
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("ultrathink");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
   });
+  it("accepts bounded text attachments", () => {
+    const parsed = decodeProviderSendTurnInput({
+      threadId: "thread-1",
+      input: "inspect",
+      attachments: [{
+        type: "text",
+        id: "thread-1-11111111-1111-4111-8111-111111111111",
+        name: "error.log",
+        mimeType: "text/plain",
+        sizeBytes: 4,
+      }],
+    });
+    expect(parsed.attachments?.[0]?.type).toBe("text");
+  });
+
 });
 
 describe("providerInstanceId routing key (slice-2 invariant)", () => {

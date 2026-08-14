@@ -10,7 +10,8 @@ import {
 } from "./attachmentPaths.ts";
 import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
 
-const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
+const SAFE_TEXT_FILE_EXTENSIONS = [".txt", ".md", ".log", ".json", ".xml", ".csv", ".yaml", ".yml", ".js", ".ts"] as const;
+const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ...SAFE_TEXT_FILE_EXTENSIONS, ".bin"];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -20,18 +21,17 @@ const ATTACHMENT_ID_PATTERN = new RegExp(
 );
 
 export function toSafeThreadAttachmentSegment(threadId: string): string | null {
-  const segment = threadId
-    .trim()
+  const canonicalThreadId = threadId.trim();
+  const readable = canonicalThreadId
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/gi, "-")
     .replace(/-+/g, "-")
     .replace(/^[-_]+|[-_]+$/g, "")
-    .slice(0, ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS)
+    .slice(0, ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS - 13)
     .replace(/[-_]+$/g, "");
-  if (segment.length === 0) {
-    return null;
-  }
-  return segment;
+  if (readable.length === 0) return null;
+  const digest = NodeCrypto.createHash("sha256").update(canonicalThreadId, "utf8").digest("hex").slice(0, 12);
+  return `${readable}-${digest}`;
 }
 
 export function createAttachmentId(threadId: string): string | null {
@@ -54,13 +54,21 @@ export function parseThreadSegmentFromAttachmentId(attachmentId: string): string
   return match[1]?.toLowerCase() ?? null;
 }
 
+export function attachmentBelongsToThread(attachmentId: string, threadId: string): boolean {
+  const actual = parseThreadSegmentFromAttachmentId(attachmentId);
+  const expected = toSafeThreadAttachmentSegment(threadId);
+  return actual !== null && expected !== null && actual === expected;
+}
+
 export function attachmentRelativePath(attachment: ChatAttachment): string {
   switch (attachment.type) {
     case "image": {
-      const extension = inferImageExtension({
-        mimeType: attachment.mimeType,
-        fileName: attachment.name,
-      });
+      const extension = inferImageExtension({ mimeType: attachment.mimeType, fileName: attachment.name });
+      return `${attachment.id}${extension}`;
+    }
+    case "text": {
+      const name = attachment.name.toLowerCase();
+      const extension = SAFE_TEXT_FILE_EXTENSIONS.find((candidate) => name.endsWith(candidate)) ?? ".txt";
       return `${attachment.id}${extension}`;
     }
   }

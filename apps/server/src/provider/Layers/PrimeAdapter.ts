@@ -1,19 +1,27 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import { randomUUID } from "node:crypto";
 import {
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES,
   ProviderDriverKind,
   type PrimeAgentSettings,
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderSessionStartInput,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
+
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
+
+import { attachmentBelongsToThread, resolveAttachmentPath } from "../../attachmentStore.ts";
 
 import {
   ProviderAdapterProcessError,
@@ -37,6 +45,8 @@ type SessionContext = {
   readonly session: ProviderSession;
   readonly client: PrimeRpcClient;
   readonly transport: ReturnType<typeof spawnPrimeRpcTransport>;
+  selectedModel: { readonly provider: string; readonly modelId: string } | undefined;
+  thinkingLevel: string | undefined;
 };
 type PendingStart = { readonly key: string; readonly promise: Promise<ProviderSession> };
 
@@ -46,6 +56,7 @@ export interface PrimeAdapterOptions {
   readonly home: string;
   readonly enabled: boolean;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly attachmentsDir?: string;
   readonly handshakeTimeoutMs?: number;
   readonly launch?: typeof spawnPrimeRpcTransport;
 }
@@ -78,6 +89,14 @@ const sanitizedEnvironment = (home: string, source: Readonly<NodeJS.ProcessEnv>)
     TEMP: `${home}/tmp`,
   };
 };
+
+const resolvePrimeAttachmentPath = (
+  attachmentsDir: string,
+  threadId: ThreadId,
+  attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
+) => attachmentBelongsToThread(attachment.id, threadId)
+  ? resolveAttachmentPath({ attachmentsDir, attachment }) ?? undefined
+  : undefined;
 
 export const makePrimeAdapter = (
   settings: PrimeAgentSettings,
@@ -139,7 +158,9 @@ export const makePrimeAdapter = (
           createdAt: timestamp,
           updatedAt: timestamp,
         };
-        const context: SessionContext = { key, session, client, transport };
+        const context: SessionContext = {
+          key, session, client, transport, selectedModel: undefined, thinkingLevel: undefined,
+        };
         sessions.set(input.threadId, context);
         void transport.terminal.then(() => {
           if (sessions.get(input.threadId) === context) sessions.delete(input.threadId);
@@ -239,6 +260,110 @@ export const makePrimeAdapter = (
         }),
       });
 
+    const requireContext = (threadId: ThreadId): SessionContext => {
+      const context = sessions.get(threadId);
+      if (!context) throw new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId });
+      return context;
+    };
+
+    const expectSuccess = async (context: SessionContext, command: Parameters<PrimeRpcClient["command"]>[0]) => {
+      const response = await context.client.command(command);
+      if (!response.success || response.command !== command.type) throw new Error(`${command.type} failed`);
+    };
+
+    const resolveTurnInput = async (input: ProviderSendTurnInput, context: SessionContext) => {
+      if (!input.input && (input.attachments?.length ?? 0) === 0) throw new ProviderAdapterValidationError({
+        provider: PROVIDER, operation: "sendTurn", issue: "A prompt or attachment is required.",
+      });
+      if (!input.modelSelection || input.modelSelection.instanceId !== options.instanceId) throw new ProviderAdapterValidationError({
+        provider: PROVIDER, operation: "sendTurn", issue: "A Prime model selection for this instance is required.",
+      });
+      const modelsResponse = await context.client.command({ type: "get_available_models" });
+      if (!modelsResponse.success || modelsResponse.command !== "get_available_models" ||
+          !modelsResponse.data || typeof modelsResponse.data !== "object" || !("models" in modelsResponse.data)) {
+        throw new Error("get_available_models failed");
+      }
+      const models = (modelsResponse.data as { models: ReadonlyArray<{
+        id: string; provider: string; input: ReadonlyArray<"text" | "image">;
+        thinkingLevelMap?: Readonly<Record<string, string | null>>;
+      }> }).models;
+      let identity = input.modelSelection.nativeIdentity;
+      if (!identity) {
+        const matching = models.filter((model) => model.id === input.modelSelection!.model);
+        if (matching.length !== 1) throw new ProviderAdapterValidationError({
+          provider: PROVIDER, operation: "sendTurn", issue: "Legacy model selection is unavailable or ambiguous; reselect the model.",
+        });
+        identity = { provider: matching[0]!.provider, modelId: matching[0]!.id };
+      }
+      const model = models.find((candidate) => candidate.provider === identity.provider && candidate.id === identity.modelId);
+      if (!model) throw new ProviderAdapterValidationError({
+        provider: PROVIDER, operation: "sendTurn", issue: "Selected Prime model is unavailable; reselect the model.",
+      });
+      if (!model.input.includes("text")) throw new ProviderAdapterValidationError({
+        provider: PROVIDER, operation: "sendTurn", issue: `Model '${input.modelSelection.model}' does not support text input.`,
+      });
+      const textParts = input.input ? [input.input] : [];
+      const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+      for (const attachment of input.attachments ?? []) {
+        if (!options.attachmentsDir) throw new ProviderAdapterValidationError({
+          provider: PROVIDER, operation: "sendTurn", issue: `Attachment '${attachment.name}' cannot be resolved.`,
+        });
+        const path = resolvePrimeAttachmentPath(options.attachmentsDir, input.threadId, attachment);
+        if (!path) throw new ProviderAdapterValidationError({
+          provider: PROVIDER, operation: "sendTurn", issue: `Attachment '${attachment.name}' has an invalid id.`,
+        });
+        const stat = await NodeFSP.stat(path).catch(() => undefined);
+        const limit = attachment.type === "image" ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES : PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES;
+        if (!stat?.isFile() || stat.size !== attachment.sizeBytes || stat.size > limit) throw new ProviderAdapterValidationError({
+          provider: PROVIDER, operation: "sendTurn", issue: `Attachment '${attachment.name}' is missing, unreadable, or oversized.`,
+        });
+        const bytes = await NodeFSP.readFile(path);
+        if (attachment.type === "image") {
+          if (!model.input.includes("image")) throw new ProviderAdapterValidationError({
+            provider: PROVIDER, operation: "sendTurn", issue: `Model '${input.modelSelection.model}' does not support image attachment '${attachment.name}'.`,
+          });
+          images.push({ type: "image", data: bytes.toString("base64"), mimeType: attachment.mimeType });
+        } else {
+          const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+          textParts.push(`Attachment: ${attachment.name} (${attachment.mimeType})\n---\n${decoded}\n---`);
+        }
+      }
+      const thinking = input.modelSelection.options?.find((option) => option.id === "thinkingLevel")?.value;
+      if (thinking !== undefined && typeof thinking !== "string") throw new ProviderAdapterValidationError({
+        provider: PROVIDER, operation: "sendTurn", issue: "Prime thinkingLevel must be a string.",
+      });
+      if (thinking !== undefined && (!model.thinkingLevelMap || !(thinking in model.thinkingLevelMap) || model.thinkingLevelMap[thinking] === null)) {
+        throw new ProviderAdapterValidationError({
+          provider: PROVIDER, operation: "sendTurn", issue: `Thinking level '${thinking}' is unavailable for the selected model.`,
+        });
+      }
+      return { identity, thinking, message: textParts.join("\n\n"), images };
+    };
+
+    const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
+      Effect.tryPromise({
+        try: async () => {
+          const context = requireContext(input.threadId);
+          const resolved = await resolveTurnInput(input, context);
+          if (!context.selectedModel || context.selectedModel.provider !== resolved.identity.provider || context.selectedModel.modelId !== resolved.identity.modelId) {
+            await expectSuccess(context, { type: "set_model", provider: resolved.identity.provider, modelId: resolved.identity.modelId });
+            context.selectedModel = resolved.identity;
+            context.thinkingLevel = undefined;
+          }
+          if (resolved.thinking !== undefined && context.thinkingLevel !== resolved.thinking) {
+            await expectSuccess(context, { type: "set_thinking_level", level: resolved.thinking as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" });
+            context.thinkingLevel = resolved.thinking;
+          }
+          await expectSuccess(context, {
+            type: "prompt", message: resolved.message,
+            ...(resolved.images.length > 0 ? { images: resolved.images } : {}),
+          });
+          return { threadId: input.threadId, turnId: TurnId.make(randomUUID()) };
+        },
+        catch: (cause) => cause instanceof ProviderAdapterValidationError || cause instanceof ProviderAdapterSessionNotFoundError
+          ? cause : new ProviderAdapterProcessError({ provider: PROVIDER, threadId: input.threadId, detail: "Prime Agent turn input failed.", cause }),
+      });
+
     const unsupported = (operation: string) => Effect.fail(new ProviderAdapterValidationError({
       provider: PROVIDER,
       operation,
@@ -264,9 +389,9 @@ export const makePrimeAdapter = (
 
     const adapter: ProviderAdapterShape<ProviderAdapterError> = {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "unsupported" },
+      capabilities: { sessionModelSwitch: "in-session" },
       startSession,
-      sendTurn: () => unsupported("sendTurn"),
+      sendTurn,
       interruptTurn: () => unsupported("interruptTurn"),
       respondToRequest: () => unsupported("respondToRequest"),
       respondToUserInput: () => unsupported("respondToUserInput"),
