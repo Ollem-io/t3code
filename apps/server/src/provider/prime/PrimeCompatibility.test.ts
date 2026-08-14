@@ -6,6 +6,7 @@ describe("PrimeCompatibility", () => {
     assert.strictEqual(MINIMUM_PRIME_AGENT_VERSION, "0.7.2");
     assert.strictEqual(classifyPrimeCompatibility("0.7.1"), "incompatible");
     assert.strictEqual(classifyPrimeCompatibility("0.7.2"), "compatible");
+    assert.strictEqual(classifyPrimeCompatibility("0.7.2+known-bad"), "incompatible");
     assert.strictEqual(classifyPrimeCompatibility("0.8.0"), "advisory");
   });
 });

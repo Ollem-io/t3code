@@ -1,24 +1,56 @@
 #!/usr/bin/env node
+// @effect-diagnostics nodeBuiltinImport:off
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-const scenario = process.env.PRIME_FAKE_SCENARIO ?? "ready";
+const scenario = process.env.T3_TEST_PRIME_SCENARIO ?? "ready";
 if (process.argv.includes("--version")) {
+  if (scenario === "version-timeout") await new Promise(() => {});
   if (scenario === "missing-version") process.stdout.write("unknown\n");
-  else process.stdout.write(`prime-agent ${process.env.PRIME_FAKE_VERSION ?? "0.7.2"}\n`);
+  else process.stdout.write(`prime-agent ${process.env.T3_TEST_PRIME_VERSION ?? "0.7.2"}\n`);
   process.exit(0);
 }
 const sessionIndex = process.argv.indexOf("--session-dir");
 if (sessionIndex >= 0) mkdirSync(process.argv[sessionIndex + 1], { recursive: true });
-if (process.env.PRIME_FAKE_MARKER)
+if (process.env.T3_TEST_PRIME_MARKER)
   writeFileSync(
-    process.env.PRIME_FAKE_MARKER,
-    JSON.stringify({ argv: process.argv.slice(2), home: process.env.HOME }),
+    process.env.T3_TEST_PRIME_MARKER,
+    JSON.stringify({
+      argv: process.argv.slice(2),
+      home: process.env.HOME,
+      primeToken: process.env.PRIME_AGENT_TOKEN,
+      xdg: process.env.XDG_CONFIG_HOME,
+    }),
   );
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on("line", (line) => {
   const command = JSON.parse(line);
   if (scenario === "timeout") return;
   if (scenario === "malformed") return process.stdout.write("{bad-json}\n");
+  if (scenario === "mismatch")
+    return process.stdout.write(
+      JSON.stringify({
+        type: "response",
+        id: command.id,
+        command: command.type === "get_state" ? "abort" : command.type,
+        success: true,
+        data: {},
+      }) + "\n",
+    );
+  if (scenario === "empty-state" && command.type === "get_state")
+    return process.stdout.write(
+      JSON.stringify({ type: "response", id: command.id, command: command.type, success: true }) +
+        "\n",
+    );
+  if (scenario === "runtime-failure")
+    return process.stdout.write(
+      JSON.stringify({
+        type: "response",
+        id: command.id,
+        command: command.type,
+        success: false,
+        error: "internal failure 503 account@example.com",
+      }) + "\n",
+    );
   if (scenario === "setup")
     return process.stdout.write(
       JSON.stringify({
