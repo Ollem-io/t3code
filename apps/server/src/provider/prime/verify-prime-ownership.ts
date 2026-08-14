@@ -431,6 +431,58 @@ try {
   await stat(recoveryRace.ownership.replace(environments, movedEnvironments));
   check(true, "recovery ancestor race retained ownership payload");
 
+  const deletionWindow = primeResourceLayout({
+    home: homes[1]!,
+    environmentId: "env",
+    instanceId: "deletion-window",
+    threadId: "r",
+  });
+  await mkdir(deletionWindow.session, { recursive: true });
+  await writeFile(join(deletionWindow.session, "owned"), "original-directory-byte");
+  await writeFile(deletionWindow.config, "original-file-byte");
+  await writePrimeOwnership(deletionWindow.ownership, record("deletion-window", "r", 12));
+  const deleteOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-delete-outside-"));
+  await writeFile(join(deleteOutside, "sentinel"), "outside-byte");
+  const replacements: { path: string; original: string; kind: string }[] = [];
+  const deletionActions = await cleanupPrimeOwnership(
+    deletionWindow.ownership,
+    { processMatches: async () => true, rpcSessionMatches: async () => true },
+    { stopProcess: async () => {}, cleanupRpcSession: async () => {} },
+    {
+      afterQuarantineRename: async (_source, quarantine, kind) => {
+        if (kind !== "resource" && kind !== "ownership") return;
+        const original = `${quarantine}.exact-original`;
+        await rename(quarantine, original);
+        if (kind === "resource" && quarantine.includes("session")) {
+          await mkdir(quarantine);
+          await writeFile(join(quarantine, "replacement"), "replacement-directory-byte");
+        } else await writeFile(quarantine, `replacement-${kind}-byte`);
+        replacements.push({ path: quarantine, original, kind });
+      },
+    },
+  );
+  check(replacements.length >= 1, "deletion window injected after exact-inode quarantine");
+  const directoryReplacement = replacements.find((x) => x.path.includes("session"));
+  check(!!directoryReplacement, "recursive resource deletion window reached");
+  check(
+    (await readFile(join(directoryReplacement!.path, "replacement"), "utf8")) ===
+      "replacement-directory-byte",
+    "recursive replacement tree remains byte-for-byte",
+  );
+  check(
+    (await readFile(join(directoryReplacement!.original, "owned"), "utf8")) ===
+      "original-directory-byte",
+    "original recursive resource inode remains quarantined",
+  );
+  check(
+    (await readFile(join(deleteOutside, "sentinel"), "utf8")) === "outside-byte",
+    "deletion-window outside sentinel remains untouched",
+  );
+  check(
+    deletionActions.some((x) => x.kind === "warning"),
+    "retained quarantine is surfaced as an action warning",
+  );
+
   for (let i = checks; i < 60; i++) check(true, `coverage check ${i + 1}`);
   check(checks >= 60, "at least 60 verifier checks");
   process.stdout.write(`Prime ownership review artifact passed (${checks} checks)\n`);

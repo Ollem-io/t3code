@@ -571,6 +571,90 @@ describe("PrimeOwnership", () => {
     );
   });
 
+  it("retains pathname replacements across every file deletion window", async () => {
+    for (const kind of ["temp", "superseded", "lock"] as const) {
+      const home = await mkdtemp(join(tmpdir(), `prime-delete-${kind}-`));
+      const l = primeResourceLayout({
+        home,
+        environmentId: "env",
+        instanceId: "one",
+        threadId: "a",
+      });
+      if (kind === "superseded") await writePrimeOwnership(l.ownership, rec("one", "a"));
+      let replacement = "";
+      let original = "";
+      const run = writePrimeOwnership(l.ownership, rec("one", "a", 72), {
+        afterQuarantineRename: async (_source, quarantine, seen) => {
+          if (seen !== kind || replacement) return;
+          replacement = quarantine;
+          original = `${quarantine}.exact-original`;
+          await rename(quarantine, original);
+          await writeFile(quarantine, `replacement-${kind}`);
+        },
+      });
+      if (kind === "temp" || kind === "superseded") await rejects(() => run);
+      else await run;
+      assert.strictEqual(await readFile(replacement, "utf8"), `replacement-${kind}`);
+      await stat(original);
+      assert.ok((await stat(original)).ino !== (await stat(replacement)).ino);
+      assert.deepStrictEqual(
+        await readdir(home).then((names) => names.filter((x) => x === "outside")),
+        [],
+      );
+    }
+  });
+
+  it("retains file, directory, and ownership replacements in post-quarantine delete hooks", async () => {
+    for (const target of ["file", "directory", "ownership"] as const) {
+      const home = await mkdtemp(join(tmpdir(), `prime-delete-resource-${target}-`));
+      const l = primeResourceLayout({
+        home,
+        environmentId: "env",
+        instanceId: "one",
+        threadId: "a",
+      });
+      await mkdir(l.session, { recursive: true });
+      await writeFile(join(l.session, "owned"), "owned-directory-byte");
+      await writeFile(l.config, "owned-file-byte");
+      await writePrimeOwnership(l.ownership, rec("one", "a"));
+      const outside = await mkdtemp(join(tmpdir(), "prime-delete-outside-"));
+      await writeFile(join(outside, "sentinel"), "outside-byte");
+      let replacement = "";
+      let original = "";
+      const actions = await cleanupPrimeOwnership(l.ownership, proofs, callbacks([]), {
+        afterQuarantineRename: async (_source, quarantine, kind) => {
+          const matches =
+            target === "ownership"
+              ? kind === "ownership"
+              : kind === "resource" &&
+                (target === "file"
+                  ? quarantine.includes("config.json")
+                  : quarantine.includes("session"));
+          if (!matches || replacement) return;
+          replacement = quarantine;
+          original = `${quarantine}.exact-original`;
+          await rename(quarantine, original);
+          if (target === "directory") {
+            await mkdir(quarantine);
+            await writeFile(join(quarantine, "replacement"), "replacement-directory-byte");
+          } else await writeFile(quarantine, `replacement-${target}-byte`);
+        },
+      });
+      assert.strictEqual(await readFile(join(outside, "sentinel"), "utf8"), "outside-byte");
+      if (target === "directory") {
+        assert.strictEqual(
+          await readFile(join(replacement, "replacement"), "utf8"),
+          "replacement-directory-byte",
+        );
+        assert.strictEqual(await readFile(join(original, "owned"), "utf8"), "owned-directory-byte");
+      } else {
+        assert.strictEqual(await readFile(replacement, "utf8"), `replacement-${target}-byte`);
+        assert.ok((await stat(original)).ino !== (await stat(replacement)).ino);
+      }
+      assert.ok(actions.some((x) => x.kind === "warning"));
+    }
+  });
+
   it("retains an interrupted record claim instead of hard-link restoration", async () => {
     const home = await mkdtemp(join(tmpdir(), "prime-recovery-claim-retained-"));
     const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
