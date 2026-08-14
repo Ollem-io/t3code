@@ -2,7 +2,6 @@ import {
   DEFAULT_PRIME_AGENT_SETTINGS,
   PrimeAgentSettings,
   ProviderDriverKind,
-  TextGenerationError,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -13,7 +12,6 @@ import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
-import type { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { makePrimeTextGeneration } from "../../textGeneration/PrimeTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makePrimeAdapter } from "../Layers/PrimeAdapter.ts";
@@ -31,19 +29,6 @@ const decodeSettings = Schema.decodeSync(PrimeAgentSettings);
 
 export type PrimeDriverEnv = ServerConfig | ServerEnvironment;
 
-const unsupportedTextGeneration = (): TextGeneration["Service"] => {
-  const fail = (operation: string) =>
-    Effect.fail(new TextGenerationError({
-      operation,
-      detail: "Prime Agent text generation is not available until PA-M11.",
-    }));
-  return {
-    generateCommitMessage: () => fail("generateCommitMessage"),
-    generatePrContent: () => fail("generatePrContent"),
-    generateBranchName: () => fail("generateBranchName"),
-    generateThreadTitle: () => fail("generateThreadTitle"),
-  };
-};
 
 export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
   driverKind: DRIVER_KIND,
