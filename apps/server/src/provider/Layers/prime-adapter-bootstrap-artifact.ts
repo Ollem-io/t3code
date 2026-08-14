@@ -14,6 +14,7 @@ import { createInterface } from "node:readline";
 appendFileSync(process.env.T3_MARKER, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), home: process.env.HOME }) + "\\n");
 createInterface({ input: process.stdin }).on("line", line => { const c=JSON.parse(line); process.stdout.write(JSON.stringify({type:"response",id:c.id,command:c.type,success:true,data:{state:"idle"}})+"\\n"); });
 `;
+/** @param {string} home @param {NodeJS.ProcessEnv} source */
 const sanitize = (home, source) => Object.fromEntries([
   ...Object.entries(source).filter(([k,v]) => v !== undefined && /^(?:PATH|PATHEXT|SystemRoot|WINDIR|ComSpec|LANG|LC_[A-Za-z0-9_]+)$/i.test(k)),
   ["HOME",home],["USERPROFILE",home],["XDG_CONFIG_HOME",`${home}/.config`],["XDG_DATA_HOME",`${home}/.local/share`],["XDG_STATE_HOME",`${home}/.local/state`],["TMPDIR",`${home}/tmp`],["TMP",`${home}/tmp`],["TEMP",`${home}/tmp`],
