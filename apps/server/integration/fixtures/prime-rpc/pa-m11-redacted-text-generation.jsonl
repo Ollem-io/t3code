@@ -1,0 +1,8 @@
+{"id":"1","type":"response","command":"get_state","success":true}
+{"id":"2","type":"response","command":"get_available_models","success":true,"data":{"models":[{"id":"model","name":"Model","api":"api","provider":"provider","baseUrl":"","reasoning":false,"input":["text","image"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100}]}}
+{"id":"3","type":"response","command":"set_model","success":true}
+{"id":"4","type":"response","command":"prompt","success":true}
+{"type":"message_update","message":{},"assistantMessageEvent":{"delta":"{\"title\":\"Useful "}}
+{"type":"message_update","message":{},"assistantMessageEvent":{"delta":"title\"}"}}
+{"type":"message_end","message":{"content":"{\"title\":\"Useful title\"}"}}
+{"type":"turn_end","message":{},"toolResults":[]}
