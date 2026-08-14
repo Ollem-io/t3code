@@ -319,7 +319,7 @@ export function resolveBoundModelSelectionState(
     // Keep the exact instance/model pair visible and bound to this thread.
     selection,
     isAvailable: false,
-    sendDisabledReason: `The selected model "${selection.model}" is no longer available on this provider. Select another model to continue.`,
+    sendDisabledReason: `The selected model "${selection.model}" is no longer available on this provider. Open the model picker and re-select an available provider/model to continue.`,
   };
 }
 

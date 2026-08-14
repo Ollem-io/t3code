@@ -350,6 +350,7 @@ describe("bound thread model selection", () => {
     expect(state.selection).toEqual(selection);
     expect(state.isAvailable).toBe(false);
     expect(state.sendDisabledReason).toContain("same-slug");
+    expect(state.sendDisabledReason).toContain("re-select an available provider/model");
   });
 
   it("rejects a stale native model without selecting another instance", () => {

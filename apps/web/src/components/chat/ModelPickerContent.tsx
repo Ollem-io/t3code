@@ -235,6 +235,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   }, [modelOptionsByInstance, entryByInstanceId, readyInstanceSet]);
 
   const isLocked = props.lockedProvider !== null;
+  const instanceDisplayNameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entry of instanceEntries) counts.set(entry.displayName, (counts.get(entry.displayName) ?? 0) + 1);
+    return counts;
+  }, [instanceEntries]);
   const isSearching = searchQuery.trim().length > 0;
   const lockedDisabledInstanceIds = useMemo(() => {
     if (!isLocked) {
@@ -756,6 +761,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         instanceId={model.instanceId}
                         driverKind={model.driverKind}
                         providerDisplayName={model.instanceDisplayName}
+                        providerInstanceLabel={
+                          (instanceDisplayNameCounts.get(model.instanceDisplayName) ?? 0) > 1
+                            ? `${model.instanceDisplayName} (${model.instanceId})`
+                            : undefined
+                        }
                         providerAccentColor={model.instanceAccentColor}
                         isFavorite={favoritesSet.has(
                           providerModelKey(model.instanceId, model.slug),
