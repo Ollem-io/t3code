@@ -26,6 +26,7 @@ const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const PRIME_DRIVER = ProviderDriverKind.make("prime-agent");
 
 const fakeCodexAdapter: CodexAdapter.CodexAdapterShape = {
   provider: CODEX_DRIVER,
@@ -78,6 +79,8 @@ const fakeOpenCodeAdapter: OpenCodeAdapter.OpenCodeAdapterShape = {
   streamEvents: Stream.empty,
 };
 
+const fakePrimeAdapter = { ...fakeCodexAdapter, provider: PRIME_DRIVER, capabilities: { sessionModelSwitch: "unsupported" as const } };
+
 const fakeCursorAdapter: CursorAdapter.CursorAdapterShape = {
   provider: CURSOR_DRIVER,
   capabilities: { sessionModelSwitch: "in-session" },
@@ -101,7 +104,7 @@ const fakeCursorAdapter: CursorAdapter.CursorAdapterShape = {
 // instances whose `instanceId === defaultInstanceIdForDriver(driverKind)` so
 // they pass the default-instance filter.
 const makeFakeInstance = (
-  driverKindString: "codex" | "claudeAgent" | "cursor" | "opencode",
+  driverKindString: "codex" | "claudeAgent" | "cursor" | "opencode" | "prime-agent",
   adapter: ProviderInstance["adapter"],
 ): ProviderInstance => {
   const driverKind = ProviderDriverKind.make(driverKindString);
@@ -133,6 +136,7 @@ const fakeInstances: ReadonlyArray<ProviderInstance> = [
   makeFakeInstance("claudeAgent", fakeClaudeAdapter),
   makeFakeInstance("opencode", fakeOpenCodeAdapter),
   makeFakeInstance("cursor", fakeCursorAdapter),
+  makeFakeInstance("prime-agent", fakePrimeAdapter),
 ];
 
 const fakeInstanceRegistryLayer = Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
@@ -182,6 +186,7 @@ it.layer(layer)("ProviderAdapterRegistryLive", (it) => {
         claudeInstanceId,
         defaultInstanceIdForDriver(OPENCODE_DRIVER),
         defaultInstanceIdForDriver(CURSOR_DRIVER),
+        defaultInstanceIdForDriver(PRIME_DRIVER),
       ]);
 
       const providers = yield* registry.listProviders();
@@ -190,6 +195,7 @@ it.layer(layer)("ProviderAdapterRegistryLive", (it) => {
         CLAUDE_AGENT_DRIVER,
         OPENCODE_DRIVER,
         CURSOR_DRIVER,
+        PRIME_DRIVER,
       ]);
     }));
 });
