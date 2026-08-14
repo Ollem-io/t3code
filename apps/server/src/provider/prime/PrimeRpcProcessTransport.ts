@@ -7,6 +7,7 @@ import {
   type SpawnOptionsWithoutStdio,
 } from "node:child_process";
 import { clearTimeout, setTimeout } from "node:timers";
+import { readFile } from "node:fs/promises";
 import type { PrimeRpcTransport } from "./PrimeRpcClient.ts";
 
 /**
@@ -23,6 +24,16 @@ export const spawnPrimeRpcTransport = (
     ...options,
     stdio: "pipe",
   });
+  const identity = { pid: child.pid!, startToken: "" };
+  // Linux starttime is a stable incarnation token; absent platforms remain unprovable.
+  const readStartToken = async () => {
+    try {
+      const stat = await readFile(`/proc/${child.pid}/stat`, "utf8");
+      const close = stat.lastIndexOf(")");
+      return stat.slice(close + 2).trim().split(/\s+/)[19] ?? "";
+    } catch { return ""; }
+  };
+  const tokenPromise = readStartToken().then((token) => { identity.startToken = token; return token; });
   let closed = false;
   let terminalSettled = false;
   let observedExitCode: number | null = null;
@@ -60,6 +71,13 @@ export const spawnPrimeRpcTransport = (
   child.stderr.on("error", consumeStreamError);
 
   return {
+    processIdentityReady: tokenPromise.then((token) => token ? { pid: identity.pid, startToken: token } : undefined),
+    processIdentity: identity.startToken ? identity : undefined,
+    stopExact: async (target) => {
+      const token = await tokenPromise;
+      if (!token || target.pid !== identity.pid || target.startToken !== token) throw new Error("child identity cannot be proven");
+      if (!closed) { closed = true; child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy(); if (child.exitCode === null && child.signalCode === null) child.kill(); }
+    },
     stdout: child.stdout,
     stderr: child.stderr,
     terminal,

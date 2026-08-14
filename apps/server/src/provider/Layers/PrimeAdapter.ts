@@ -34,6 +34,7 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { PrimeRpcClient } from "../prime/PrimeRpcClient.ts";
 import { spawnPrimeRpcTransport } from "../prime/PrimeRpcProcessTransport.ts";
 import { primeResourceLayout } from "../prime/PrimeResourceLayout.ts";
+import { recoverPrimeOwnership, writePrimeOwnership } from "../prime/PrimeOwnership.ts";
 import { PrimeEventNormalizer } from "../prime/PrimeEventNormalizer.ts";
 
 const PROVIDER = ProviderDriverKind.make("prime-agent");
@@ -122,6 +123,16 @@ export const makePrimeAdapter = (
     const pending = new Map<ThreadId, PendingStart>();
     const runtimeEvents = yield* Queue.bounded<ProviderRuntimeEvent>(1_024);
     let closed = false;
+    // Startup recovery is proof-before-action. The adapter has no authority to
+    // guess identities; only transports that expose an exact identity may be
+    // used for destructive cleanup below.
+    const ownershipRoot = primeResourceLayout({ home: options.home, environmentId: options.environmentId, instanceId: options.instanceId, threadId: "__startup__" }).root;
+    yield* Effect.promise(() => NodeFSP.mkdir(ownershipRoot, { recursive: true, mode: 0o700 }));
+    yield* Effect.promise(() => recoverPrimeOwnership(ownershipRoot, {
+      processMatches: async () => false,
+      rpcSessionMatches: async () => false,
+      daemonSessionMatches: async () => false,
+    }, { stopProcess: async () => { throw new Error("process identity unavailable during startup recovery"); } }));
 
     const closeContext = async (context: SessionContext) => {
       context.client.close();
@@ -159,6 +170,10 @@ export const makePrimeAdapter = (
         defaultTimeoutMs: options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS,
         requestIdPrefix: "t3-prime-bootstrap",
       });
+      const processIdentity = await transport.processIdentityReady?.catch(() => undefined);
+      if (processIdentity) {
+        await writePrimeOwnership(layout.ownership, { version: 1, environmentId: options.environmentId, instanceId: String(options.instanceId), threadId: String(input.threadId), kind: "thread", process: processIdentity });
+      }
       try {
         const response = await client.command({ type: "get_state" });
         if (!response.success || response.command !== "get_state")

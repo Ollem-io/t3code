@@ -18,6 +18,11 @@ export type PrimeRpcTransportTerminal =
   | { readonly kind: "eof" };
 
 export interface PrimeRpcTransport {
+  /** Exact OS identity of the spawned child, when the transport can prove it. */
+  readonly processIdentity?: { readonly pid: number; readonly startToken: string };
+  readonly processIdentityReady?: Promise<{ readonly pid: number; readonly startToken: string } | undefined>;
+  /** Stops only the exact child identity captured by this transport. */
+  readonly stopExact?: (identity: { readonly pid: number; readonly startToken: string }) => Promise<void>;
   readonly stdout: AsyncIterable<Uint8Array>;
   readonly stderr: AsyncIterable<Uint8Array>;
   /** Authoritative lifecycle classification for the transport owner. */
