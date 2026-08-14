@@ -40,10 +40,23 @@ export type PrimeOwnershipProof = {
   readonly daemonSessionMatches?: (id: string) => Promise<boolean>;
   readonly rpcSessionMatches?: (id: string) => Promise<boolean>;
 };
+export type PrimeOwnedResource = {
+  readonly path: string;
+  readonly kind: "session" | "config" | "thread" | "daemon" | "ownership";
+  readonly operationId: string;
+  /** Exact identity proven immediately before delegation. Native implementations must act through an anchored handle with no-replace semantics. */
+  readonly identity: { readonly dev: string; readonly ino: string };
+};
 export type PrimeOwnershipCleanup = {
   readonly stopProcess: (handle: PrimeProcessHandle, operationId?: string) => Promise<void>;
   readonly cleanupRpcSession?: (id: string, operationId?: string) => Promise<void>;
   readonly cleanupDaemonSession?: (id: string, operationId?: string) => Promise<void>;
+  /**
+   * Optional platform-owned destructive boundary. The registry never renames or
+   * unlinks a resource itself: Node pathname operations cannot close a hostile
+   * parent-swap or destination-clobber race. Missing callbacks fail closed.
+   */
+  readonly removeOwnedResource?: (resource: PrimeOwnedResource) => Promise<"removed" | "retained">;
 };
 const validId = (v: unknown): v is string =>
   typeof v === "string" && v.length > 0 && v.length <= MAX_ID_LENGTH;
@@ -496,7 +509,7 @@ const removeClaimed = async (
     return retainClaim(claim, actions, `resource quarantine transaction failed: ${String(e)}`);
   }
 };
-export const cleanupPrimeOwnership = async (
+export const unsafePathnameCleanupPrimeOwnershipForTests = async (
   path: string,
   proof: PrimeOwnershipProof,
   cleanup: PrimeOwnershipCleanup,
@@ -757,6 +770,138 @@ export const cleanupPrimeOwnership = async (
     return [warning(path, String(e))];
   }
 };
+
+const delegatedIdentity = async (path: string, chain: ChainIdentity) => {
+  if (!(await chainUnchanged(chain))) return;
+  try {
+    const value = await lstat(path, { bigint: true });
+    if (value.isSymbolicLink()) return;
+    return { value, identity: { dev: String(value.dev), ino: String(value.ino) } };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+};
+
+/**
+ * Proves ownership and delegates destructive filesystem work. It deliberately
+ * does not rename, quarantine, unlink, or rewrite the record during cleanup.
+ * A later platform storage implementation can use openat2/RENAME_NOREPLACE (or
+ * an equivalent anchored native primitive); the portable default warns and
+ * retains every pathname.
+ */
+export const cleanupPrimeOwnership = async (
+  path: string,
+  proof: PrimeOwnershipProof,
+  cleanup: PrimeOwnershipCleanup,
+  _hooks?: PrimeOwnershipTransactionHooks,
+): Promise<readonly PrimeOwnershipAction[]> => {
+  const id = identify(path);
+  if (!id) throw Error("ownership path is outside exact Prime layout");
+  const actions: PrimeOwnershipAction[] = [];
+  let chain: ChainIdentity;
+  try {
+    chain = await captureChain(dirname(path));
+    const bound = await delegatedIdentity(path, chain);
+    if (bound === null) return actions;
+    if (!bound || !bound.value.isFile())
+      return [warning(path, "ownership record is not a bound regular file; retained")];
+    const decoded = decode(await readFile(path, "utf8"));
+    if (!decoded.record) return [warning(path, decoded.reason!)];
+    const record = decoded.record;
+    if (!validate(path, record, id))
+      return [warning(path, "ownership identity does not match its exact layout path; retained")];
+    if (!(await boundFile(path, chain, bound.value)))
+      return [warning(path, "ownership record changed while reading; retained")];
+    const operationId = record.operationId ?? `legacy-${record.recordId ?? "record"}`;
+    if (!cleanup.removeOwnedResource) {
+      actions.push(
+        warning(
+          path,
+          "destructive filesystem callback unavailable; no cleanup effects ran and owned resources plus active ownership record were retained",
+        ),
+      );
+      return actions;
+    }
+
+    if (record.process && !record.processStopped) {
+      if (!(await proof.processMatches(record.process)))
+        return [warning(path, "captured process PID/start token cannot be proven; retained")];
+      if (!(await boundFile(path, chain, bound.value)))
+        return [warning(path, "ownership record changed during process proof; retained")];
+      await cleanup.stopProcess(record.process, `${operationId}:process`);
+      actions.push({ kind: "process-stopped", path });
+    }
+    if (record.rpcSessionId && !record.rpcCleaned) {
+      if (!(await proof.rpcSessionMatches?.(record.rpcSessionId)))
+        return [...actions, warning(path, "RPC identity cannot be proven; retained")];
+      if (!cleanup.cleanupRpcSession)
+        return [...actions, warning(path, "RPC cleanup callback missing; retained")];
+      if (!(await boundFile(path, chain, bound.value)))
+        return [...actions, warning(path, "ownership record changed during RPC proof; retained")];
+      await cleanup.cleanupRpcSession(record.rpcSessionId, `${operationId}:rpc`);
+      actions.push({ kind: "rpc-session-cleaned", path });
+    }
+    if (record.daemonSessionId && !record.daemonCleaned) {
+      if (!(await proof.daemonSessionMatches?.(record.daemonSessionId)))
+        return [...actions, warning(path, "daemon identity cannot be proven; retained")];
+      if (!cleanup.cleanupDaemonSession)
+        return [...actions, warning(path, "daemon cleanup callback missing; retained")];
+      if (!(await boundFile(path, chain, bound.value)))
+        return [
+          ...actions,
+          warning(path, "ownership record changed during daemon proof; retained"),
+        ];
+      await cleanup.cleanupDaemonSession(record.daemonSessionId, `${operationId}:daemon`);
+      actions.push({ kind: "daemon-session-cleaned", path });
+    }
+
+    const resources: readonly [string, PrimeOwnedResource["kind"]][] =
+      (record.kind ?? "thread") === "daemon"
+        ? [[id.daemon, "daemon"]]
+        : [
+            [join(id.thread, "session"), "session"],
+            [join(id.thread, "config.json"), "config"],
+            [id.thread, "thread"],
+          ];
+    for (const [resourcePath, kind] of resources) {
+      const resourceChain = await captureChain(dirname(resourcePath));
+      const resource = await delegatedIdentity(resourcePath, resourceChain);
+      if (resource === null) continue;
+      if (!resource)
+        return [
+          ...actions,
+          warning(resourcePath, "resource ancestry or identity cannot be proven; retained"),
+        ];
+      const result = await cleanup.removeOwnedResource({
+        path: resourcePath,
+        kind,
+        operationId: `${operationId}:resource:${kind}`,
+        identity: resource.identity,
+      });
+      if (result !== "removed")
+        return [...actions, warning(resourcePath, "platform cleanup retained owned resource")];
+      actions.push({ kind: "resource-removed", path: resourcePath });
+    }
+    if (!(await boundFile(path, chain, bound.value)))
+      return [
+        ...actions,
+        warning(path, "ownership record changed before delegated removal; retained"),
+      ];
+    const removed = await cleanup.removeOwnedResource({
+      path,
+      kind: "ownership",
+      operationId: `${operationId}:ownership`,
+      identity: bound.identity,
+    });
+    if (removed === "removed") actions.push({ kind: "record-removed", path });
+    else actions.push(warning(path, "platform cleanup retained active ownership record"));
+    return actions;
+  } catch (error) {
+    return [...actions, warning(path, `delegated cleanup failed closed: ${String(error)}`)];
+  }
+};
+
 const recoverResourceClaim = async (
   claim: string,
   expectedRoot: string,
@@ -784,11 +929,12 @@ const recoverResourceClaim = async (
   return true;
 };
 
-export const recoverPrimeOwnership = async (
+const recoverPrimeOwnershipImpl = async (
   root: string,
   proof: PrimeOwnershipProof,
   cleanup: PrimeOwnershipCleanup,
-  hooks?: PrimeOwnershipRecoveryHooks,
+  hooks: PrimeOwnershipRecoveryHooks | undefined,
+  cleanRecord: typeof cleanupPrimeOwnership,
 ): Promise<readonly PrimeOwnershipAction[]> => {
   const expected = resolve(root);
   if (
@@ -837,7 +983,7 @@ export const recoverPrimeOwnership = async (
           if (check.dev !== child.dev || check.ino !== child.ino || !(await chainUnchanged(chain)))
             throw Error("ownership record identity changed after enumeration");
           try {
-            actions.push(...(await cleanupPrimeOwnership(p, proof, cleanup)));
+            actions.push(...(await cleanRecord(p, proof, cleanup)));
           } catch (error) {
             actions.push(warning(p, `record cleanup threw: ${String(error)}`));
           }
@@ -865,3 +1011,24 @@ export const recoverPrimeOwnership = async (
   await visit(expected, rootChain);
   return actions;
 };
+
+export const recoverPrimeOwnership = (
+  root: string,
+  proof: PrimeOwnershipProof,
+  cleanup: PrimeOwnershipCleanup,
+  hooks?: PrimeOwnershipRecoveryHooks,
+) => recoverPrimeOwnershipImpl(root, proof, cleanup, hooks, cleanupPrimeOwnership);
+
+export const unsafePathnameRecoverPrimeOwnershipForTests = (
+  root: string,
+  proof: PrimeOwnershipProof,
+  cleanup: PrimeOwnershipCleanup,
+  hooks?: PrimeOwnershipRecoveryHooks,
+) =>
+  recoverPrimeOwnershipImpl(
+    root,
+    proof,
+    cleanup,
+    hooks,
+    unsafePathnameCleanupPrimeOwnershipForTests,
+  );

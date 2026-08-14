@@ -14,8 +14,9 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
-  cleanupPrimeOwnership,
-  recoverPrimeOwnership,
+  cleanupPrimeOwnership as cleanupPrimeOwnershipDelegated,
+  unsafePathnameCleanupPrimeOwnershipForTests as cleanupPrimeOwnership,
+  unsafePathnameRecoverPrimeOwnershipForTests as recoverPrimeOwnership,
   writePrimeOwnership,
 } from "./PrimeOwnership.ts";
 import { primeResourceLayout } from "./PrimeResourceLayout.ts";
@@ -669,5 +670,58 @@ describe("PrimeOwnership", () => {
         (x) => x.kind === "warning" && x.warning.reason.includes("retained uniquely named claim"),
       ),
     );
+  });
+  it("defaults to warning and retaining exact resources without pathname quarantine", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-delegated-retain-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await mkdir(l.session, { recursive: true });
+    await writeFile(join(l.session, "owned"), "bytes");
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const before = await readdir(l.ownershipDirectory);
+    const actions = await cleanupPrimeOwnershipDelegated(l.ownership, proofs, callbacks([]));
+    assert.strictEqual(await readFile(join(l.session, "owned"), "utf8"), "bytes");
+    await stat(l.ownership);
+    assert.ok(
+      actions.some(
+        (x) =>
+          x.kind === "warning" &&
+          x.warning.reason.includes("destructive filesystem callback unavailable"),
+      ),
+    );
+    assert.deepStrictEqual(await readdir(l.ownershipDirectory), before);
+  });
+
+  it("delegates exact identity and fails closed when parent swaps immediately before removal", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-delegated-swap-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await mkdir(l.session, { recursive: true });
+    await writeFile(join(l.session, "owned"), "owned");
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const moved = `${l.thread}.moved`;
+    const outside = await mkdtemp(join(tmpdir(), "prime-delegated-outside-"));
+    await writeFile(join(outside, "sentinel"), "attacker");
+    let swapped = false;
+    const actions = await cleanupPrimeOwnershipDelegated(l.ownership, proofs, {
+      ...callbacks([]),
+      removeOwnedResource: async (resource) => {
+        if (!swapped) {
+          swapped = true;
+          await rename(l.thread, moved);
+          await symlink(outside, l.thread);
+        }
+        const current = await stat(resource.path, { bigint: true }).catch(() => undefined);
+        if (
+          !current ||
+          String(current.dev) !== resource.identity.dev ||
+          String(current.ino) !== resource.identity.ino
+        )
+          return "retained";
+        await rm(resource.path, { recursive: true });
+        return "removed";
+      },
+    });
+    assert.strictEqual(await readFile(join(outside, "sentinel"), "utf8"), "attacker");
+    assert.strictEqual(await readFile(join(moved, "session", "owned"), "utf8"), "owned");
+    assert.ok(actions.some((x) => x.kind === "warning"));
   });
 });

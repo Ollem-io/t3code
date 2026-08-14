@@ -12,8 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  cleanupPrimeOwnership,
-  recoverPrimeOwnership,
+  unsafePathnameCleanupPrimeOwnershipForTests as cleanupPrimeOwnership,
+  unsafePathnameRecoverPrimeOwnershipForTests as recoverPrimeOwnership,
   writePrimeOwnership,
 } from "./PrimeOwnership.ts";
 import { primeResourceLayout } from "./PrimeResourceLayout.ts";

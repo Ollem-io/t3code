@@ -456,7 +456,7 @@ const removeClaimed = async (path, recordId, actions, hooks) => {
     return retainClaim(claim, actions, `resource quarantine transaction failed: ${String(e)}`);
   }
 };
-const cleanupPrimeOwnership = async (path, proof, cleanup, hooks) => {
+const unsafePathnameCleanupPrimeOwnershipForTests = async (path, proof, cleanup, hooks) => {
   const id = identify(path);
   if (!id) throw Error("ownership path is outside exact Prime layout");
   await validateChain(dirname(path));
@@ -741,7 +741,7 @@ const recoverResourceClaim = async (claim, expectedRoot, actions) => {
   );
   return true;
 };
-const recoverPrimeOwnership = async (root, proof, cleanup, hooks) => {
+const recoverPrimeOwnershipImpl = async (root, proof, cleanup, hooks, cleanRecord) => {
   const expected = resolve(root);
   if (
     basename(expected) !== "v1" ||
@@ -796,7 +796,7 @@ const recoverPrimeOwnership = async (root, proof, cleanup, hooks) => {
           if (check.dev !== child.dev || check.ino !== child.ino || !(await chainUnchanged(chain)))
             throw Error("ownership record identity changed after enumeration");
           try {
-            actions.push(...(await cleanupPrimeOwnership(p, proof, cleanup)));
+            actions.push(...(await cleanRecord(p, proof, cleanup)));
           } catch (error) {
             actions.push(warning(p, `record cleanup threw: ${String(error)}`));
           }
@@ -824,6 +824,14 @@ const recoverPrimeOwnership = async (root, proof, cleanup, hooks) => {
   await visit(expected, rootChain);
   return actions;
 };
+const unsafePathnameRecoverPrimeOwnershipForTests = (root, proof, cleanup, hooks) =>
+  recoverPrimeOwnershipImpl(
+    root,
+    proof,
+    cleanup,
+    hooks,
+    unsafePathnameCleanupPrimeOwnershipForTests,
+  );
 //#endregion
 //#region apps/server/src/provider/prime/verify-prime-ownership.ts
 let checks = 0;
@@ -880,7 +888,7 @@ try {
   const sentinel = join(homes[0], "sentinel");
   await writeFile(sentinel, "safe");
   const calls = [];
-  await cleanupPrimeOwnership(
+  await unsafePathnameCleanupPrimeOwnershipForTests(
     a.ownership,
     {
       processMatches: async (h) => h.pid === 1 && h.startToken === "start-1",
@@ -932,7 +940,7 @@ try {
     kind: "daemon",
     daemonSessionId: "daemon-one",
   });
-  await cleanupPrimeOwnership(
+  await unsafePathnameCleanupPrimeOwnershipForTests(
     sibling.daemonOwnership,
     {
       processMatches: async () => true,
@@ -966,7 +974,7 @@ try {
   await writePrimeOwnership(retry.ownership, record("retry", "r", 4));
   let retryStops = 0,
     retryRpc = 0;
-  await cleanupPrimeOwnership(
+  await unsafePathnameCleanupPrimeOwnershipForTests(
     retry.ownership,
     {
       processMatches: async () => true,
@@ -986,7 +994,7 @@ try {
   check(retryRpc === 1, "partial cleanup rpc attempted once");
   await stat(`${retry.ownership}.cleaning`);
   check(true, "partial claim retained");
-  await cleanupPrimeOwnership(
+  await unsafePathnameCleanupPrimeOwnershipForTests(
     retry.ownership,
     {
       processMatches: async () => true,
@@ -1015,7 +1023,7 @@ try {
   let continued = false;
   check(
     (
-      await cleanupPrimeOwnership(
+      await unsafePathnameCleanupPrimeOwnershipForTests(
         mismatch.ownership,
         {
           processMatches: async () => {
@@ -1045,7 +1053,7 @@ try {
   await writeFile(bad.ownership, "{");
   check(
     (
-      await recoverPrimeOwnership(
+      await unsafePathnameRecoverPrimeOwnershipForTests(
         a.root,
         { processMatches: async () => false },
         {
@@ -1066,7 +1074,7 @@ try {
   await mkdir(race.session, { recursive: true });
   await writePrimeOwnership(race.ownership, record("race", "r", 6));
   const displaced = `${race.session}.owned`;
-  const raceActions = await cleanupPrimeOwnership(
+  const raceActions = await unsafePathnameCleanupPrimeOwnershipForTests(
     race.ownership,
     {
       processMatches: async () => true,
@@ -1108,7 +1116,7 @@ try {
   await writePrimeOwnership(ancestorRace.ownership, record("ancestor-race", "r", 7));
   const outside = await mkdtemp(join(tmpdir(), "t3-pa-m06-outside-"));
   const movedThread = `${ancestorRace.thread}.moved`;
-  await cleanupPrimeOwnership(
+  await unsafePathnameCleanupPrimeOwnershipForTests(
     ancestorRace.ownership,
     {
       processMatches: async () => true,
@@ -1143,7 +1151,7 @@ try {
   const proofMoved = `${proofRace.thread}.moved`;
   let proofStops = 0;
   let proofRpc = 0;
-  await cleanupPrimeOwnership(
+  await unsafePathnameCleanupPrimeOwnershipForTests(
     proofRace.ownership,
     {
       processMatches: async () => {
@@ -1204,7 +1212,7 @@ try {
   const progressOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-progress-outside-"));
   const progressMoved = `${progressRace.ownershipDirectory}.moved`;
   let progressRpc = 0;
-  const progressActions = await cleanupPrimeOwnership(
+  const progressActions = await unsafePathnameCleanupPrimeOwnershipForTests(
     progressRace.ownership,
     {
       processMatches: async () => true,
@@ -1243,7 +1251,7 @@ try {
   const recoveryOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-recovery-outside-"));
   const environments = join(recoveryRace.root, "environments");
   const movedEnvironments = `${environments}.moved`;
-  await recoverPrimeOwnership(
+  await unsafePathnameRecoverPrimeOwnershipForTests(
     recoveryRace.root,
     {
       processMatches: async () => true,
@@ -1280,7 +1288,7 @@ try {
   const deleteOutside = await mkdtemp(join(tmpdir(), "t3-pa-m06-delete-outside-"));
   await writeFile(join(deleteOutside, "sentinel"), "outside-byte");
   const replacements = [];
-  const deletionActions = await cleanupPrimeOwnership(
+  const deletionActions = await unsafePathnameCleanupPrimeOwnershipForTests(
     deletionWindow.ownership,
     {
       processMatches: async () => true,
