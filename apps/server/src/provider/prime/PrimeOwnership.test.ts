@@ -12,7 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   cleanupPrimeOwnership,
   recoverPrimeOwnership,
@@ -246,6 +246,36 @@ describe("PrimeOwnership", () => {
       actions.some((x) => x.kind === "warning" && x.warning.reason.includes("without overwriting")),
     );
     await stat(`${l.ownership}.cleaning`);
+  });
+  it("retains the bound record claim when its ownership parent is swapped during proof", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-record-parent-race-"));
+    const l = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    await writePrimeOwnership(l.ownership, rec("one", "a"));
+    const outside = await mkdtemp(join(tmpdir(), "prime-record-outside-"));
+    const moved = `${l.ownershipDirectory}.moved`;
+    const effects: string[] = [];
+    const actions = await cleanupPrimeOwnership(
+      l.ownership,
+      {
+        ...proofs,
+        processMatches: async () => {
+          await rename(l.ownershipDirectory, moved);
+          await symlink(outside, l.ownershipDirectory);
+          return true;
+        },
+      },
+      callbacks(effects),
+    );
+    assert.deepStrictEqual(await readdir(outside), []);
+    assert.ok((await readdir(moved)).includes(`${basename(l.ownership)}.cleaning`));
+    assert.deepStrictEqual(effects, []);
+    assert.ok(
+      actions.some(
+        (x) =>
+          x.kind === "warning" &&
+          x.warning.reason.includes("namespace changed during process proof"),
+      ),
+    );
   });
   it("rejects a recovery root reached through a symlink ancestor", async () => {
     const outside = await mkdtemp(join(tmpdir(), "prime-attacker-"));
