@@ -268,4 +268,30 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
       fallbackCodex,
     );
   });
+
+  it("round-trips explicitly stale Prime model availability", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-provider-cache-prime-" });
+      const prime = makeProvider(ProviderDriverKind.make("prime-agent"), {
+        models: [
+          {
+            slug: "prime/model-a",
+            name: "Model A",
+            isCustom: false,
+            availability: "stale",
+            capabilities: emptyCapabilities,
+          },
+        ],
+      });
+      const cachePath = yield* resolveProviderStatusCachePath({
+        cacheDir: tempDir,
+        instanceId: prime.instanceId,
+      });
+      yield* writeProviderStatusCache({ filePath: cachePath, provider: prime });
+      assert.strictEqual(
+        (yield* readProviderStatusCache(cachePath))?.models[0]?.availability,
+        "stale",
+      );
+    }));
 });
