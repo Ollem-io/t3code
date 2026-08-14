@@ -4,4 +4,4 @@
 
 Regenerate it with `generate-prime-provider-probe-artifact.sh`; verify source-derived deterministic regeneration with `generate-prime-provider-probe-artifact.sh --check`. Run `verify-prime-provider-probe-artifact.sh` for the 30-run source-free fake-binary readiness matrix.
 
-SHA-256: `ce9e48313dd62ccb98e7a2b62be302d4bfa8fec7df6e4567253d833b31273b56`.
+SHA-256: `d2a2f7bdfe33d0fee4e4764dd37e67ffe730c66d327bc559a87fd093a78f4762`.

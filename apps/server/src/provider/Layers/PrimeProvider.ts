@@ -3,7 +3,6 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeTimers from "node:timers/promises";
 import * as NodeUtil from "node:util";
 import {
   type PrimeAgentSettings,
@@ -19,6 +18,7 @@ import {
   type PrimeCompatibilityBand,
 } from "../prime/PrimeCompatibility.ts";
 import { PrimeRpcClient, PrimeRpcClientError } from "../prime/PrimeRpcClient.ts";
+import { primeResourceLayout } from "../prime/PrimeResourceLayout.ts";
 import { spawnPrimeRpcTransport } from "../prime/PrimeRpcProcessTransport.ts";
 import { PrimeRpcAvailableModelsResponse, type PrimeRpcModel } from "../prime/PrimeRpcProtocol.ts";
 import * as Result from "effect/Result";
@@ -54,10 +54,6 @@ const parseVersion = (value: string): string | null => {
 
 const commandOptions = (signal: AbortSignal | undefined) =>
   signal === undefined ? {} : { signal };
-
-const CLEANUP_TIMEOUT_MS = 2_000;
-const cleanupTimer = (ms: number): Promise<"timeout"> =>
-  NodeTimers.setTimeout(ms, "timeout" as const, { ref: false });
 
 const isolatedProbeEnvironment = (
   home: string,
@@ -139,13 +135,18 @@ export const probePrimeProvider = async (input: {
   const timeoutMs = input.timeoutMs ?? PRIME_PROVIDER_PROBE_TIMEOUT_MS;
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-prime-probe-"));
   const home = NodePath.join(root, "home");
-  const session = NodePath.join(root, "session");
+  const session = primeResourceLayout({
+    home,
+    environmentId: "probe",
+    instanceId: "probe",
+    threadId: "probe",
+  }).session;
   let version: string | null = null;
   let compatibility: PrimeCompatibilityBand | "unknown" = "unknown";
   let client: PrimeRpcClient | undefined;
   let transport: ReturnType<typeof spawnPrimeRpcTransport> | undefined;
   try {
-    await NodeFSP.mkdir(home, { recursive: true });
+    await NodeFSP.mkdir(NodePath.dirname(session), { recursive: true });
     const environment = {
       ...isolatedProbeEnvironment(home, input.environment ?? process.env),
       // Fixture controls are deliberately accepted only from an explicit environment source.
@@ -271,11 +272,8 @@ export const probePrimeProvider = async (input: {
     client?.close();
     if (transport) {
       await Promise.resolve(transport.close?.()).catch(() => undefined);
-      // `terminal` settles only after the exact child's stdio and process have closed.
-      // Bound cleanup so a broken executable cannot hold provider discovery forever.
-      await Promise.race([transport.terminal, cleanupTimer(CLEANUP_TIMEOUT_MS)]).catch(
-        () => undefined,
-      );
+      // Remove the disposable namespace only after the exact child is gone.
+      await transport.terminal.catch(() => undefined);
     }
     await NodeFSP.rm(root, { recursive: true, force: true });
   }

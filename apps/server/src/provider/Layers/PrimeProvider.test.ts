@@ -128,8 +128,9 @@ describe("PrimeProvider", () => {
       assert.strictEqual(observed.anthropicKey, undefined);
       assert.strictEqual(observed.secretToken, undefined);
       assert.ok(observed.xdg.includes("t3-prime-probe-"));
-      assert.ok(!observed.session.includes("userdata/prime"));
-      assert.ok(!observed.session.includes("threads"));
+      assert.ok(observed.session.includes("userdata/prime/v1/environments/"));
+      assert.ok(observed.session.includes("/instances/"));
+      assert.ok(observed.session.includes("/threads/"));
       assert.ok(!NodeFS.existsSync(session));
     } finally {
       try {

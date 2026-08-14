@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeTimers from "node:timers/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as NodeUtil from "node:util";
 import * as NodeFS from "node:fs";
 import * as NodeBuffer from "node:buffer";
@@ -12173,12 +12173,12 @@ const base64codes = [
 //#endregion
 //#region node_modules/.pnpm/effect@4.0.0-beta.103_patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6/node_modules/effect/dist/internal/schema/annotations.js
 /** @internal */
-function resolve(ast) {
+function resolve$1(ast) {
   return ast.checks ? ast.checks[ast.checks.length - 1].annotations : ast.annotations;
 }
 /** @internal */
 function resolveAt$1(key) {
-  return (ast) => resolve(ast)?.[key];
+  return (ast) => resolve$1(ast)?.[key];
 }
 /** @internal */
 const STRUCTURAL_ANNOTATION_KEY = "~structural";
@@ -36465,6 +36465,47 @@ var PrimeRpcClient = class {
   }
 };
 //#endregion
+//#region apps/server/src/provider/prime/PrimeResourceLayout.ts
+const MAX_ID_LENGTH = 512;
+/** A path segment made from a complete UTF-8 identifier, never caller path syntax. */
+const primePathComponent = (value) => {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > MAX_ID_LENGTH ||
+    value === "." ||
+    value === ".."
+  )
+    throw new Error("Prime resource IDs must be non-empty bounded values, not dot components");
+  return `id-${Buffer.from(value, "utf8").toString("base64url")}`;
+};
+const assertPrimeContained = (root, path) => {
+  const segment = relative(resolve(root), resolve(path));
+  if (segment === "" || segment === ".." || segment.startsWith(`..${sep}`) || isAbsolute(segment))
+    throw new Error("Prime resource path escaped its T3 home namespace");
+};
+const primeResourceLayout = (input) => {
+  const root = join(resolve(input.home), "userdata", "prime", "v1");
+  const environment = join(root, "environments", primePathComponent(input.environmentId));
+  const instance = join(environment, "instances", primePathComponent(input.instanceId));
+  const thread = join(instance, "threads", primePathComponent(input.threadId));
+  const ownershipDirectory = join(instance, "ownership");
+  const result = {
+    root,
+    environment,
+    instance,
+    thread,
+    session: join(thread, "session"),
+    config: join(thread, "config.json"),
+    daemon: join(instance, "daemon"),
+    ownershipDirectory,
+    ownership: join(ownershipDirectory, `${primePathComponent(input.threadId)}.json`),
+    daemonOwnership: join(ownershipDirectory, "daemon.json"),
+  };
+  for (const path of Object.values(result).slice(1)) assertPrimeContained(root, path);
+  return result;
+};
+//#endregion
 //#region apps/server/src/provider/prime/PrimeRpcProcessTransport.ts
 /**
  * Adapts an already-approved invocation. Launch policy and executable discovery
@@ -36561,8 +36602,6 @@ const parseVersion = (value) => {
   return value.trim().match(/^prime-agent\s+(\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?)$/)?.[1] ?? null;
 };
 const commandOptions = (signal) => (signal === void 0 ? {} : { signal });
-const CLEANUP_TIMEOUT_MS = 2e3;
-const cleanupTimer = (ms) => NodeTimers.setTimeout(ms, "timeout", { ref: false });
 const isolatedProbeEnvironment = (home, source) => {
   const env = {};
   const allowed =
@@ -36643,13 +36682,18 @@ const probePrimeProvider = async (input) => {
   const timeoutMs = input.timeoutMs ?? 4e3;
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-prime-probe-"));
   const home = NodePath.join(root, "home");
-  const session = NodePath.join(root, "session");
+  const session = primeResourceLayout({
+    home,
+    environmentId: "probe",
+    instanceId: "probe",
+    threadId: "probe",
+  }).session;
   let version = null;
   let compatibility = "unknown";
   let client;
   let transport;
   try {
-    await NodeFSP.mkdir(home, { recursive: true });
+    await NodeFSP.mkdir(NodePath.dirname(session), { recursive: true });
     const environment = {
       ...isolatedProbeEnvironment(home, input.environment ?? process.env),
       ...(input.environment
@@ -36789,9 +36833,7 @@ const probePrimeProvider = async (input) => {
     client?.close();
     if (transport) {
       await Promise.resolve(transport.close?.()).catch(() => void 0);
-      await Promise.race([transport.terminal, cleanupTimer(CLEANUP_TIMEOUT_MS)]).catch(
-        () => void 0,
-      );
+      await transport.terminal.catch(() => void 0);
     }
     await NodeFSP.rm(root, {
       recursive: true,

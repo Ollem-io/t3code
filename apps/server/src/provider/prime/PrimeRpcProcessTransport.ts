@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalTimers:off
+// Native timer bounds exact-child SIGKILL escalation at the Node process boundary.
 import {
   spawn,
   type ChildProcessWithoutNullStreams,
