@@ -109,7 +109,7 @@ export const makePrimeAdapter = (
     const launch = options.launch ?? spawnPrimeRpcTransport;
     const sessions = new Map<ThreadId, SessionContext>();
     const pending = new Map<ThreadId, PendingStart>();
-    const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
+    const runtimeEvents = yield* Queue.sliding<ProviderRuntimeEvent>(1_024);
     let closed = false;
 
     const closeContext = async (context: SessionContext) => {
