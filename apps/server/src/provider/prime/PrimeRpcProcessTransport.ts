@@ -72,7 +72,7 @@ export const spawnPrimeRpcTransport = (
 
   return {
     processIdentityReady: tokenPromise.then((token) => token ? { pid: identity.pid, startToken: token } : undefined),
-    processIdentity: identity.startToken ? identity : undefined,
+    ...(identity.startToken ? { processIdentity: identity } : {}),
     stopExact: async (target) => {
       const token = await tokenPromise;
       if (!token || target.pid !== identity.pid || target.startToken !== token) throw new Error("child identity cannot be proven");
