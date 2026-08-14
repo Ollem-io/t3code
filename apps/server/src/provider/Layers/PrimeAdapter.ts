@@ -19,6 +19,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
+import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 
 import { attachmentBelongsToThread, resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -35,6 +36,7 @@ import {
   spawnPrimeRpcTransport,
 } from "../prime/PrimeRpcProcessTransport.ts";
 import { primeResourceLayout } from "../prime/PrimeResourceLayout.ts";
+import { PrimeEventNormalizer } from "../prime/PrimeEventNormalizer.ts";
 
 const PROVIDER = ProviderDriverKind.make("prime-agent");
 const HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -47,6 +49,7 @@ type SessionContext = {
   readonly transport: ReturnType<typeof spawnPrimeRpcTransport>;
   selectedModel: { readonly provider: string; readonly modelId: string } | undefined;
   thinkingLevel: string | undefined;
+  readonly normalizer: PrimeEventNormalizer;
 };
 type PendingStart = { readonly key: string; readonly promise: Promise<ProviderSession> };
 
@@ -106,6 +109,7 @@ export const makePrimeAdapter = (
     const launch = options.launch ?? spawnPrimeRpcTransport;
     const sessions = new Map<ThreadId, SessionContext>();
     const pending = new Map<ThreadId, PendingStart>();
+    const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
     let closed = false;
 
     const closeContext = async (context: SessionContext) => {
@@ -158,12 +162,30 @@ export const makePrimeAdapter = (
           createdAt: timestamp,
           updatedAt: timestamp,
         };
+        const normalizer = new PrimeEventNormalizer(input.threadId, {
+          providerInstanceId: options.instanceId,
+        });
         const context: SessionContext = {
-          key, session, client, transport, selectedModel: undefined, thinkingLevel: undefined,
+          key, session, client, transport, selectedModel: undefined, thinkingLevel: undefined, normalizer,
         };
         sessions.set(input.threadId, context);
-        void transport.terminal.then(() => {
-          if (sessions.get(input.threadId) === context) sessions.delete(input.threadId);
+        void (async () => {
+          for await (const envelope of client.events()) {
+            if (sessions.get(input.threadId) !== context) break;
+            for (const event of normalizer.drain(envelope)) {
+              await Effect.runPromise(Queue.offer(runtimeEvents, event));
+            }
+          }
+        })();
+        void transport.terminal.then(async (terminal) => {
+          if (sessions.get(input.threadId) !== context) return;
+          sessions.delete(input.threadId);
+          const reason = terminal.kind === "exit" && terminal.code !== null
+            ? `Prime Agent exited with code ${terminal.code}.`
+            : "Prime Agent RPC session exited.";
+          for (const event of normalizer.stop(reason)) {
+            await Effect.runPromise(Queue.offer(runtimeEvents, event));
+          }
         });
         return session;
       } catch (cause) {
@@ -407,7 +429,7 @@ export const makePrimeAdapter = (
           ? unsupported("rollbackThread")
           : Effect.fail(new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId })),
       stopAll,
-      streamEvents: Stream.empty,
+      streamEvents: Stream.fromQueue(runtimeEvents),
     };
     yield* Effect.addFinalizer(() => stopAll().pipe(Effect.ignore));
     return adapter;
