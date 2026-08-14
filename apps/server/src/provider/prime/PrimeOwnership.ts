@@ -935,6 +935,7 @@ const recoverPrimeOwnershipImpl = async (
   cleanup: PrimeOwnershipCleanup,
   hooks: PrimeOwnershipRecoveryHooks | undefined,
   cleanRecord: typeof cleanupPrimeOwnership,
+  scope?: { readonly environmentId: string; readonly instanceId: string },
 ): Promise<readonly PrimeOwnershipAction[]> => {
   const expected = resolve(root);
   if (
@@ -979,6 +980,8 @@ const recoverPrimeOwnershipImpl = async (
             throw Error("child directory identity changed after enumeration");
           await visit(p, childChain);
         } else if (child.isFile() && e.name.endsWith(".json") && identify(p)?.root === expected) {
+          const identity = identify(p);
+          if (scope && (identity?.environmentId !== scope.environmentId || identity.instanceId !== scope.instanceId)) continue;
           const check = await lstat(p, { bigint: true });
           if (check.dev !== child.dev || check.ino !== child.ino || !(await chainUnchanged(chain)))
             throw Error("ownership record identity changed after enumeration");
@@ -1018,6 +1021,14 @@ export const recoverPrimeOwnership = (
   cleanup: PrimeOwnershipCleanup,
   hooks?: PrimeOwnershipRecoveryHooks,
 ) => recoverPrimeOwnershipImpl(root, proof, cleanup, hooks, cleanupPrimeOwnership);
+/** Recovers only records for one exact environment/instance while retaining all siblings. */
+export const recoverPrimeInstanceOwnership = (
+  root: string,
+  scope: { readonly environmentId: string; readonly instanceId: string },
+  proof: PrimeOwnershipProof,
+  cleanup: PrimeOwnershipCleanup,
+  hooks?: PrimeOwnershipRecoveryHooks,
+) => recoverPrimeOwnershipImpl(root, proof, cleanup, hooks, cleanupPrimeOwnership, scope);
 
 export const unsafePathnameRecoverPrimeOwnershipForTests = (
   root: string,

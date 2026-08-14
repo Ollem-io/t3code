@@ -1,0 +1,9 @@
+{"type":"turn_start"}
+{"type":"extension_ui_request","id":"select-1","method":"select","title":"Pick","options":["one","two"]}
+{"type":"extension_ui_request","id":"confirm-1","method":"confirm","title":"Approve","message":"Continue?"}
+{"type":"extension_ui_request","id":"input-1","method":"input","title":"Name"}
+{"type":"extension_ui_request","id":"editor-1","method":"editor","title":"Edit","prefill":"old"}
+{"type":"extension_ui_request","id":"unsupported-1","method":"notify","message":"notice"}
+{"type":"extension_ui_request","id":"duplicate-1","method":"input","title":"Dup"}
+{"type":"extension_ui_request","id":"duplicate-1","method":"input","title":"Dup"}
+{"type":"process_exit","code":19}

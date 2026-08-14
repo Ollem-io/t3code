@@ -306,4 +306,16 @@ describe("PrimeRpcClient", () => {
       { resolves: 0, rejects: 1, duplicates: 1 },
     );
   });
+  it("preserves an explicit native correlation id for extension UI responses", async () => {
+    const { client, stdout, writes } = fixture();
+    const response = client.command(
+      { type: "extension_ui_response", id: "native-dialog", value: "choice" },
+      { requestId: "native-dialog" },
+    );
+    await flush();
+    assert.strictEqual(JSON.parse(writes[0]!).id, "native-dialog");
+    stdout.push('{"id":"native-dialog","type":"response","command":"extension_ui_response","success":true}\n');
+    assert.strictEqual((await response).command, "extension_ui_response");
+  });
+
 });

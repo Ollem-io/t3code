@@ -18,6 +18,11 @@ export type PrimeRpcTransportTerminal =
   | { readonly kind: "eof" };
 
 export interface PrimeRpcTransport {
+  /** Exact OS identity of the spawned child, when the transport can prove it. */
+  readonly processIdentity?: { readonly pid: number; readonly startToken: string };
+  readonly processIdentityReady?: Promise<{ readonly pid: number; readonly startToken: string } | undefined>;
+  /** Stops only the exact child identity captured by this transport. */
+  readonly stopExact?: (identity: { readonly pid: number; readonly startToken: string }) => Promise<void>;
   readonly stdout: AsyncIterable<Uint8Array>;
   readonly stderr: AsyncIterable<Uint8Array>;
   /** Authoritative lifecycle classification for the transport owner. */
@@ -68,6 +73,8 @@ export type PrimeRpcOutboundCommand = CommandWithoutId<PrimeRpcCommand>;
 export interface PrimeRpcCommandOptions {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+  /** Preserve a native correlation id when the RPC operation requires it (extension UI responses). */
+  readonly requestId?: string;
 }
 export interface PrimeRpcClientOptions {
   readonly requestIdPrefix?: string;
@@ -170,7 +177,9 @@ export class PrimeRpcClient {
     if (this.#closed)
       return Promise.reject(this.#closeError ?? new PrimeRpcClientError("exit", { closed: true }));
     const timeout = safeInteger(options.timeoutMs ?? this.#defaultTimeoutMs, 1, "timeoutMs");
-    const id = `${this.#prefix}-${++this.#nextRequest}`;
+    const id = options.requestId ?? `${this.#prefix}-${++this.#nextRequest}`;
+    if (this.#pending.has(id))
+      return Promise.reject(new PrimeRpcClientError("protocol", { id, duplicatePendingRequest: true }));
     let record: Uint8Array;
     try {
       record = encodePrimeRpcJsonlRecord({ ...command, id } as PrimeRpcCommand, {
