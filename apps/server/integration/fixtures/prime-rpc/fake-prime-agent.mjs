@@ -7,7 +7,9 @@ const argument = (name, fallback) => {
   const index = process.argv.indexOf(name);
   return index === -1 ? fallback : process.argv[index + 1];
 };
-if (argument("--mode", "rpc") !== "rpc") {
+if (process.argv.includes("--version")) {
+  process.stdout.write("0.7.2\n");
+} else if (argument("--mode", "rpc") !== "rpc") {
   process.stderr.write("fake prime-agent only supports --mode rpc\n");
   process.exitCode = 2;
 } else {
@@ -25,6 +27,17 @@ if (argument("--mode", "rpc") !== "rpc") {
   const response = (command, override = {}) =>
     write({ type: "response", id: command.id, command: command.type, success: true, ...override });
   const held = [];
+  // PA-M16 deterministic client projection fixture: no credentials or filesystem state.
+  if (scenario === "mvp-e2e") setImmediate(() => {
+    write({ type: "agent_start" }); write({ type: "turn_start" });
+    write({ type: "message_start", message: { role: "assistant" } });
+    write({ type: "message_update", message: {}, assistantMessageEvent: { type: "text_delta", delta: "stream" } });
+    write({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "fixture-tool", args: {} });
+    write({ type: "tool_execution_update", toolCallId: "tool-1", toolName: "fixture-tool", args: {}, partialResult: "tool-output" });
+    write({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "fixture-tool", result: "tool-output", isError: false });
+    write({ type: "extension_ui_request", id: "interaction-1", method: "confirm", title: "fixture", message: "confirm" });
+    write({ type: "message_end", message: { role: "assistant" } }); write({ type: "turn_end", message: {}, toolResults: [] });
+  });
 
   if (scenario === "write-failure") {
     closeSync(0);
