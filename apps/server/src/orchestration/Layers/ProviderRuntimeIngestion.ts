@@ -1653,8 +1653,6 @@ const make = Effect.gen(function* () {
             ...(event.providerInstanceId !== undefined ? { providerInstanceId: event.providerInstanceId } : {}),
             runtimeMode: thread.session?.runtimeMode ?? "full-access", activeTurnId: thread.session?.activeTurnId ?? null,
             lastError: thread.session?.lastError ?? null, updatedAt: now,
-              actionState: { queuedCount: 0, steering: [], followUps: [] },
-              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
             actionState: { queuedCount: event.payload.queuedCount, steering: [...event.payload.steering], followUps: [...event.payload.followUps], ...(event.payload.active ? { active: event.payload.active } : {}) },
             ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
           }, createdAt: now,
@@ -1839,8 +1837,6 @@ const make = Effect.gen(function* () {
           ...(proposedPlanCompletion.turnId ? { turnId: proposedPlanCompletion.turnId } : {}),
           fallbackMarkdown: proposedPlanCompletion.planMarkdown,
           updatedAt: now,
-              actionState: { queuedCount: 0, steering: [], followUps: [] },
-              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
         });
       }
 
@@ -1876,8 +1872,6 @@ const make = Effect.gen(function* () {
             planId: proposedPlanIdForTurn(thread.id, turnId),
             turnId,
             updatedAt: now,
-              actionState: { queuedCount: 0, steering: [], followUps: [] },
-              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
           });
         }
       }

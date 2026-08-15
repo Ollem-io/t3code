@@ -236,6 +236,9 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
+    const executeRuntimeOperation = vi.fn<ProviderServiceShape["executeRuntimeOperation"]>(() =>
+      Effect.void,
+    );
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
     const stopSession = vi.fn((input: unknown) =>
@@ -312,6 +315,7 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
+      executeRuntimeOperation: executeRuntimeOperation as ProviderServiceShape["executeRuntimeOperation"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
@@ -495,6 +499,7 @@ describe("ProviderCommandReactor", () => {
       startSession,
       sendTurn,
       interruptTurn,
+      executeRuntimeOperation,
       respondToRequest,
       respondToUserInput,
       stopSession,
@@ -511,6 +516,65 @@ describe("ProviderCommandReactor", () => {
       },
     };
   }
+
+  it("dispatches active steer and follow-up requests as provider runtime operations", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-runtime-actions-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"), status: "running", providerName: "codex",
+          runtimeMode: "approval-required", activeTurnId: asTurnId("turn-runtime-actions"),
+          lastError: null, updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await harness.runEffect(harness.engine.dispatch({
+      type: "thread.steer.add", commandId: CommandId.make("cmd-steer-add"),
+      threadId: ThreadId.make("thread-1"), steerId: "steer-1", text: "steer provider only", createdAt: now,
+    }));
+    await harness.runEffect(harness.engine.dispatch({
+      type: "thread.follow-up.add", commandId: CommandId.make("cmd-follow-up-add"),
+      threadId: ThreadId.make("thread-1"), followUpId: "follow-up-1", text: "follow up provider only", createdAt: now,
+    }));
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation).toHaveBeenCalledTimes(2);
+    expect(harness.executeRuntimeOperation.mock.calls.map(([operation]) => operation)).toEqual([
+      expect.objectContaining({ type: "steer.add", threadId: ThreadId.make("thread-1"), steerId: "steer-1", text: "steer provider only" }),
+      expect.objectContaining({ type: "follow-up.add", threadId: ThreadId.make("thread-1"), followUpId: "follow-up-1", text: "follow up provider only" }),
+    ]);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.activities.some((activity) => activity.detail?.includes("provider only"))).toBe(false);
+    expect(thread?.messages.some((message) => message.text.includes("provider only"))).toBe(false);
+
+    harness.executeRuntimeOperation.mockReturnValue(Effect.die(new Error("provider rejected action")) as never);
+    await harness.runEffect(harness.engine.dispatch({
+      type: "thread.steer.add", commandId: CommandId.make("cmd-steer-add-failed"),
+      threadId: ThreadId.make("thread-1"), steerId: "steer-failed", text: "secret rejected runtime text", createdAt: now,
+    }));
+    await harness.drain();
+    const afterFailure = (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const failure = afterFailure?.activities.find((activity) => activity.kind === "provider.runtime-action.failed");
+    expect(failure).toBeDefined();
+    expect(JSON.stringify(failure)).not.toContain("secret rejected runtime text");
+  });
+
+  it("rejects runtime actions without an active running session without projecting their text", async () => {
+    const harness = await createHarness();
+    await expect(harness.runEffect(harness.engine.dispatch({
+      type: "thread.steer.add", commandId: CommandId.make("cmd-inactive-steer-add"),
+      threadId: ThreadId.make("thread-1"), steerId: "steer-inactive", text: "must never be visible", createdAt: "2026-01-01T00:00:00.000Z",
+    }))).rejects.toThrow("Runtime actions require an active running provider turn");
+    expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(JSON.stringify(thread)).not.toContain("must never be visible");
+  });
 
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();
