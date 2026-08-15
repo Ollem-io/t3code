@@ -28,18 +28,59 @@ if (process.argv.includes("--version")) {
     write({ type: "response", id: command.id, command: command.type, success: true, ...override });
   const held = [];
   // PA-M16 deterministic client projection fixture: no credentials or filesystem state.
-  if (scenario === "mvp-e2e") setImmediate(() => {
-    write({ type: "agent_start" }); write({ type: "turn_start" });
-    write({ type: "message_start", message: { role: "assistant" } });
-    write({ type: "message_update", message: {}, assistantMessageEvent: { type: "text_delta", delta: "stream" } });
-    write({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "fixture-tool", args: {} });
-    write({ type: "tool_execution_update", toolCallId: "tool-1", toolName: "fixture-tool", args: {}, partialResult: "tool-output" });
-    write({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "fixture-tool", result: "tool-output", isError: false });
-    write({ type: "extension_ui_request", id: "interaction-1", method: "confirm", title: "fixture", message: "confirm" });
-    write({ type: "message_end", message: { role: "assistant" } }); write({ type: "turn_end", message: {}, toolResults: [] });
-  });
+  if (scenario === "mvp-e2e")
+    setImmediate(() => {
+      write({ type: "agent_start" });
+      write({ type: "turn_start" });
+      write({ type: "message_start", message: { role: "assistant" } });
+      write({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", delta: "stream" },
+      });
+      write({
+        type: "tool_execution_start",
+        toolCallId: "tool-1",
+        toolName: "fixture-tool",
+        args: {},
+      });
+      write({
+        type: "tool_execution_update",
+        toolCallId: "tool-1",
+        toolName: "fixture-tool",
+        args: {},
+        partialResult: "tool-output",
+      });
+      write({
+        type: "tool_execution_end",
+        toolCallId: "tool-1",
+        toolName: "fixture-tool",
+        result: "tool-output",
+        isError: false,
+      });
+      write({
+        type: "extension_ui_request",
+        id: "interaction-1",
+        method: "confirm",
+        title: "fixture",
+        message: "confirm",
+      });
+      write({ type: "message_end", message: { role: "assistant" } });
+      write({ type: "turn_end", message: {}, toolResults: [] });
+    });
 
-  if (scenario === "write-failure") {
+  if (scenario === "linger") {
+    const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    lines.on("line", (line) => {
+      try {
+        response(JSON.parse(line));
+      } catch {
+        write({ type: "response", success: false });
+      }
+    });
+    // Deliberately survives EOF; runner must safely reap it after the valid responses.
+    setInterval(() => undefined, 60_000);
+  } else if (scenario === "write-failure") {
     closeSync(0);
     write({ type: "fixture_stdin_closed" });
     setInterval(() => undefined, 60_000);
