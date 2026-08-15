@@ -11,6 +11,8 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationSessionActionState,
+  ProviderRuntimeCapabilities,
   ProjectScript,
   TurnId,
   type OrchestrationCheckpointSummary,
@@ -402,8 +404,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           scripts_json AS "scripts",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities",
           deleted_at AS "deletedAt"
         FROM projection_projects
         ORDER BY created_at ASC, project_id ASC
@@ -427,8 +427,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities",
           archived_at AS "archivedAt",
           settled_override AS "settledOverride",
           settled_at AS "settledAt",
@@ -465,8 +463,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities",
           archived_at AS "archivedAt",
           settled_override AS "settledOverride",
           settled_at AS "settledAt",
@@ -505,8 +501,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities",
           archived_at AS "archivedAt",
           settled_override AS "settledOverride",
           settled_at AS "settledAt",
@@ -542,9 +536,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
-          updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          updated_at AS "updatedAt"
         FROM projection_thread_messages
         ORDER BY thread_id ASC, created_at ASC, message_id ASC
       `,
@@ -563,9 +555,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           implemented_at AS "implementedAt",
           implementation_thread_id AS "implementationThreadId",
           created_at AS "createdAt",
-          updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          updated_at AS "updatedAt"
         FROM projection_thread_proposed_plans
         ORDER BY thread_id ASC, created_at ASC, plan_id ASC
       `,
@@ -776,9 +766,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           projector,
           last_applied_sequence AS "lastAppliedSequence",
-          updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          updated_at AS "updatedAt"
         FROM projection_state
       `,
   });
@@ -877,8 +865,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           scripts_json AS "scripts",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities",
           deleted_at AS "deletedAt"
         FROM projection_projects
         WHERE workspace_root = ${workspaceRoot}
@@ -903,8 +889,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           scripts_json AS "scripts",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities",
           deleted_at AS "deletedAt"
         FROM projection_projects
         WHERE project_id = ${projectId}
@@ -965,8 +949,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities",
           archived_at AS "archivedAt",
           settled_override AS "settledOverride",
           settled_at AS "settledAt",
@@ -1003,9 +985,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
-          updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          updated_at AS "updatedAt"
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
         ORDER BY created_at ASC, message_id ASC
@@ -1025,9 +1005,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           implemented_at AS "implementedAt",
           implementation_thread_id AS "implementationThreadId",
           created_at AS "createdAt",
-          updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          updated_at AS "updatedAt"
         FROM projection_thread_proposed_plans
         WHERE thread_id = ${threadId}
         ORDER BY created_at ASC, plan_id ASC
@@ -1235,9 +1213,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
-          updated_at AS "updatedAt",
-          action_state_json AS "actionState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          updated_at AS "updatedAt"
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
           AND (
@@ -1475,8 +1451,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   streaming: row.isStreaming === 1,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
-                  ...(row.actionState !== null && row.actionState !== undefined ? { actionState: row.actionState } : {}),
-                  ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined ? { runtimeCapabilities: row.runtimeCapabilities } : {}),
                 });
                 messagesByThread.set(row.threadId, threadMessages);
               }
@@ -1492,8 +1466,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   implementationThreadId: row.implementationThreadId,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
-                  ...(row.actionState !== null && row.actionState !== undefined ? { actionState: row.actionState } : {}),
-                  ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined ? { runtimeCapabilities: row.runtimeCapabilities } : {}),
                 });
                 proposedPlansByThread.set(row.threadId, threadProposedPlans);
               }
