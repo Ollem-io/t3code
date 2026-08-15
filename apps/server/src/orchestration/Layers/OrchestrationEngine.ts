@@ -318,7 +318,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
       const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
-      if (command.type === "thread.steer.add" || command.type === "thread.follow-up.add") {
+      const isRuntimeAction = command.type === "thread.steer.add" || command.type === "thread.follow-up.add";
+      if (isRuntimeAction) {
         const accepted = yield* runtimeActionTextHandoff.put({ commandId: command.commandId, text: command.text });
         if (!accepted) {
           return yield* Effect.fail(new OrchestrationCommandInvariantError({
@@ -327,12 +328,21 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }));
         }
       }
-      yield* Queue.offer(commandQueue, {
-        command,
-        result,
-        startedAtMs: yield* Clock.currentTimeMillis,
-      });
-      return yield* Deferred.await(result);
+      // A queued command can be interrupted during offer, await, or runtime shutdown.
+      // Its process-local secret must not outlive that abandoned dispatch.
+      return yield* Effect.onExit(
+        Effect.gen(function* () {
+          yield* Queue.offer(commandQueue, {
+            command,
+            result,
+            startedAtMs: yield* Clock.currentTimeMillis,
+          });
+          return yield* Deferred.await(result);
+        }),
+        (exit) => isRuntimeAction && Exit.isFailure(exit)
+          ? runtimeActionTextHandoff.discard(command.commandId)
+          : Effect.void,
+      );
     });
 
   return {

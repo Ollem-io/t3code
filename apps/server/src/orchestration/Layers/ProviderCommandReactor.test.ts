@@ -551,6 +551,17 @@ describe("ProviderCommandReactor", () => {
       type: "thread.follow-up.add", commandId: CommandId.make("cmd-follow-up-add"),
       threadId: ThreadId.make("thread-1"), followUpId: "follow-up-1", text: "follow up provider only", createdAt: now,
     }));
+    // Replayed durable events contain only identifiers; provider text stays in
+    // the one-shot process-local handoff and is not persisted for restart.
+    const durableEvents = await harness.runEffect(
+      harness.engine.readEvents(0, 10_000).pipe(Stream.runCollect, Effect.map(Array.from)),
+    );
+    const runtimeIntents = durableEvents.filter(
+      (event) => event.type === "thread.steer-add-requested" || event.type === "thread.follow-up-add-requested",
+    );
+    expect(runtimeIntents).toHaveLength(2);
+    expect(JSON.stringify(runtimeIntents)).not.toContain("steer provider only");
+    expect(JSON.stringify(runtimeIntents)).not.toContain("follow up provider only");
     await harness.drain();
 
     expect(harness.executeRuntimeOperation).toHaveBeenCalledTimes(2);
