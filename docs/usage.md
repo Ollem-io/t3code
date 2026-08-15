@@ -1,6 +1,6 @@
 # Use Prime Agent in T3 Code
 
-> **Approved proposed usage contract — not yet shipped.** This guide freezes the approved intended user-visible behavior for the Prime Agent provider integration, but it does not claim that implementation has landed. Each section is labeled **MVP**, **Alpha**, or **Beta**. The release phases are delivery milestones: all capabilities listed for a phase are target scope, subject to capability/version gating where stated, rather than optional permanent omissions.
+> **MVP shipped. Alpha and Beta remain proposed.** This guide records the delivered MVP contract and proposed later phases. Capability/version gating still applies; later-phase text is not a current-product promise.
 
 ## What runs where
 

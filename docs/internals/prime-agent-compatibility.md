@@ -1,4 +1,4 @@
-# Prime Agent compatibility matrix (MVP draft)
+# Prime Agent compatibility matrix (MVP shipped)
 
 The Prime provider uses a data-driven adapter-boundary compatibility decision before any RPC process is started.
 
@@ -23,3 +23,9 @@ Prime model image input is preserved in the native RPC protocol for PA-M08 to co
 current `ServerProviderModel` contract has no image capability field, so this readiness mapping
 does not claim an image capability that it cannot represent. The transient `checking` readiness
 maps to provider `warning` because the provider snapshot contract has no checking status.
+
+## PA-M16 integration evidence
+
+`apps/server/integration/fixtures/prime-rpc/prime-agent-isolated-report.mjs` is a dependency-free isolated report runner. Its default lane gives an installed binary a fresh disposable `HOME`, T3 home, XDG config/data/cache, workspace, session and daemon roots; it uses only an allowlist environment and records exact spawned PID/start-token manifests. It performs `--version` and bounded `get_state`/`get_available_models`; an unauthenticated result is **setup required**, never a reason to borrow live auth. The canonical transcript is hash-only and cleanup is reported.
+
+`--fake` covers deterministic streaming, tools, interactions, interrupt/race, crash and multi-request ordering fixtures. `--authenticated` is separately named and skips unless both `PRIME_AGENT_AUTHENTICATED_TEST=1` and `PRIME_AGENT_AUTHENTICATED_PERMISSION=I_GRANT_READ_ONLY_SMOKE` are supplied; it is not run in this repository/current host. No browser, simulator, or authenticated current-host lane is part of this proof.
