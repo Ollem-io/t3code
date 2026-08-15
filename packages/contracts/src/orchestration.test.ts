@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  ClientOrchestrationCommand,
   DEFAULT_RUNTIME_MODE,
   ModelSelection,
   OrchestrationCommand,
@@ -25,6 +26,7 @@ import {
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderRuntimeOperation, supportsRuntimeOperation } from "./providerCapabilities.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
 const decodeFullThreadDiffInput = Schema.decodeUnknownEffect(OrchestrationGetFullThreadDiffInput);
@@ -933,5 +935,34 @@ it.effect("project favicon overrides accept only supported image files", () =>
       }),
     );
     assert.strictEqual(invalid._tag, "Failure");
+  }),
+);
+
+it.effect("client command rejects provider runtime operations", () =>
+  Effect.gen(function* () {
+    const exit = yield* Effect.exit(
+      Schema.decodeUnknownEffect(ClientOrchestrationCommand)({
+        type: "provider.runtime.operation",
+        commandId: "c1",
+        threadId: "t1",
+        operation: {
+          type: "goal.create",
+          commandId: "c1",
+          threadId: "t1",
+          goalId: "g1",
+          title: "ship",
+        },
+      }),
+    );
+    assert.strictEqual(exit._tag, "Failure");
+    const operation = yield* Schema.decodeUnknownEffect(ProviderRuntimeOperation)({
+      type: "goal.create",
+      commandId: "c1",
+      threadId: "t1",
+      goalId: "g1",
+      title: "ship",
+    });
+    assert.isTrue(supportsRuntimeOperation({ goals: true }, operation));
+    assert.isFalse(supportsRuntimeOperation({}, operation));
   }),
 );
