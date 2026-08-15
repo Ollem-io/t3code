@@ -146,6 +146,33 @@ describe("provider runtime extension contract", () => {
     ).toBe("succeeded");
     expect(
       decodeOutcome({
+        status: "succeeded",
+        commandId: "c1",
+        type: "goal.create",
+        capability: "goals",
+        result: { acknowledged: true },
+      }).status,
+    ).toBe("succeeded");
+    expect(() =>
+      decodeOutcome({
+        status: "succeeded",
+        commandId: "c1",
+        type: "goal.create",
+        capability: "goals",
+        result: { commands: [{ name: "format" }] },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeOutcome({
+        status: "succeeded",
+        commandId: "c1",
+        type: "command.discover",
+        capability: "commandDiscovery",
+        result: { skills: [{ name: "review" }] },
+      }),
+    ).toThrow();
+    expect(
+      decodeOutcome({
         status: "failed",
         commandId: "c1",
         type: "goal.create",

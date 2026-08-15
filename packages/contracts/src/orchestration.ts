@@ -22,10 +22,6 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
-import {
-  ProviderRuntimeOperation,
-  ProviderRuntimeOperationOutcome,
-} from "./providerCapabilities.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -934,22 +930,6 @@ const ThreadSessionStopCommand = Schema.Struct({
   onlyIfSettled: Schema.optional(Schema.Boolean),
 });
 
-/** Additive bridge: orchestrators may relay a provider-neutral extension command. */
-export const ProviderRuntimeOperationCommand = Schema.Struct({
-  type: Schema.Literal("provider.runtime.operation"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  operation: ProviderRuntimeOperation,
-}).check(
-  Schema.makeFilter(
-    (value) =>
-      (value.commandId === value.operation.commandId &&
-        value.threadId === value.operation.threadId) ||
-      "commandId and threadId must match the embedded provider operation",
-  ),
-);
-export type ProviderRuntimeOperationCommand = typeof ProviderRuntimeOperationCommand.Type;
-
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
@@ -974,7 +954,6 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
-  ProviderRuntimeOperationCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -1003,7 +982,6 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
-  ProviderRuntimeOperationCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -1128,7 +1106,6 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
-  "provider.runtime.operation.result",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1372,13 +1349,6 @@ export const OrchestrationEventMetadata = Schema.Struct({
 });
 export type OrchestrationEventMetadata = typeof OrchestrationEventMetadata.Type;
 
-export const ProviderRuntimeOperationResultPayload = Schema.Struct({
-  threadId: ThreadId,
-  outcome: ProviderRuntimeOperationOutcome,
-});
-export type ProviderRuntimeOperationResultPayload =
-  typeof ProviderRuntimeOperationResultPayload.Type;
-
 const EventBaseFields = {
   sequence: NonNegativeInt,
   eventId: EventId,
@@ -1536,11 +1506,6 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
-    type: Schema.Literal("provider.runtime.operation.result"),
-    payload: ProviderRuntimeOperationResultPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

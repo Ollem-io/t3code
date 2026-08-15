@@ -1,6 +1,5 @@
 import {
   EventId,
-  capabilityForRuntimeOperation,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -1117,32 +1116,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           turnCount: command.turnCount,
           createdAt: command.createdAt,
-        },
-      };
-    }
-
-    case "provider.runtime.operation": {
-      yield* requireThread({
-        readModel,
-        command,
-        threadId: command.threadId,
-      });
-      return {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: yield* nowIso,
-          commandId: command.commandId,
-        })),
-        type: "provider.runtime.operation.result",
-        payload: {
-          threadId: command.threadId,
-          outcome: {
-            status: "pending",
-            commandId: command.operation.commandId,
-            type: command.operation.type,
-            capability: capabilityForRuntimeOperation(command.operation),
-          },
         },
       };
     }

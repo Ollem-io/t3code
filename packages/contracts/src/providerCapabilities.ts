@@ -251,17 +251,30 @@ export const ProviderRuntimeTask = Schema.Struct({
   status: Schema.Literals(["running", "paused", "completed", "cancelled", "failed"]),
 });
 
-/** Typed successful material rather than a provider-specific unknown blob. */
-export const ProviderRuntimeOperationResult = Schema.Struct({
-  commands: Schema.optional(Schema.Array(ProviderRuntimeDiscoveredCommand)),
-  skills: Schema.optional(Schema.Array(ProviderRuntimeDiscoveredSkill)),
-  interaction: Schema.optional(ProviderRuntimeInteraction),
-  task: Schema.optional(ProviderRuntimeTask),
-  message: Schema.optional(Text),
+/**
+ * Successful results are correlated to their operation family. This prevents a
+ * structurally valid but unrelated payload from completing an operation.
+ */
+export const ProviderRuntimeAcknowledgement = Schema.Struct({ acknowledged: Schema.Literal(true) });
+export const ProviderRuntimeUsageSnapshot = Schema.Struct({
+  retriedAt: IsoDateTime,
+  retryCount: NonNegativeInt,
 });
+export const ProviderRuntimeForkedThread = Schema.Struct({
+  threadId: ThreadId,
+  title: Schema.optional(ShortText),
+});
+export const ProviderRuntimeOperationResult = Schema.Union([
+  Schema.Struct({ commands: Schema.Array(ProviderRuntimeDiscoveredCommand) }),
+  Schema.Struct({ skills: Schema.Array(ProviderRuntimeDiscoveredSkill) }),
+  Schema.Struct({ interaction: ProviderRuntimeInteraction }),
+  Schema.Struct({ task: ProviderRuntimeTask }),
+  Schema.Struct({ usage: ProviderRuntimeUsageSnapshot }),
+  Schema.Struct({ thread: ProviderRuntimeForkedThread }),
+  ProviderRuntimeAcknowledgement,
+]);
 export type ProviderRuntimeOperationResult = typeof ProviderRuntimeOperationResult.Type;
 
-/** Lifecycle event for every dispatched extension operation. */
 const RuntimeOperationType = Schema.Literals([
   "follow-up.add",
   "follow-up.edit",
@@ -310,13 +323,36 @@ const OutcomeBase = {
   type: RuntimeOperationType,
   capability: RuntimeOperationCapability,
 };
+
+function isCorrelatedSuccessResult(
+  type: ProviderRuntimeOperation["type"],
+  result: ProviderRuntimeOperationResult,
+): boolean {
+  if (type === "command.discover") return "commands" in result;
+  if (type === "skill.discover") return "skills" in result;
+  if (type === "interaction.respond") return "interaction" in result;
+  if (["task.observe", "task.cancel", "task.pause", "task.resume"].includes(type))
+    return "task" in result;
+  if (type === "usage.snapshot.retry") return "usage" in result;
+  if (type === "thread.fork") return "thread" in result;
+  if (type.endsWith(".reverse")) return false;
+  return "acknowledged" in result;
+}
+
+/** Lifecycle event for every provider-side extension operation. */
 export const ProviderRuntimeOperationOutcome = Schema.Union([
   Schema.Struct({ status: Schema.Literal("pending"), ...OutcomeBase }),
   Schema.Struct({
     status: Schema.Literal("succeeded"),
     ...OutcomeBase,
     result: ProviderRuntimeOperationResult,
-  }),
+  }).check(
+    Schema.makeFilter(
+      (value) =>
+        isCorrelatedSuccessResult(value.type as ProviderRuntimeOperation["type"], value.result) ||
+        "result must match the operation type",
+    ),
+  ),
   Schema.Struct({
     status: Schema.Literal("failed"),
     ...OutcomeBase,
@@ -326,13 +362,19 @@ export const ProviderRuntimeOperationOutcome = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("reversed"),
     ...OutcomeBase,
+    type: Schema.Literals([
+      "follow-up.reverse",
+      "compaction.reverse",
+      "goal.reverse",
+      "heartbeat.reverse",
+    ]),
     reverseCommandId: CommandId,
   }),
 ]).check(
   Schema.makeFilter(
     (value) =>
-      capabilityForRuntimeOperation(value) === value.capability ||
-      "capability must match the operation type",
+      capabilityForRuntimeOperation(value as Pick<ProviderRuntimeOperation, "type">) ===
+        value.capability || "capability must match the operation type",
   ),
 );
 export type ProviderRuntimeOperationOutcome = typeof ProviderRuntimeOperationOutcome.Type;
