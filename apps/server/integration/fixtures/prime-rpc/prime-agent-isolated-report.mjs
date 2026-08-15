@@ -11,16 +11,30 @@ const digest = (value) => createHash("sha256").update(value).digest("hex");
 const redact = (value) => (typeof value === "string" ? `[sha256:${digest(value)}]` : value);
 const pathLabel = (value) => `[path-sha256:${digest(resolve(value))}]`;
 const transcript = [];
+// Keep exact PIDs for ownership checks and signalling, but never let one cross the
+// artifact boundary. This conversion is deliberately applied at every transcript
+// record boundary, not just to the final manifest projection.
+const artifactField = ([key, value]) => {
+  if (key === "pid") return ["pidHash", redact(String(value))];
+  if (key === "startToken") return ["startTokenHash", redact(String(value))];
+  return [key, secretKeys.test(key) || key === "path" ? redact(String(value)) : value];
+};
 const record = (kind, value = {}) =>
-  transcript.push({
-    kind,
-    ...Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [
-        k,
-        secretKeys.test(k) || k === "path" ? redact(String(v)) : v,
-      ]),
-    ),
-  });
+  transcript.push({ kind, ...Object.fromEntries(Object.entries(value).map(artifactField)) });
+const artifactResource = ({ pid, startToken, ...resource }) => ({
+  ...resource,
+  // `pid` and `startToken` remain on the in-memory resource for exact lifecycle
+  // proof/action. The report receives only deterministic SHA-256 identities.
+  pidHash: redact(String(pid)),
+  startTokenHash: redact(String(startToken)),
+});
+const assertSafeArtifact = (serialized, resources) => {
+  if (/"pid"\s*:/.test(serialized))
+    throw new Error("refusing to serialize a raw pid field in the artifact");
+  for (const { pid } of resources)
+    if (serialized.includes(String(pid)))
+      throw new Error("refusing to serialize a spawned raw pid in the artifact");
+};
 const linuxStartToken = async (pid) => {
   if (platform() !== "linux") return undefined;
   try {
@@ -190,10 +204,7 @@ const rpcProbe = async (binary, env, workspace, resources, scenario) => {
   record("rpc", {
     outcome,
     pid: managed.resource.pid,
-    startToken:
-      managed.resource.startToken === "unavailable"
-        ? "unavailable"
-        : digest(managed.resource.startToken),
+    startToken: managed.resource.startToken,
     stdinEnded,
     lifecycle: managed.resource.lifecycle,
     stdoutHash: digest(managed.stdout),
@@ -292,11 +303,12 @@ const main = async () => {
   await writeFile(join(workspace, ".t3-pa-m16-owned"), randomUUID(), { mode: 0o600 });
   const env = cleanEnvironment(home),
     resources = [];
+  // `resources` intentionally retains raw PID/start-token values while running.
+  // Its report projection is built only after cleanup, once lifecycle is final.
   const manifest = {
     root: pathLabel(root),
     directories: [root, home, workspace, config, session, daemon].map(pathLabel),
     environmentKeys: Object.keys(env).sort(),
-    resources,
   };
   let result;
   try {
@@ -350,19 +362,20 @@ const main = async () => {
       result = { status: "cleanup-failed", reason: "owned resources were not safely reaped" };
   }
   const canonical = transcript.map(({ kind, ...fields }) => ({ kind, ...fields }));
-  console.log(
-    JSON.stringify(
-      {
-        lane: mode,
-        result,
-        manifest,
-        transcriptHash: digest(JSON.stringify(canonical)),
-        transcript: canonical,
-        redaction: "hash-only; raw paths, output, diagnostics, and secrets are omitted",
-      },
-      null,
-      2,
-    ),
-  );
+  const artifact = {
+    lane: mode,
+    result,
+    manifest: { ...manifest, resources: resources.map(artifactResource) },
+    transcriptHash: digest(JSON.stringify(canonical)),
+    transcript: canonical,
+    redaction:
+      "hash-only; raw paths, output, diagnostics, secrets, PIDs, and start tokens are omitted",
+  };
+  // JSON.stringify is the sole report serialization boundary. Validate the complete
+  // transitive payload immediately before emitting it, rather than trusting callers
+  // to remember to redact newly-added nested fields.
+  const serialized = JSON.stringify(artifact, null, 2);
+  assertSafeArtifact(serialized, resources);
+  console.log(serialized);
 };
 await main();
