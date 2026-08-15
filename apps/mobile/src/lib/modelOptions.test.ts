@@ -172,3 +172,14 @@ describe("mobile model options", () => {
     expect(resolveDefaultableModelSelection(null, legacy)).toBe(legacy);
   });
 });
+
+
+describe("Prime model snapshot behavior", () => {
+  const config = { providers: [
+    { instanceId: "prime-a", driver: "primeAgent", displayName: "Prime A", enabled: true, installed: true, status: "ready", availability: "available", version: "1", auth: { status: "authenticated" }, checkedAt: "2026-01-01T00:00:00Z", models: [{ slug: "reasoner", name: "Reasoner", isCustom: false, availability: "available", capabilities: { optionDescriptors: [{ id: "effort", label: "Thinking", type: "select", options: [{ id: "high", label: "High" }] }] } }], slashCommands: [], skills: [] },
+    { instanceId: "prime-b", driver: "primeAgent", displayName: "Prime B", enabled: true, installed: true, status: "ready", availability: "available", version: "1", auth: { status: "authenticated" }, checkedAt: "2026-01-01T00:00:00Z", models: [{ slug: "reasoner", name: "Reasoner", isCustom: false, availability: "stale", capabilities: null }], slashCommands: [], skills: [] },
+  ] } as unknown as ServerConfig;
+  it("keeps duplicate names distinct and exposes descriptor labels", () => { const options = buildModelOptions(config, null); expect(options.map(x => x.key)).toEqual(["prime-a:reasoner", "prime-b:reasoner"]); expect(modelCapabilityLabels(options[0]!.capabilities)).toEqual(["Thinking"]); });
+  it("retains exact bound selection when stale", () => { const selection = { instanceId: "prime-b", model: "reasoner" }; expect(getModelSelectionAvailability(config, selection)).toEqual({ available: false, reason: "model-unavailable" }); expect(buildModelOptions(config, selection).at(-1)?.selection).toEqual(selection); });
+  it("does not reject selection offline", () => { const selection = { instanceId: "prime-a", model: "reasoner" }; expect(getModelSelectionAvailability(null, selection)).toEqual({ available: true, instanceId: "prime-a", model: "reasoner" }); });
+});

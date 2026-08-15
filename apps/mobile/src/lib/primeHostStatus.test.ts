@@ -1,0 +1,2 @@
+import { describe, expect, it } from "vite-plus/test"; import { presentPrimeHostStatus } from "./primeHostStatus";
+describe("Prime host status",()=>it("always directs setup to remote host",()=>{ for(const s of ["auth","compatibility","crash"] as const){ const x=presentPrimeHostStatus(s); expect(x.detail.toLowerCase()).toContain("host"); expect(x.detail.toLowerCase()).not.toMatch(/phone|api key|install/); }}));
