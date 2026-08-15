@@ -256,6 +256,20 @@ export const ProviderRuntimeTask = Schema.Struct({
  * structurally valid but unrelated payload from completing an operation.
  */
 export const ProviderRuntimeAcknowledgement = Schema.Struct({ acknowledged: Schema.Literal(true) });
+/** A terminal answer to an interaction, without carrying provider-native content. */
+export const ProviderRuntimeInteractionResponse = Schema.Struct({
+  status: Schema.Literals(["responded", "cancelled"]),
+});
+/** A terminal command invocation, deliberately limited to its public name and status. */
+export const ProviderRuntimeCommandInvocation = Schema.Struct({
+  name: ShortText,
+  status: Schema.Literal("completed"),
+});
+/** A terminal skill invocation, deliberately limited to its public name and status. */
+export const ProviderRuntimeSkillInvocation = Schema.Struct({
+  name: ShortText,
+  status: Schema.Literal("completed"),
+});
 export const ProviderRuntimeUsageSnapshot = Schema.Struct({
   retriedAt: IsoDateTime,
   retryCount: NonNegativeInt,
@@ -268,6 +282,9 @@ export const ProviderRuntimeOperationResult = Schema.Union([
   Schema.Struct({ commands: Schema.Array(ProviderRuntimeDiscoveredCommand) }),
   Schema.Struct({ skills: Schema.Array(ProviderRuntimeDiscoveredSkill) }),
   Schema.Struct({ interaction: ProviderRuntimeInteraction }),
+  Schema.Struct({ interactionResponse: ProviderRuntimeInteractionResponse }),
+  Schema.Struct({ commandInvocation: ProviderRuntimeCommandInvocation }),
+  Schema.Struct({ skillInvocation: ProviderRuntimeSkillInvocation }),
   Schema.Struct({ task: ProviderRuntimeTask }),
   Schema.Struct({ usage: ProviderRuntimeUsageSnapshot }),
   Schema.Struct({ thread: ProviderRuntimeForkedThread }),
@@ -330,7 +347,12 @@ function isCorrelatedSuccessResult(
 ): boolean {
   if (type === "command.discover") return "commands" in result;
   if (type === "skill.discover") return "skills" in result;
-  if (type === "interaction.respond") return "interaction" in result;
+  if (type === "interaction.respond")
+    return "interactionResponse" in result && result.interactionResponse.status === "responded";
+  if (type === "interaction.cancel")
+    return "interactionResponse" in result && result.interactionResponse.status === "cancelled";
+  if (type === "command.invoke") return "commandInvocation" in result;
+  if (type === "skill.invoke") return "skillInvocation" in result;
   if (["task.observe", "task.cancel", "task.pause", "task.resume"].includes(type))
     return "task" in result;
   if (type === "usage.snapshot.retry") return "usage" in result;

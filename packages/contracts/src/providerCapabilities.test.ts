@@ -153,6 +153,42 @@ describe("provider runtime extension contract", () => {
         result: { acknowledged: true },
       }).status,
     ).toBe("succeeded");
+    for (const [type, capability, result] of [
+      ["interaction.respond", "interactions", { interactionResponse: { status: "responded" } }],
+      ["interaction.cancel", "interactions", { interactionResponse: { status: "cancelled" } }],
+      [
+        "command.invoke",
+        "commandDiscovery",
+        { commandInvocation: { name: "format", status: "completed" } },
+      ],
+      [
+        "skill.invoke",
+        "commandDiscovery",
+        { skillInvocation: { name: "review", status: "completed" } },
+      ],
+    ] as const) {
+      expect(
+        decodeOutcome({ status: "succeeded", commandId: "c1", type, capability, result }).status,
+      ).toBe("succeeded");
+    }
+    for (const [type, capability, result] of [
+      ["interaction.respond", "interactions", { interactionResponse: { status: "cancelled" } }],
+      ["interaction.cancel", "interactions", { interactionResponse: { status: "responded" } }],
+      [
+        "command.invoke",
+        "commandDiscovery",
+        { skillInvocation: { name: "review", status: "completed" } },
+      ],
+      [
+        "skill.invoke",
+        "commandDiscovery",
+        { commandInvocation: { name: "format", status: "completed" } },
+      ],
+    ] as const) {
+      expect(() =>
+        decodeOutcome({ status: "succeeded", commandId: "c1", type, capability, result }),
+      ).toThrow();
+    }
     expect(() =>
       decodeOutcome({
         status: "succeeded",
