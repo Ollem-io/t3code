@@ -63,6 +63,9 @@ export interface OrchestrationEngineShape {
    * choosing between an incremental replay and a fresh projected snapshot.
    */
   readonly latestSequence: Effect.Effect<number, never, never>;
+
+  /** One-shot process-local text handoff for non-durable runtime actions. */
+  readonly takeRuntimeActionText: (commandId: string) => Effect.Effect<string | undefined>;
 }
 
 /**

@@ -1525,6 +1525,7 @@ const make = Effect.gen(function* () {
           case "turn.started":
             return !conflictsWithActiveTurn || conflictingTurnStartIsPendingTurnStart;
           case "turn.completed":
+          case "turn.aborted":
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
             }
@@ -1555,7 +1556,8 @@ const make = Effect.gen(function* () {
         event.type === "session.exited" ||
         event.type === "thread.started" ||
         event.type === "turn.started" ||
-        event.type === "turn.completed"
+        event.type === "turn.completed" ||
+        event.type === "turn.aborted"
       ) {
         const status = (() => {
           switch (event.type) {
@@ -1571,6 +1573,8 @@ const make = Effect.gen(function* () {
               return normalizeRuntimeTurnState(event.payload.state) === "failed"
                 ? "error"
                 : "ready";
+            case "turn.aborted":
+              return "ready";
             case "session.started":
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
@@ -1581,7 +1585,7 @@ const make = Effect.gen(function* () {
         const nextActiveTurnId =
           event.type === "turn.started"
             ? (eventTurnId ?? null)
-            : event.type === "turn.completed" || event.type === "session.exited"
+            : event.type === "turn.completed" || event.type === "turn.aborted" || event.type === "session.exited"
               ? null
               : event.type === "session.state.changed" &&
                   !sessionStatusAllowsActiveTurn(
@@ -1635,7 +1639,7 @@ const make = Effect.gen(function* () {
               activeTurnId: nextActiveTurnId,
               lastError,
               updatedAt: now,
-              ...(event.type === "turn.completed" || event.type === "session.exited" || (event.type === "session.state.changed" && (event.payload.state === "error" || event.payload.state === "stopped"))
+              ...(event.type === "turn.completed" || event.type === "turn.aborted" || event.type === "session.exited" || (event.type === "session.state.changed" && (event.payload.state === "ready" || event.payload.state === "error" || event.payload.state === "stopped"))
                 ? { actionState: { queuedCount: 0, steering: [], followUps: [] } }
                 : (thread.session?.actionState ? { actionState: thread.session.actionState } : {})),
               ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
@@ -1651,7 +1655,9 @@ const make = Effect.gen(function* () {
         // provider notifications must never resurrect controls after a turn
         // has reached a terminal state.
         thread.session?.status === "running" &&
-        thread.session.activeTurnId !== null
+        thread.session.activeTurnId !== null &&
+        eventTurnId !== undefined &&
+        sameId(thread.session.activeTurnId, eventTurnId)
       ) {
         // Replacement only: native event is the authoritative bounded snapshot.
         yield* orchestrationEngine.dispatch({

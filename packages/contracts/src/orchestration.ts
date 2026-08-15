@@ -1314,8 +1314,8 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-export const ThreadSteerAddRequestedPayload = Schema.Struct({ threadId: ThreadId, steerId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime });
-export const ThreadFollowUpAddRequestedPayload = Schema.Struct({ threadId: ThreadId, followUpId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime });
+export const ThreadSteerAddRequestedPayload = Schema.Struct({ threadId: ThreadId, steerId: TrimmedNonEmptyString, createdAt: IsoDateTime });
+export const ThreadFollowUpAddRequestedPayload = Schema.Struct({ threadId: ThreadId, followUpId: TrimmedNonEmptyString, createdAt: IsoDateTime });
 
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,

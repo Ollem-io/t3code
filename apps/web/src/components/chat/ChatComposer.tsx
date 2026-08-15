@@ -674,7 +674,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
   const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
-  const primeRuntimeActive = phase === "running" && hasPrimeRuntimeActions(activeThread?.session?.runtimeCapabilities);
+  const primeRuntimeActive = phase === "running" && hasPrimeRuntimeActions(activeThread?.session?.providerName, activeThread?.session?.runtimeCapabilities);
   const primeQueue = renderPrimeQueue(activeThread?.session?.actionState);
 
   // ------------------------------------------------------------------
@@ -1824,6 +1824,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (primeRuntimeActive) {
         event?.preventDefault();
         const decision = resolvePrimeSend(
+          activeThread?.session?.providerName,
           primeActionMode,
           activeThread?.session?.runtimeCapabilities,
           composerImages.length + composerTerminalContexts.length + composerElementContexts.length + composerPreviewAnnotations.length + composerReviewComments.length,
@@ -3113,7 +3114,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           {primeRuntimeActive ? (
             <div className="mx-3 mb-2 rounded-md border border-border p-2 text-xs" data-prime-runtime-actions="true">
               <div className="mb-1 font-medium">Running runtime action</div>
-              <div className="flex gap-2"><Button type="button" variant={primeActionMode === "steer" ? "default" : "outline"} onClick={() => setPrimeActionMode("steer")}>Steer now</Button><Button type="button" variant={primeActionMode === "followUp" ? "default" : "outline"} onClick={() => setPrimeActionMode("followUp")}>Queue next</Button></div>
+              <div className="flex gap-2"><Button type="button" disabled={activeThread?.session?.runtimeCapabilities?.steer !== true} variant={primeActionMode === "steer" ? "default" : "outline"} onClick={() => setPrimeActionMode("steer")}>Steer now</Button><Button type="button" disabled={activeThread?.session?.runtimeCapabilities?.followUps !== true} variant={primeActionMode === "followUp" ? "default" : "outline"} onClick={() => setPrimeActionMode("followUp")}>Queue next</Button></div>
+              {activeThread?.session?.runtimeCapabilities?.steer !== true ? <p className="mt-1 text-muted-foreground">Steering is unavailable in this runtime.</p> : null}{activeThread?.session?.runtimeCapabilities?.followUps !== true ? <p className="mt-1 text-muted-foreground">Queued follow-ups are unavailable in this runtime.</p> : null}
               {primeQueue.length ? <ol className="mt-2 list-decimal pl-4">{primeQueue.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ol> : null}
               <p className="mt-1 text-muted-foreground">Interrupt stops the current turn; Stop ends the session. Queued actions cannot be cancelled by this runtime.</p>
             </div>

@@ -326,17 +326,17 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     // No persisted active running turn: ignore an otherwise valid snapshot.
-    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-before-turn"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), createdAt: now, payload: { queuedCount: 1, steering: ["ignored"], followUps: [] } });
+    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-before-turn"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), turnId: asTurnId("turn-actions"), createdAt: now, payload: { queuedCount: 1, steering: ["ignored"], followUps: [] } });
     await harness.drain();
     const beforeTurn = (await harness.readModel()).threads.find((thread) => thread.id === asThreadId("thread-1"));
     expect(beforeTurn?.session?.actionState).toBeUndefined();
 
     harness.emit({ type: "turn.started", eventId: asEventId("evt-actions-turn-started"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), turnId: asTurnId("turn-actions"), createdAt: now });
     await waitForThread(harness.readModel, (thread) => thread.session?.status === "running" && thread.session?.activeTurnId === "turn-actions");
-    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-first"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), createdAt: now,
+    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-first"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), turnId: asTurnId("turn-actions"), createdAt: now,
       payload: { queuedCount: 2, steering: ["first steer"], followUps: ["first follow-up"] } });
     await waitForThread(harness.readModel, (thread) => thread.session?.actionState?.queuedCount === 2);
-    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-replacement"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), createdAt: "2026-01-01T00:00:01.000Z",
+    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-replacement"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), turnId: asTurnId("turn-actions"), createdAt: "2026-01-01T00:00:01.000Z",
       payload: { queuedCount: 1, steering: ["replacement steer"], followUps: [] } });
     await waitForThread(harness.readModel, (thread) => thread.session?.actionState?.steering[0] === "replacement steer");
     const firstRead = (await harness.readModel()).threads.find((thread) => thread.id === asThreadId("thread-1"));
@@ -347,7 +347,7 @@ describe("ProviderRuntimeIngestion", () => {
     harness.emit({ type: "turn.completed", eventId: asEventId("evt-actions-turn-completed"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), turnId: asTurnId("turn-actions"), createdAt: "2026-01-01T00:00:02.000Z", payload: { state: "completed" } });
     await waitForThread(harness.readModel, (thread) => thread.session?.actionState?.queuedCount === 0);
     // A late provider snapshot must not repopulate the terminal turn's cleared state.
-    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-late-after-terminal"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), createdAt: "2026-01-01T00:00:03.000Z", payload: { queuedCount: 1, steering: [], followUps: ["late"] } });
+    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-late-after-terminal"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), turnId: asTurnId("turn-actions"), createdAt: "2026-01-01T00:00:03.000Z", payload: { queuedCount: 1, steering: [], followUps: ["late"] } });
     await harness.drain();
     const cleared = (await harness.readModel()).threads.find((thread) => thread.id === asThreadId("thread-1"));
     expect(cleared?.session?.status).toBe("ready");
@@ -3591,4 +3591,18 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("runtime still processed");
   });
+  it("fences action snapshots to their active turn and clears ready and aborted terminals", async () => {
+    const harness = await createHarness(); const now = "2026-01-01T00:00:00.000Z"; const provider = ProviderDriverKind.make("prime-agent"); const turn = asTurnId("turn-current");
+    harness.emit({ type: "turn.started", eventId: asEventId("fence-start"), provider, threadId: asThreadId("thread-1"), turnId: turn, createdAt: now });
+    await waitForThread(harness.readModel, (x) => x.session?.activeTurnId === turn);
+    harness.emit({ type: "session.actions.updated", eventId: asEventId("fence-stale"), provider, threadId: asThreadId("thread-1"), turnId: asTurnId("turn-old"), createdAt: now, payload: { queuedCount: 1, steering: ["stale"], followUps: [] } });
+    await harness.drain(); expect((await harness.readModel()).threads[0]?.session?.actionState).toBeUndefined();
+    harness.emit({ type: "session.actions.updated", eventId: asEventId("fence-current"), provider, threadId: asThreadId("thread-1"), turnId: turn, createdAt: now, payload: { queuedCount: 1, steering: ["current"], followUps: [] } });
+    await waitForThread(harness.readModel, (x) => x.session?.actionState?.steering[0] === "current");
+    harness.emit({ type: "session.state.changed", eventId: asEventId("fence-ready"), provider, threadId: asThreadId("thread-1"), createdAt: now, payload: { state: "ready" } });
+    await waitForThread(harness.readModel, (x) => x.session?.actionState?.queuedCount === 0);
+    harness.emit({ type: "turn.aborted", eventId: asEventId("fence-abort"), provider, threadId: asThreadId("thread-1"), turnId: turn, createdAt: now, payload: { reason: "stop" } });
+    await waitForThread(harness.readModel, (x) => x.session?.status === "ready" && x.session?.activeTurnId === null);
+  });
+
 });

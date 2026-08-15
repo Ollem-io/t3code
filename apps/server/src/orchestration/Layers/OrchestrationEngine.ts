@@ -41,6 +41,8 @@ import { decideOrchestrationCommand } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { RuntimeActionTextHandoff } from "../Services/RuntimeActionTextHandoff.ts";
+import { RuntimeActionTextHandoffLive } from "./RuntimeActionTextHandoff.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -83,6 +85,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
+  const runtimeActionTextHandoff = yield* RuntimeActionTextHandoff;
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
@@ -291,6 +294,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             }
           }
 
+          if (envelope.command.type === "thread.steer.add" || envelope.command.type === "thread.follow-up.add") {
+            yield* runtimeActionTextHandoff.discard(envelope.command.commandId);
+          }
           yield* Deferred.fail(envelope.result, error);
         }),
       ),
@@ -312,6 +318,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
       const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
+      if (command.type === "thread.steer.add" || command.type === "thread.follow-up.add") {
+        const accepted = yield* runtimeActionTextHandoff.put({ commandId: command.commandId, text: command.text });
+        if (!accepted) {
+          return yield* Effect.fail(new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Runtime action could not be accepted safely; please retry.",
+          }));
+        }
+      }
       yield* Queue.offer(commandQueue, {
         command,
         result,
@@ -334,10 +349,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     // consistent, committed value — reassignment of `commandReadModel` is
     // atomic on the single-threaded event loop.
     latestSequence: Effect.sync(() => commandReadModel.snapshotSequence),
+    takeRuntimeActionText: (commandId) => runtimeActionTextHandoff.take(commandId),
   } satisfies OrchestrationEngineShape;
 });
 
 export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,
   makeOrchestrationEngine,
-);
+).pipe(Layer.provideMerge(RuntimeActionTextHandoffLive));

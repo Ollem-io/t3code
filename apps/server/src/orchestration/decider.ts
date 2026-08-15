@@ -1034,8 +1034,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...(yield* withEventBase({ aggregateKind: "thread", aggregateId: command.threadId, occurredAt: command.createdAt, commandId: command.commandId })),
         type: command.type === "thread.steer.add" ? "thread.steer-add-requested" : "thread.follow-up-add-requested",
         payload: command.type === "thread.steer.add"
-          ? { threadId: command.threadId, steerId: command.steerId, text: command.text, createdAt: command.createdAt }
-          : { threadId: command.threadId, followUpId: command.followUpId, text: command.text, createdAt: command.createdAt },
+          ? { threadId: command.threadId, steerId: command.steerId, createdAt: command.createdAt }
+          : { threadId: command.threadId, followUpId: command.followUpId, createdAt: command.createdAt },
       };
     }
 

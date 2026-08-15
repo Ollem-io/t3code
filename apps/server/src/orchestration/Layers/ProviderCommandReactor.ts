@@ -1222,6 +1222,13 @@ const make = Effect.gen(function* () {
   const processRuntimeActionRequested = Effect.fn("processRuntimeActionRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.steer-add-requested" | "thread.follow-up-add-requested" }>,
   ) {
+    // One-time consumption is deliberately before every provider or failure path.
+    // After restart the ephemeral value is absent, so the durable intent fails closed.
+    const commandId = event.commandId;
+    const text = commandId ? yield* orchestrationEngine.takeRuntimeActionText(commandId) : undefined;
+    if (text === undefined) {
+      return yield* appendProviderFailureActivity({ threadId: event.payload.threadId, kind: "provider.runtime-action.failed", summary: "Runtime action failed", detail: "Runtime action expired before it could be delivered; please retry.", turnId: null, createdAt: event.payload.createdAt });
+    }
     const thread = yield* resolveThread(event.payload.threadId);
     // Do not optimistically project or log native text. Only the provider's next
     // session_action_update snapshot may change the visible queue.
@@ -1229,8 +1236,8 @@ const make = Effect.gen(function* () {
       return yield* appendProviderFailureActivity({ threadId: event.payload.threadId, kind: "provider.runtime-action.failed", summary: "Runtime action failed", detail: "No active running provider turn is bound to this thread.", turnId: null, createdAt: event.payload.createdAt });
     }
     const operation = event.type === "thread.steer-add-requested"
-      ? { type: "steer.add" as const, commandId: event.commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`), threadId: event.payload.threadId, steerId: event.payload.steerId, text: event.payload.text }
-      : { type: "follow-up.add" as const, commandId: event.commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`), threadId: event.payload.threadId, followUpId: event.payload.followUpId, text: event.payload.text };
+      ? { type: "steer.add" as const, commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`), threadId: event.payload.threadId, steerId: event.payload.steerId, text }
+      : { type: "follow-up.add" as const, commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`), threadId: event.payload.threadId, followUpId: event.payload.followUpId, text };
     yield* providerService.executeRuntimeOperation(operation).pipe(
       Effect.catchCause(() => appendProviderFailureActivity({ threadId: event.payload.threadId, kind: "provider.runtime-action.failed", summary: "Runtime action failed", detail: "The provider did not accept this runtime action.", turnId: null, createdAt: event.payload.createdAt })),
     );

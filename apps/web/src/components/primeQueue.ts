@@ -6,14 +6,16 @@ export type PrimeActionState = {
 };
 /** True only when the runtime advertises an actionable PA-A02 extension. */
 export function hasPrimeRuntimeActions(
+  providerName: string | null | undefined,
   capabilities:
     | { readonly steer?: boolean | undefined; readonly followUps?: boolean | undefined; readonly followUpCancel?: boolean | undefined }
     | undefined,
 ): boolean {
-  return capabilities?.steer === true || capabilities?.followUps === true;
+  return providerName === "prime-agent" && (capabilities?.steer === true || capabilities?.followUps === true);
 }
 
 export function resolvePrimeSend(
+  providerName: string | null | undefined,
   mode: PrimeActionMode,
   capabilities:
     | { readonly steer?: boolean | undefined; readonly followUps?: boolean | undefined }
@@ -22,7 +24,7 @@ export function resolvePrimeSend(
 ): { ok: boolean; reason?: string } {
   if (attachmentCount > 0)
     return { ok: false, reason: "Runtime actions support plain text only; remove attachments." };
-  if (!hasPrimeRuntimeActions(capabilities))
+  if (!hasPrimeRuntimeActions(providerName, capabilities))
     return {
       ok: false,
       reason:
