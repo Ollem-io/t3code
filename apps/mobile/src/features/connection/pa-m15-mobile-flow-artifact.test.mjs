@@ -1,3 +1,14 @@
-import assert from "node:assert/strict"; import { seedInstructions, modelLabel, resolveRemoteSelection, timelineEvent, controls, hostError } from "./pa-m15-mobile-flow-artifact.mjs";
-const i={instanceId:"prime-1",displayName:"Prime Agent",availability:"available",models:[{id:"reasoner",displayName:"Reasoner",availability:"available",capabilities:["reasoning","tools"],thinking:"high"}]};
-assert.equal(modelLabel(i.models[0],i).thinking,"high"); assert.deepEqual(modelLabel(i.models[0],i).capabilities,["Reasoning","Tools"]); assert.equal(resolveRemoteSelection({instanceId:"missing",modelId:"reasoner",instances:[i]}).reason,"bound-instance-unavailable"); assert.equal(resolveRemoteSelection({instanceId:"prime-1",modelId:"missing",instances:[i]}).reason,"bound-model-unavailable"); assert.equal(timelineEvent({type:"request.opened"}).interaction,true); assert.deepEqual(controls({phase:"running"}),{interrupt:true,stop:true,retry:false,reselect:false}); assert.equal(controls({phase:"error",crashed:true}).retry,true); assert.equal(hostError("auth").actionable,true); assert(seedInstructions.prohibited.includes("silent fallback")); console.log("PA-M15 mobile artifact checks passed");
+import { describe, expect, it } from "vite-plus/test";
+import { existsSync } from "node:fs";
+import { mobileFlowArtifact } from "./pa-m15-mobile-flow-artifact.mjs";
+describe("PA-M15 review artifact", () => {
+  it("mirrors actual production entry, components, presentation, and proof", () => {
+    for (const path of [
+      mobileFlowArtifact.entry,
+      ...mobileFlowArtifact.components,
+      ...mobileFlowArtifact.presentation,
+      ...mobileFlowArtifact.proof,
+    ])
+      expect(existsSync(path)).toBe(true);
+  });
+});

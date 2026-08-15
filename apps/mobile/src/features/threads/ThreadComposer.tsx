@@ -55,7 +55,12 @@ import {
 import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  getModelSelectionAvailability,
+  groupByProvider,
+} from "../../lib/modelOptions";
+import { primeHostPresentationForSelection } from "../../lib/primeHostStatus";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
@@ -111,6 +116,7 @@ export interface ThreadComposerProps {
   readonly onPickDraftImages: () => Promise<void>;
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
+  readonly onInterruptThread: () => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
@@ -290,7 +296,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   // Opening and closing count as active so the composer stays expanded while
   // focus moves between its native editor and the settings modal.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
-  const canSend = hasContent;
+  const modelAvailability = getModelSelectionAvailability(
+    props.serverConfig,
+    props.selectedThread.modelSelection,
+  );
+  const canSend = hasContent && modelAvailability.available;
 
   // Notify the parent from the derived value, not focus events: the parent
   // sizes the feed inset from this, and blur-during-sheet would otherwise
@@ -343,14 +353,27 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   });
   const toolbarFadeOpaque = isDarkMode ? "rgba(0,0,0,0.95)" : "rgba(255,255,255,0.95)";
   const toolbarFadeTransparent = isDarkMode ? "rgba(0,0,0,0)" : "rgba(255,255,255,0)";
-  const selectedProviderStatus = useMemo(() => {
-    if (!props.serverConfig) return null;
-    return (
-      props.serverConfig.providers.find(
-        (p) => p.instanceId === props.selectedThread.modelSelection.instanceId,
-      ) ?? null
-    );
-  }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  const selectedProviderStatus = useMemo(
+    () =>
+      props.serverConfig?.providers.find(
+        (provider) => provider.instanceId === props.selectedThread.modelSelection.instanceId,
+      ) ?? null,
+    [props.serverConfig, props.selectedThread.modelSelection.instanceId],
+  );
+  const primeHostPresentation = useMemo(
+    () =>
+      primeHostPresentationForSelection(
+        props.serverConfig,
+        props.selectedThread.modelSelection.instanceId,
+        props.selectedThread.session?.status === "error" ? props.connectionError : null,
+      ),
+    [
+      props.connectionError,
+      props.serverConfig,
+      props.selectedThread.modelSelection.instanceId,
+      props.selectedThread.session?.status,
+    ],
+  );
 
   // ── Trigger detection ────────────────────────────────────
   const [composerSelection, setComposerSelection] = useState(() => ({
@@ -697,6 +720,28 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : 6),
       }}
     >
+      {!modelAvailability.available || primeHostPresentation ? (
+        <Pressable
+          accessibilityRole="button"
+          className="mx-1 mb-2 rounded-xl border border-border bg-card px-3 py-2 active:opacity-70"
+          onPress={
+            modelAvailability.available
+              ? props.onReconnectEnvironment
+              : settingsSheetPresentation.open
+          }
+        >
+          <Text className="text-sm font-t3-bold text-foreground">
+            {primeHostPresentation?.title ?? "Selected model is unavailable"}
+          </Text>
+          <Text className="text-xs text-foreground-muted">
+            {primeHostPresentation?.detail ??
+              "Open thread settings and reselect an available model before sending."}
+          </Text>
+          <Text className="pt-1 text-xs font-t3-bold text-primary">
+            {primeHostPresentation?.action ?? "Reselect model"}
+          </Text>
+        </Pressable>
+      ) : null}
       {/* The backdrop gradient lives on a plain View: Reanimated's Animated.View
           silently drops experimental_backgroundImage on Android, which left this
           strip fully transparent and the feed text legible through the composer. */}
@@ -830,7 +875,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           {!isExpanded ? (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
               {showStopAction ? (
-                <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
+                <ControlPill icon="stop.fill" variant="danger" onPress={props.onInterruptThread} />
               ) : (
                 <ControlPill
                   icon="arrow.up"
@@ -883,13 +928,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   />
                 )}
                 {showStopAction ? (
-                  <ComposerToolbarButton
-                    accessibilityLabel="Stop"
-                    icon="stop.fill"
-                    variant="danger"
-                    onPress={props.onStopThread}
-                    showChevron={false}
-                  />
+                  <>
+                    <ComposerToolbarButton
+                      accessibilityLabel="Interrupt turn"
+                      icon="pause.fill"
+                      variant="danger"
+                      onPress={props.onInterruptThread}
+                      showChevron={false}
+                    />
+                    <ComposerToolbarButton
+                      accessibilityLabel="Stop Prime session"
+                      icon="stop.fill"
+                      variant="danger"
+                      onPress={props.onStopThread}
+                      showChevron={false}
+                    />
+                  </>
                 ) : null}
               </ComposerToolbarScroller>
               <ComposerToolbarButton

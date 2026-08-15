@@ -214,6 +214,7 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -478,7 +479,7 @@ function ThreadRouteContent(
   const handleOpenConnectionEditor = useCallback(() => {
     void navigation.navigate("Connections");
   }, [navigation]);
-  const handleStopThread = useCallback(() => {
+  const handleInterruptThread = useCallback(() => {
     if (
       !selectedThread ||
       (selectedThread.session?.status !== "running" &&
@@ -496,6 +497,13 @@ function ThreadRouteContent(
       },
     });
   }, [interruptThreadTurn, selectedThread]);
+  const handleStopThread = useCallback(() => {
+    if (!selectedThread) return;
+    return stopThreadSession({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id },
+    });
+  }, [selectedThread, stopThreadSession]);
 
   const handleOpenTerminal = useCallback(
     (nextTerminalId?: string | null) => {
@@ -798,6 +806,7 @@ function ThreadRouteContent(
           onNativePasteImages={composer.onNativePasteImages}
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
+          onInterruptThread={handleInterruptThread}
           onStopThread={handleStopThread}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}

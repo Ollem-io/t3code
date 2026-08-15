@@ -18,9 +18,9 @@ export type ModelOption = {
   readonly isDefault: boolean;
   readonly isLegacy: boolean;
   readonly capabilities: ModelCapabilities | null;
-  readonly availability: "available" | "unavailable" | "stale" | undefined;
-  readonly capabilityLabels: ReadonlyArray<string>;
-  readonly thinkingOptions: ReadonlyArray<string>;
+  readonly availability?: "available" | "unavailable" | "stale" | undefined;
+  readonly capabilityLabels?: ReadonlyArray<string>;
+  readonly thinkingOptions?: ReadonlyArray<string>;
   readonly selection: ModelSelection;
 };
 
@@ -38,6 +38,7 @@ function providerDisplayLabel(provider: {
   if (provider.displayName) return provider.displayName;
   if (provider.driver === "codex") return "Codex";
   if (provider.driver === "claudeAgent") return "Claude";
+  if (provider.driver === "prime-agent") return "Prime Agent";
   return provider.instanceId;
 }
 
@@ -72,7 +73,14 @@ function normalizeSelectionOptions(
 
 export type ModelSelectionAvailability =
   | { readonly available: true; readonly instanceId: string; readonly model: string }
-  | { readonly available: false; readonly reason: "missing-instance" | "instance-unavailable" | "missing-model" | "model-unavailable" };
+  | {
+      readonly available: false;
+      readonly reason:
+        | "missing-instance"
+        | "instance-unavailable"
+        | "missing-model"
+        | "model-unavailable";
+    };
 
 /** Resolve a bound selection without falling through to another provider. Existing threads
  * retain their identity when unavailable so the UI can explain and require re-selection. */
@@ -80,32 +88,56 @@ export function getModelSelectionAvailability(
   config: T3ServerConfig | null | undefined,
   selection: ModelSelection | null,
 ): ModelSelectionAvailability {
-  if (!selection || !config) return { available: true, instanceId: selection?.instanceId ?? "", model: selection?.model ?? "" };
-  const provider = config.providers.find((candidate) => candidate.instanceId === selection.instanceId);
+  if (!selection || !config)
+    return {
+      available: true,
+      instanceId: selection?.instanceId ?? "",
+      model: selection?.model ?? "",
+    };
+  const provider = config.providers.find(
+    (candidate) => candidate.instanceId === selection.instanceId,
+  );
   if (!provider) return { available: false, reason: "missing-instance" };
-  if (!provider.enabled || !provider.installed || provider.auth.status === "unauthenticated" || provider.availability === "unavailable") {
+  if (
+    !provider.enabled ||
+    !provider.installed ||
+    provider.auth.status === "unauthenticated" ||
+    provider.availability === "unavailable"
+  ) {
     return { available: false, reason: "instance-unavailable" };
   }
   const model = provider.models.find((candidate) => candidate.slug === selection.model);
-  if (!model) return { available: false, reason: "missing-model" };
-  if (model.availability === "unavailable" || model.availability === "stale") return { available: false, reason: "model-unavailable" };
+  if (!model) {
+    return provider.models.length === 0
+      ? { available: true, instanceId: selection.instanceId, model: selection.model }
+      : { available: false, reason: "missing-model" };
+  }
+  if (model.availability === "unavailable" || model.availability === "stale")
+    return { available: false, reason: "model-unavailable" };
   return { available: true, instanceId: selection.instanceId, model: selection.model };
 }
 
-export function modelCapabilityLabels(capabilities: ModelCapabilities | null | undefined): ReadonlyArray<string> {
+export function modelCapabilityLabels(
+  capabilities: ModelCapabilities | null | undefined,
+): ReadonlyArray<string> {
   if (!capabilities?.optionDescriptors) return [];
   return capabilities.optionDescriptors.map((descriptor) => descriptor.label);
 }
 
-export function modelAvailabilityLabel(availability: "available" | "unavailable" | "stale" | undefined): string {
+export function modelAvailabilityLabel(
+  availability: "available" | "unavailable" | "stale" | undefined,
+): string {
   if (availability === "stale") return "Stale snapshot";
   if (availability === "unavailable") return "Unavailable";
   return "Available";
 }
 
-export function modelThinkingOptions(capabilities: ModelCapabilities | null | undefined): ReadonlyArray<string> {
-  const descriptor = capabilities?.optionDescriptors?.find((candidate) =>
-    /reason|think|effort/i.test(candidate.id) || /reason|think|effort/i.test(candidate.label),
+export function modelThinkingOptions(
+  capabilities: ModelCapabilities | null | undefined,
+): ReadonlyArray<string> {
+  const descriptor = capabilities?.optionDescriptors?.find(
+    (candidate) =>
+      /reason|think|effort/i.test(candidate.id) || /reason|think|effort/i.test(candidate.label),
   );
   return descriptor?.type === "select" ? descriptor.options.map((option) => option.label) : [];
 }
@@ -117,15 +149,7 @@ export function resolveSelectableModelSelection(
   if (!selection || !config) {
     return selection;
   }
-  const provider = config.providers.find(
-    (candidate) => candidate.instanceId === selection.instanceId,
-  );
-  return provider &&
-    provider.enabled &&
-    provider.installed &&
-    provider.auth.status !== "unauthenticated"
-    ? selection
-    : null;
+  return getModelSelectionAvailability(config, selection).available ? selection : null;
 }
 
 /**
@@ -155,7 +179,6 @@ export function buildModelOptions(
   const options = new Map<string, ModelOption>();
 
   for (const provider of config?.providers ?? []) {
-
     const providerLabel = providerDisplayLabel(provider);
     for (const model of provider.models) {
       const key = `${provider.instanceId}:${model.slug}`;
@@ -199,11 +222,11 @@ export function buildModelOptions(
         subtitle: providerLabel,
         providerKey: fallbackModelSelection.instanceId,
         providerLabel,
-        providerDriver: fallbackModelSelection.instanceId,
+        providerDriver: "unknown",
         isDefault: false,
         isLegacy: false,
         capabilities: null,
-        availability: undefined,
+        availability: "stale",
         capabilityLabels: [],
         thinkingOptions: [],
         selection: fallbackModelSelection,

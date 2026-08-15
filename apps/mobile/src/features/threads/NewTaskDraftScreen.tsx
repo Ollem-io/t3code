@@ -44,7 +44,10 @@ import {
   type ComposerDraft,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
-import { resolveSelectableModelSelection } from "../../lib/modelOptions";
+import {
+  getModelSelectionAvailability,
+  resolveDefaultableModelSelection,
+} from "../../lib/modelOptions";
 import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { enqueueThreadOutboxMessage, removeThreadOutboxMessage } from "../../state/thread-outbox";
@@ -722,11 +725,19 @@ export function NewTaskDraftScreen(props: {
     // Snapshot read keeps just-typed selector state; the availability gate
     // still applies so a stored selection on a disabled provider falls back
     // to the flow's resolved model.
-    const modelSelection =
-      resolveSelectableModelSelection(
-        selectedEnvironmentServerConfig,
-        draft.modelSelection ?? null,
-      ) ?? flow.selectedModel;
+    const storedSelection = draft.modelSelection ?? null;
+    const explicitSelection = flow.selectedModel;
+    // A choice currently displayed in the picker is explicit and must block
+    // rather than silently changing provider/model. A stored implicit draft may
+    // fall through to the flow's already-resolved available default.
+    const modelSelection = storedSelection
+      ? (resolveDefaultableModelSelection(selectedEnvironmentServerConfig, storedSelection) ??
+        explicitSelection)
+      : explicitSelection;
+    const modelAvailability = getModelSelectionAvailability(
+      selectedEnvironmentServerConfig,
+      modelSelection,
+    );
     const workspaceMode = draft.workspaceSelection?.mode ?? flow.workspaceMode;
     const selectedBranchName = draft.workspaceSelection?.branch ?? flow.selectedBranchName;
     const selectedWorktreePath =
@@ -738,6 +749,7 @@ export function NewTaskDraftScreen(props: {
 
     if (
       !modelSelection ||
+      !modelAvailability.available ||
       initialMessageText.length === 0 ||
       flow.submitting ||
       (workspaceMode === "worktree" && !selectedBranchName)
