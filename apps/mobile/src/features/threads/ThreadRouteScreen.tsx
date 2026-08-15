@@ -215,6 +215,8 @@ function ThreadRouteContent(
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
+  const steerThread = useAtomCommand(threadEnvironment.steer, "thread steer");
+  const addThreadFollowUp = useAtomCommand(threadEnvironment.addFollowUp, "thread follow-up");
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -497,7 +499,19 @@ function ThreadRouteContent(
       },
     });
   }, [interruptThreadTurn, selectedThread]);
-  const handleStopThread = useCallback(() => {
+    const handleRuntimeAction = useCallback(
+    async (mode: "steer" | "followUp", text: string): Promise<boolean> => {
+      if (!selectedThread || !text.trim()) return false;
+      const id = `${mode}-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+      const result = mode === "steer"
+        ? await steerThread({ environmentId: selectedThread.environmentId, input: { threadId: selectedThread.id, steerId: id, text: text.trim() } })
+        : await addThreadFollowUp({ environmentId: selectedThread.environmentId, input: { threadId: selectedThread.id, followUpId: id, text: text.trim() } });
+      return result._tag !== "Failure";
+    },
+    [addThreadFollowUp, selectedThread, steerThread],
+  );
+
+const handleStopThread = useCallback(() => {
     if (!selectedThread) return;
     return stopThreadSession({
       environmentId: selectedThread.environmentId,
@@ -808,6 +822,7 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onInterruptThread={handleInterruptThread}
           onStopThread={handleStopThread}
+          onRuntimeAction={handleRuntimeAction}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

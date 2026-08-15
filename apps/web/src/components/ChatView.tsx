@@ -1226,6 +1226,8 @@ function ChatViewContent(props: ChatViewProps) {
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const steerThread = useAtomCommand(threadEnvironment.steer, { reportFailure: false });
+  const addThreadFollowUp = useAtomCommand(threadEnvironment.addFollowUp, { reportFailure: false });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -5334,6 +5336,24 @@ function ChatViewContent(props: ChatViewProps) {
     }
   };
 
+  const onRuntimeAction = useCallback(
+    async (mode: "steer" | "followUp", text: string): Promise<boolean> => {
+      if (!activeThread || !text.trim()) return false;
+      const id = randomUUID();
+      const result = mode === "steer"
+        ? await steerThread({ environmentId, input: { threadId: activeThread.id, steerId: id, text: text.trim() } })
+        : await addThreadFollowUp({ environmentId, input: { threadId: activeThread.id, followUpId: id, text: text.trim() } });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(activeThread.id, error instanceof Error ? error.message : "Runtime action failed.");
+        return false;
+      }
+      clearComposerDraftContent(composerDraftTarget);
+      return true;
+    },
+    [activeThread, addThreadFollowUp, clearComposerDraftContent, composerDraftTarget, environmentId, setThreadError, steerThread],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -6396,6 +6416,7 @@ function ChatViewContent(props: ChatViewProps) {
                             composerElementContextsRef={composerElementContextsRef}
                             onSend={onSend}
                             onInterrupt={onInterrupt}
+                            onRuntimeAction={onRuntimeAction}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}
                             onSelectActivePendingUserInputOption={

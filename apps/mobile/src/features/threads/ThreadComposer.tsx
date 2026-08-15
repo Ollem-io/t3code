@@ -77,6 +77,7 @@ import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerComm
 import { buildThreadSettingsMenu } from "./thread-settings-menu";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
+import { renderPrimeQueue, resolvePrimeSend, type PrimeActionMode } from "./primeQueue";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -118,6 +119,7 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onInterruptThread: () => void;
   readonly onStopThread: () => void;
+  readonly onRuntimeAction?: (mode: "steer" | "followUp", text: string) => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -292,6 +294,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const { onExpandedChange } = props;
 
   const [previewImageUri, setPreviewImageUri] = useState<string | null>(null);
+  const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
+  const primeRuntimeActive = props.selectedThread.session?.status === "running" && props.selectedThread.session.runtimeCapabilities !== undefined;
+  const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
   const hasContent = props.draftMessage.trim().length > 0 || props.draftAttachments.length > 0;
   // Opening and closing count as active so the composer stays expanded while
   // focus moves between its native editor and the settings modal.
@@ -561,6 +566,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
     try {
+      if (primeRuntimeActive) {
+        const decision = resolvePrimeSend(primeActionMode, props.selectedThread.session?.runtimeCapabilities, props.draftAttachments.length);
+        if (!decision.ok || !primeActionMode) return;
+        const success = await props.onRuntimeAction?.(primeActionMode, props.draftMessage.trim());
+        if (success) props.onChangeDraftMessage("");
+        return;
+      }
       await onSendMessage();
       // Sending a prompt starts agent work: arm the lock-screen card while the
       // app is foregrounded and the activity token can be registered. Armed
@@ -575,6 +587,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
   }, [
     onSendMessage,
+    primeActionMode,
+    primeRuntimeActive,
+    props.draftAttachments.length,
+    props.draftMessage,
+    props.onChangeDraftMessage,
+    props.onRuntimeAction,
+    props.selectedThread.session,
     props.environmentId,
     props.environmentLabel,
     props.selectedThread.id,
@@ -958,6 +977,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Animated.View>
         ) : null}
 
+        {primeRuntimeActive ? (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            <Text className="text-xs font-t3-bold">Running runtime action</Text>
+            <View className="mt-2 flex-row gap-2"><Pressable accessibilityRole="button" onPress={() => setPrimeActionMode("steer")} className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"><Text>Steer now</Text></Pressable><Pressable accessibilityRole="button" onPress={() => setPrimeActionMode("followUp")} className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"><Text>Queue next</Text></Pressable></View>
+            {primeQueue.map((item, index) => <Text key={`${index}:${item}`} className="mt-1 text-xs text-foreground-muted">{item}</Text>)}
+            {props.draftAttachments.length > 0 ? <Text className="mt-1 text-xs text-red-500">Runtime actions support plain text only; remove attachments.</Text> : null}
+            {!props.selectedThread.session?.runtimeCapabilities?.steer && !props.selectedThread.session?.runtimeCapabilities?.followUps ? <Text className="mt-1 text-xs text-red-500">This runtime does not support steering or queued follow-ups. Use Interrupt or Stop.</Text> : null}
+            <Text className="mt-1 text-xs text-foreground-muted">Interrupt stops the turn; Stop ends the session. Queued actions cannot be cancelled.</Text>
+          </View>
+        ) : null}
         {/* Queue count */}
         {props.queueCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
