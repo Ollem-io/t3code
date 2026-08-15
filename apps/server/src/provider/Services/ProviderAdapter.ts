@@ -13,6 +13,7 @@ import type {
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
+  ProviderRuntimeCapabilities,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -32,6 +33,8 @@ export interface ProviderAdapterCapabilities {
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
   readonly conversationRollback: ProviderConversationRollbackMode;
+  /** Optional additive extension flags. Absent preserves all existing adapters. */
+  readonly runtimeExtensions?: ProviderRuntimeCapabilities;
 }
 
 export interface ProviderThreadTurnSnapshot {
