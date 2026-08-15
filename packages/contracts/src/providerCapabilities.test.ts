@@ -14,6 +14,7 @@ const decodeOutcome = Schema.decodeUnknownSync(ProviderRuntimeOperationOutcome);
 const decodeState = Schema.decodeUnknownSync(ProviderRuntimeExtensionState);
 
 const operations: ReadonlyArray<[unknown, string]> = [
+  [{ type: "steer.add", commandId: "c1", threadId: "t1", steerId: "s1", text: "steer" }, "steer"],
   [
     { type: "follow-up.add", commandId: "c1", threadId: "t1", followUpId: "f1", text: "continue" },
     "followUps",
@@ -241,4 +242,13 @@ describe("provider runtime extension contract", () => {
       expect(() => decodeOperation({ type, commandId: "c1", threadId: "t1" })).toThrow();
     }
   });
+});
+
+
+it("does not imply follow-up cancellation from enqueue capability", () => {
+  const add = decodeOperation({ type: "follow-up.add", commandId: "c1", threadId: "t1", followUpId: "f1", text: "later" });
+  const cancel = decodeOperation({ type: "follow-up.cancel", commandId: "c2", threadId: "t1", followUpId: "f1" });
+  expect(supportsRuntimeOperation({ followUps: true }, add)).toBe(true);
+  expect(supportsRuntimeOperation({ followUps: true }, cancel)).toBe(false);
+  expect(supportsRuntimeOperation({ followUpCancel: true }, cancel)).toBe(true);
 });

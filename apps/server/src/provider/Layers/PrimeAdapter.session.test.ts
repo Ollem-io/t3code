@@ -23,6 +23,7 @@ process.on("exit", () => appendFileSync(process.env.T3_MARKER, JSON.stringify({ 
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on("line", (line) => {
   const command = JSON.parse(line);
+  appendFileSync(process.env.T3_MARKER, JSON.stringify({ event: "command", command }) + "\n");
   if (process.env.T3_CRASH === "1") process.exit(17);
   if (process.env.T3_EVENTS === "1") { process.stdout.write(JSON.stringify({type:"turn_start"})+"\n"); process.stdout.write(JSON.stringify({type:"message_start",message:{role:"assistant"}})+"\n"); }
   setTimeout(() => process.stdout.write(JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data: { state: "idle" } }) + "\n"), Number(process.env.T3_DELAY || 0));
@@ -228,4 +229,25 @@ describe("PrimeAdapter session bootstrap", () => {
         );
       }),
     ));
+});
+
+
+describe("PrimeAdapter runtime action RPC", () => {
+  it("uses only the exact 0.7.2 steer/follow_up commands and rejects cancellation", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const f = yield* fixture;
+      const adapter = yield* make(f);
+      const input = makeInput("runtime-actions", f.cwd);
+      yield* adapter.startSession(input);
+      if (!adapter.executeRuntimeOperation) throw new Error("runtime actions missing");
+      yield* adapter.executeRuntimeOperation({ type: "steer.add", commandId: "command-steer", threadId: input.threadId, steerId: "local-steer", text: "steer now" });
+      yield* adapter.executeRuntimeOperation({ type: "follow-up.add", commandId: "command-follow", threadId: input.threadId, followUpId: "local-follow", text: "queue next" });
+      const cancelled = yield* Effect.exit(adapter.executeRuntimeOperation({ type: "follow-up.cancel", commandId: "command-cancel", threadId: input.threadId, followUpId: "local-follow" }));
+      assert.strictEqual(cancelled._tag, "Failure");
+      const commands = (yield* records(f.marker)).filter((record) => record.event === "command").map((record) => record.command);
+      assert.ok(commands.some((command) => command.type === "steer" && command.message === "steer now"));
+      assert.ok(commands.some((command) => command.type === "follow_up" && command.message === "queue next"));
+      assert.ok(!commands.some((command) => /cancel|remove|delete/.test(command.type)));
+      assert.ok(!commands.some((command) => "actionId" in command || "steerId" in command || "followUpId" in command));
+    })));
 });

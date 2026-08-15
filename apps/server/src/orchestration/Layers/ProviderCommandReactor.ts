@@ -56,6 +56,8 @@ type ProviderIntentEvent = Extract<
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
+      | "thread.steer-add-requested"
+      | "thread.follow-up-add-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -644,6 +646,7 @@ const make = Effect.gen(function* () {
             detail: `Provider session '${session.threadId}' started without a provider instance id.`,
           });
         }
+        const capabilities = yield* providerService.getCapabilities(session.providerInstanceId);
         yield* setThreadSession({
           threadId,
           session: {
@@ -659,6 +662,8 @@ const make = Effect.gen(function* () {
             activeTurnId: null,
             lastError: session.lastError ?? null,
             updatedAt: session.updatedAt,
+            actionState: { queuedCount: 0, steering: [], followUps: [] },
+            runtimeCapabilities: capabilities.runtimeExtensions ?? {},
           },
           createdAt,
         });
@@ -1209,6 +1214,23 @@ const make = Effect.gen(function* () {
       );
   });
 
+  const processRuntimeActionRequested = Effect.fn("processRuntimeActionRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.steer-add-requested" | "thread.follow-up-add-requested" }>,
+  ) {
+    const thread = yield* resolveThread(event.payload.threadId);
+    // Do not optimistically project or log native text. Only the provider's next
+    // session_action_update snapshot may change the visible queue.
+    if (!thread?.session || thread.session.status !== "running" || thread.session.activeTurnId === null) {
+      return yield* appendProviderFailureActivity({ threadId: event.payload.threadId, kind: "provider.runtime-action.failed", summary: "Runtime action failed", detail: "No active running provider turn is bound to this thread.", turnId: null, createdAt: event.payload.createdAt });
+    }
+    const operation = event.type === "thread.steer-add-requested"
+      ? { type: "steer.add" as const, commandId: event.commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`), threadId: event.payload.threadId, steerId: event.payload.steerId, text: event.payload.text }
+      : { type: "follow-up.add" as const, commandId: event.commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`), threadId: event.payload.threadId, followUpId: event.payload.followUpId, text: event.payload.text };
+    yield* providerService.executeRuntimeOperation(operation).pipe(
+      Effect.catchCause(() => appendProviderFailureActivity({ threadId: event.payload.threadId, kind: "provider.runtime-action.failed", summary: "Runtime action failed", detail: "The provider did not accept this runtime action.", turnId: null, createdAt: event.payload.createdAt })),
+    );
+  });
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1382,6 +1404,10 @@ const make = Effect.gen(function* () {
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
+      case "thread.steer-add-requested":
+      case "thread.follow-up-add-requested":
+        yield* processRuntimeActionRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1430,6 +1456,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
+        event.type === "thread.steer-add-requested" ||
+        event.type === "thread.follow-up-add-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"

@@ -38,6 +38,14 @@ export class PrimeEventNormalizer {
       case "message_start": { const m=e.message as Record<string, unknown>; const role=m?.role; this.#messageItem=RuntimeItemId.make(`prime-message-${++this.#seq}`); emit("item.started",{itemType:role === "assistant" ? "assistant_message" : "user_message",status:"inProgress"},{turnId:this.#turn,itemId:this.#messageItem}); break; }
       case "message_update": { const m=e.message as Record<string, unknown>; const native=e.assistantMessageEvent as Record<string, unknown>; const delta=textOf(native.delta) || textOf(native.content) || textOf(m.content); const nativeType=typeof native.type === "string" ? native.type : ""; if(nativeType.includes("retry")) emit("runtime.warning",{message:"Prime Agent is retrying the current turn."},{turnId:this.#turn}); const streamKind=nativeType.includes("reasoning") ? "reasoning_text" : "assistant_text"; if(delta && this.#messageItem) emit("content.delta",{streamKind,delta},{turnId:this.#turn,itemId:this.#messageItem}); const usage=m.usage as Record<string, unknown> | undefined; const used=usage && typeof usage.totalTokens === "number" ? usage.totalTokens : undefined; if(used !== undefined) emit("thread.token-usage.updated",{usage:{usedTokens:Math.max(0,Math.floor(used))}},{turnId:this.#turn}); break; }
       case "message_end": { const message=e.message as Record<string, unknown>; const role=message?.role; const stopReason=typeof message.stopReason === "string" ? message.stopReason : undefined; const failed=stopReason === "error" || stopReason === "failed"; if(this.#messageItem) emit("item.completed",{itemType:role === "assistant" ? "assistant_message" : "user_message",status:failed ? "failed" : "completed"},{turnId:this.#turn,itemId:this.#messageItem}); if(failed) emit("runtime.error",{class:"provider_error",message:"Prime Agent message failed."},{turnId:this.#turn}); this.#messageItem=undefined; break; }
+      case "session_action_update":
+        emit("session.actions.updated", {
+          queuedCount: e.actions.queuedCount,
+          steering: e.actions.steering,
+          followUps: e.actions.followUps,
+          ...(e.actions.active ? { active: e.actions.active } : {}),
+        }, { turnId: this.#turn });
+        break;
       case "extension_ui_request": {
         const requestId = RuntimeRequestId.make(e.id);
         if (e.method === "confirm") emit("request.opened", { requestType: "command_execution_approval", detail: cleanNative(e.title), args: { message: cleanNative(e.message, "Prime Agent confirmation requested.") } }, { turnId: this.#turn, requestId, providerRefs: { providerRequestId: e.id } });

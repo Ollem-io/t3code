@@ -42,7 +42,12 @@ export type HeartbeatId = typeof HeartbeatId.Type;
 
 /** Independent flags; no umbrella flag may accidentally enable an operation. */
 export const ProviderRuntimeCapabilities = Schema.Struct({
+  /** Steering interrupts at the next model boundary; independent from follow-up queueing. */
+  steer: Schema.optional(Schema.Boolean),
+  /** Queue-after-run. */
   followUps: Schema.optional(Schema.Boolean),
+  /** Cancellation is independent: some native runtimes expose enqueue but no action-id cancellation RPC. */
+  followUpCancel: Schema.optional(Schema.Boolean),
   compaction: Schema.optional(Schema.Boolean),
   commandDiscovery: Schema.optional(Schema.Boolean),
   interactions: Schema.optional(Schema.Boolean),
@@ -57,8 +62,10 @@ export const EMPTY_PROVIDER_RUNTIME_CAPABILITIES: ProviderRuntimeCapabilities = 
 
 const OperationBase = { commandId: CommandId, threadId: ThreadId };
 const FollowUpBase = { ...OperationBase, followUpId: FollowUpId };
+const SteerBase = { ...OperationBase, steerId: FollowUpId };
 
 export const ProviderRuntimeOperation = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("steer.add"), ...SteerBase, text: Text }),
   Schema.Struct({ type: Schema.Literal("follow-up.add"), ...FollowUpBase, text: Text }),
   Schema.Struct({ type: Schema.Literal("follow-up.edit"), ...FollowUpBase, text: Text }),
   Schema.Struct({
@@ -209,6 +216,8 @@ export type ProviderRuntimeOperation = typeof ProviderRuntimeOperation.Type;
 export function capabilityForRuntimeOperation(
   operation: Pick<ProviderRuntimeOperation, "type">,
 ): ProviderRuntimeCapability {
+  if (operation.type.startsWith("steer.")) return "steer";
+  if (operation.type === "follow-up.cancel") return "followUpCancel";
   if (operation.type.startsWith("follow-up.")) return "followUps";
   if (operation.type.startsWith("compaction.")) return "compaction";
   if (operation.type.startsWith("command.") || operation.type.startsWith("skill."))
@@ -293,6 +302,7 @@ export const ProviderRuntimeOperationResult = Schema.Union([
 export type ProviderRuntimeOperationResult = typeof ProviderRuntimeOperationResult.Type;
 
 const RuntimeOperationType = Schema.Literals([
+  "steer.add",
   "follow-up.add",
   "follow-up.edit",
   "follow-up.reorder",
@@ -326,7 +336,9 @@ const RuntimeOperationType = Schema.Literals([
   "usage.snapshot.retry",
 ]);
 const RuntimeOperationCapability = Schema.Literals([
+  "steer",
   "followUps",
+  "followUpCancel",
   "compaction",
   "commandDiscovery",
   "interactions",

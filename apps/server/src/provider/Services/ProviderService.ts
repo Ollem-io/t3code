@@ -17,6 +17,7 @@ import type {
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
+  ProviderRuntimeOperation,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -56,6 +57,11 @@ export interface ProviderServiceShape {
    */
   readonly interruptTurn: (
     input: ProviderInterruptTurnInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Dispatches only a declared and currently enabled runtime extension. */
+  readonly executeRuntimeOperation: (
+    operation: ProviderRuntimeOperation,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**

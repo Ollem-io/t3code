@@ -14,6 +14,7 @@ import type {
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   ProviderRuntimeCapabilities,
+  ProviderRuntimeOperation,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -72,6 +73,12 @@ export interface ProviderAdapterShape<TError> {
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+
+  /** Bounded, provider-neutral runtime action. Implementations must only expose
+   * operations for which both this capability and the exact native RPC shape exist. */
+  readonly executeRuntimeOperation?: (
+    operation: ProviderRuntimeOperation,
+  ) => Effect.Effect<void, TError>;
 
   /**
    * Respond to an interactive approval request.

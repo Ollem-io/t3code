@@ -13,6 +13,8 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
+  OrchestrationSessionActionState,
+  ProviderRuntimeCapabilities,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -30,6 +32,8 @@ export const ProjectionThreadSession = Schema.Struct({
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(Schema.String),
   updatedAt: IsoDateTime,
+  actionState: Schema.optional(OrchestrationSessionActionState),
+  runtimeCapabilities: Schema.optional(ProviderRuntimeCapabilities),
 });
 export type ProjectionThreadSession = typeof ProjectionThreadSession.Type;
 

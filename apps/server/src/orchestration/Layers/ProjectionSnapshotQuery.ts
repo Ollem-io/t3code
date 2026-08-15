@@ -93,7 +93,9 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     sequence: Schema.NullOr(NonNegativeInt),
   }),
 );
-const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
+const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
+  Struct.assign({ actionState: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSessionActionState))), runtimeCapabilities: Schema.optional(Schema.NullOr(Schema.fromJsonString(ProviderRuntimeCapabilities))) }),
+);
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
@@ -303,6 +305,8 @@ function mapSessionRow(
     activeTurnId: row.activeTurnId,
     lastError: row.lastError,
     updatedAt: row.updatedAt,
+    ...(row.actionState !== null && row.actionState !== undefined ? { actionState: row.actionState } : {}),
+    ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined ? { runtimeCapabilities: row.runtimeCapabilities } : {}),
   };
 }
 
@@ -398,6 +402,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           scripts_json AS "scripts",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities",
           deleted_at AS "deletedAt"
         FROM projection_projects
         ORDER BY created_at ASC, project_id ASC
@@ -421,6 +427,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities",
           archived_at AS "archivedAt",
           settled_override AS "settledOverride",
           settled_at AS "settledAt",
@@ -457,6 +465,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities",
           archived_at AS "archivedAt",
           settled_override AS "settledOverride",
           settled_at AS "settledAt",
@@ -495,6 +505,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities",
           archived_at AS "archivedAt",
           settled_override AS "settledOverride",
           settled_at AS "settledAt",
@@ -530,7 +542,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_messages
         ORDER BY thread_id ASC, created_at ASC, message_id ASC
       `,
@@ -549,7 +563,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           implemented_at AS "implementedAt",
           implementation_thread_id AS "implementationThreadId",
           created_at AS "createdAt",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_proposed_plans
         ORDER BY thread_id ASC, created_at ASC, plan_id ASC
       `,
@@ -594,7 +610,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
       `,
@@ -615,7 +633,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
-          sessions.updated_at AS "updatedAt"
+          sessions.updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
           ON threads.thread_id = sessions.thread_id
@@ -640,7 +660,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
-          sessions.updated_at AS "updatedAt"
+          sessions.updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
           ON threads.thread_id = sessions.thread_id
@@ -754,7 +776,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           projector,
           last_applied_sequence AS "lastAppliedSequence",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_state
       `,
   });
@@ -853,6 +877,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           scripts_json AS "scripts",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities",
           deleted_at AS "deletedAt"
         FROM projection_projects
         WHERE workspace_root = ${workspaceRoot}
@@ -877,6 +903,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           scripts_json AS "scripts",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities",
           deleted_at AS "deletedAt"
         FROM projection_projects
         WHERE project_id = ${projectId}
@@ -937,6 +965,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities",
           archived_at AS "archivedAt",
           settled_override AS "settledOverride",
           settled_at AS "settledAt",
@@ -973,7 +1003,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
         ORDER BY created_at ASC, message_id ASC
@@ -993,7 +1025,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           implemented_at AS "implementedAt",
           implementation_thread_id AS "implementationThreadId",
           created_at AS "createdAt",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_proposed_plans
         WHERE thread_id = ${threadId}
         ORDER BY created_at ASC, plan_id ASC
@@ -1037,7 +1071,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
         LIMIT 1
@@ -1199,7 +1235,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
           AND (
@@ -1437,6 +1475,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   streaming: row.isStreaming === 1,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
+                  ...(row.actionState !== null && row.actionState !== undefined ? { actionState: row.actionState } : {}),
+                  ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined ? { runtimeCapabilities: row.runtimeCapabilities } : {}),
                 });
                 messagesByThread.set(row.threadId, threadMessages);
               }
@@ -1452,6 +1492,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   implementationThreadId: row.implementationThreadId,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
+                  ...(row.actionState !== null && row.actionState !== undefined ? { actionState: row.actionState } : {}),
+                  ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined ? { runtimeCapabilities: row.runtimeCapabilities } : {}),
                 });
                 proposedPlansByThread.set(row.threadId, threadProposedPlans);
               }
@@ -1536,6 +1578,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   activeTurnId: row.activeTurnId,
                   lastError: row.lastError,
                   updatedAt: row.updatedAt,
+                  ...(row.actionState !== null && row.actionState !== undefined ? { actionState: row.actionState } : {}),
+                  ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined ? { runtimeCapabilities: row.runtimeCapabilities } : {}),
                 });
               }
 

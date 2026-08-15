@@ -10,6 +10,7 @@ import {
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
+  type ProviderRuntimeOperation,
   type ProviderSession,
   type ProviderSessionStartInput,
   ThreadId,
@@ -620,6 +621,25 @@ export const makePrimeAdapter = (
         catch: (cause) => new ProviderAdapterProcessError({ provider: PROVIDER, threadId, detail: "Prime Agent interrupt failed.", cause }),
       });
 
+    // Prime 0.7.2 exposes only `{ type: "steer"|"follow_up", message, images? }`.
+    // `session_action_update` supplies lane text/count but deliberately no action ids,
+    // therefore follow-up cancellation remains false rather than guessing an RPC.
+    const executeRuntimeOperation: NonNullable<ProviderAdapterShape<ProviderAdapterError>["executeRuntimeOperation"]> = (operation) =>
+      Effect.tryPromise({
+        try: async () => {
+          const context = requireContext(operation.threadId);
+          if (operation.type !== "steer.add" && operation.type !== "follow-up.add")
+            throw new ProviderAdapterValidationError({ provider: PROVIDER, operation: "executeRuntimeOperation", issue: "Prime Agent does not expose an exact native action command for this operation." });
+          await expectSuccess(context, {
+            type: operation.type === "steer.add" ? "steer" : "follow_up",
+            message: operation.text,
+          });
+        },
+        catch: (cause) => cause instanceof ProviderAdapterValidationError
+          ? cause
+          : new ProviderAdapterProcessError({ provider: PROVIDER, threadId: operation.threadId, detail: "Prime Agent runtime action failed.", cause }),
+      });
+
     const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (threadId, requestId, decision) =>
       Effect.tryPromise({
         try: async () => {
@@ -687,10 +707,15 @@ export const makePrimeAdapter = (
 
     const adapter: ProviderAdapterShape<ProviderAdapterError> = {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session", conversationRollback: "unsupported" },
+      // `get_state` is the bootstrap liveness probe. This adapter is pinned to the
+      // declaration-verified 0.7.2 command baseline, whose exact `steer` and
+      // `follow_up` commands are available after that probe; it never infers
+      // cancellation from the enqueue acknowledgement.
+      capabilities: { sessionModelSwitch: "in-session", conversationRollback: "unsupported", runtimeExtensions: { steer: true, followUps: true, followUpCancel: false } },
       startSession,
       sendTurn,
       interruptTurn,
+      executeRuntimeOperation,
       respondToRequest,
       respondToUserInput,
       stopSession,

@@ -1635,10 +1635,30 @@ const make = Effect.gen(function* () {
               activeTurnId: nextActiveTurnId,
               lastError,
               updatedAt: now,
+              ...(event.type === "turn.completed" || event.type === "session.exited" || (event.type === "session.state.changed" && (event.payload.state === "error" || event.payload.state === "stopped"))
+                ? { actionState: { queuedCount: 0, steering: [], followUps: [] } }
+                : (thread.session?.actionState ? { actionState: thread.session.actionState } : {})),
+              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
             },
             createdAt: now,
           });
         }
+      }
+
+      if (event.type === "session.actions.updated") {
+        // Replacement only: native event is the authoritative bounded snapshot.
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set", commandId: yield* providerCommandId(event, "session-actions-snapshot"), threadId: thread.id,
+          session: { threadId: thread.id, status: thread.session?.status ?? "ready", providerName: event.provider,
+            ...(event.providerInstanceId !== undefined ? { providerInstanceId: event.providerInstanceId } : {}),
+            runtimeMode: thread.session?.runtimeMode ?? "full-access", activeTurnId: thread.session?.activeTurnId ?? null,
+            lastError: thread.session?.lastError ?? null, updatedAt: now,
+              actionState: { queuedCount: 0, steering: [], followUps: [] },
+              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
+            actionState: { queuedCount: event.payload.queuedCount, steering: [...event.payload.steering], followUps: [...event.payload.followUps], ...(event.payload.active ? { active: event.payload.active } : {}) },
+            ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
+          }, createdAt: now,
+        });
       }
 
       const assistantDelta =
@@ -1819,6 +1839,8 @@ const make = Effect.gen(function* () {
           ...(proposedPlanCompletion.turnId ? { turnId: proposedPlanCompletion.turnId } : {}),
           fallbackMarkdown: proposedPlanCompletion.planMarkdown,
           updatedAt: now,
+              actionState: { queuedCount: 0, steering: [], followUps: [] },
+              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
         });
       }
 
@@ -1854,6 +1876,8 @@ const make = Effect.gen(function* () {
             planId: proposedPlanIdForTurn(thread.id, turnId),
             turnId,
             updatedAt: now,
+              actionState: { queuedCount: 0, steering: [], followUps: [] },
+              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
           });
         }
       }
@@ -1885,6 +1909,8 @@ const make = Effect.gen(function* () {
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
               updatedAt: now,
+              actionState: { queuedCount: 0, steering: [], followUps: [] },
+              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
             },
             createdAt: now,
           });

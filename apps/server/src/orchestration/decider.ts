@@ -1024,6 +1024,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [...lifecycleResetEvents, userMessageEvent, turnStartRequestedEvent];
     }
 
+    case "thread.steer.add":
+    case "thread.follow-up.add": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session?.status !== "running" || thread.session.activeTurnId === null) {
+        return yield* Effect.fail(new OrchestrationCommandInvariantError({ commandType: command.type, detail: "Runtime actions require an active running provider turn." }));
+      }
+      return {
+        ...(yield* withEventBase({ aggregateKind: "thread", aggregateId: command.threadId, occurredAt: command.createdAt, commandId: command.commandId })),
+        type: command.type === "thread.steer.add" ? "thread.steer-add-requested" : "thread.follow-up-add-requested",
+        payload: command.type === "thread.steer.add"
+          ? { threadId: command.threadId, steerId: command.steerId, text: command.text, createdAt: command.createdAt }
+          : { threadId: command.threadId, followUpId: command.followUpId, text: command.text, createdAt: command.createdAt },
+      };
+    }
+
     case "thread.turn.interrupt": {
       yield* requireThread({
         readModel,

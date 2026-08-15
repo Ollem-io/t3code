@@ -195,6 +195,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "files.persisted",
   "runtime.warning",
   "runtime.error",
+  "session.actions.updated",
 ]);
 export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 
@@ -247,6 +248,7 @@ const FilesPersistedType = Schema.Literal("files.persisted");
 const ToolDeniedType = Schema.Literal("tool.denied");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
+const SessionActionsUpdatedType = Schema.Literal("session.actions.updated");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
@@ -777,6 +779,54 @@ const RuntimeErrorPayload = Schema.Struct({
 });
 export type RuntimeErrorPayload = typeof RuntimeErrorPayload.Type;
 
+/** Provider-neutral projection of Prime 0.7.2 `session_action_update`.
+ * Native snapshot contains lane text and active state, but no externally addressable action IDs.
+ */
+const SessionActionText = TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(4_096));
+const SessionActionList = Schema.Array(SessionActionText).check(Schema.isMaxLength(32));
+const SessionActionsUpdatedPayload = Schema.Struct({
+  queuedCount: NonNegativeInt.check(Schema.isLessThanOrEqualTo(32)),
+  steering: SessionActionList,
+  followUps: SessionActionList,
+  active: Schema.optional(Schema.Struct({
+    kind: Schema.Literals(["turn", "session_command"]),
+    phase: Schema.Literals(["preparing", "committing", "running"]),
+    label: Schema.optional(SessionActionText),
+  })),
+});
+export type SessionActionsUpdatedPayload = typeof SessionActionsUpdatedPayload.Type;
+
+/** Authoritative, provider-neutral view of a native action snapshot.
+ * There are deliberately no client-generated IDs here: 0.7.2 returns only
+ * lane text/count, so replacing this value is the sole safe reconciliation.
+ */
+export interface ProviderSessionActionState {
+  readonly queuedCount: number;
+  readonly steering: ReadonlyArray<string>;
+  readonly followUps: ReadonlyArray<string>;
+  readonly active?: { readonly kind: "turn" | "session_command"; readonly phase: "preparing" | "committing" | "running"; readonly label?: string };
+}
+export const EMPTY_PROVIDER_SESSION_ACTION_STATE: ProviderSessionActionState = Object.freeze({
+  queuedCount: 0, steering: Object.freeze([]), followUps: Object.freeze([]),
+});
+/** Apply canonical runtime events in arrival order. Full snapshots make this
+ * deterministic for every attached client; session termination clears stale UI. */
+export const reduceProviderSessionActionState = (
+  current: ProviderSessionActionState = EMPTY_PROVIDER_SESSION_ACTION_STATE,
+  event: ProviderRuntimeEvent,
+): ProviderSessionActionState => {
+  if (event.type === "session.actions.updated") {
+    const payload = event.payload;
+    return {
+      queuedCount: payload.queuedCount,
+      steering: [...payload.steering],
+      followUps: [...payload.followUps],
+      ...(payload.active ? { active: { ...payload.active } } : {}),
+    };
+  }
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_ACTION_STATE : current;
+};
+
 const ProviderRuntimeSessionStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionStartedType,
@@ -1137,6 +1187,13 @@ const ProviderRuntimeErrorEvent = Schema.Struct({
 });
 export type ProviderRuntimeErrorEvent = typeof ProviderRuntimeErrorEvent.Type;
 
+const ProviderRuntimeSessionActionsUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionActionsUpdatedType,
+  payload: SessionActionsUpdatedPayload,
+});
+export type ProviderRuntimeSessionActionsUpdatedEvent = typeof ProviderRuntimeSessionActionsUpdatedEvent.Type;
+
 export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
@@ -1187,6 +1244,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeToolDeniedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
+  ProviderRuntimeSessionActionsUpdatedEvent,
 ]);
 export type ProviderRuntimeEventV2 = typeof ProviderRuntimeEventV2.Type;
 

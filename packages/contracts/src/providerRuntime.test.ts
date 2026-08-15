@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { classifyTaskAgentKind, ProviderRuntimeEvent } from "./providerRuntime.ts";
+import { classifyTaskAgentKind, ProviderRuntimeEvent, reduceProviderSessionActionState } from "./providerRuntime.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
@@ -199,5 +199,23 @@ describe("classifyTaskAgentKind", () => {
     expect(classifyTaskAgentKind({ taskType: undefined, agentId: "owner" })).toBe("background");
     // Nested agent: outlives its parent, stays in the roster.
     expect(classifyTaskAgentKind({ taskType: "local_agent", agentId: "owner" })).toBe("agent");
+  });
+});
+
+
+describe("session action snapshot projection", () => {
+  const event = (queuedCount: number, steering: string[], followUps: string[]) => decodeRuntimeEvent({
+    type: "session.actions.updated", eventId: `event-${queuedCount}`, provider: "prime-agent", providerInstanceId: "prime-agent", createdAt: "2026-01-01T00:00:00.000Z", threadId: "thread-1",
+    payload: { queuedCount, steering, followUps },
+  });
+  it("replaces from authoritative snapshots identically for attached clients and clears at terminal", () => {
+    const snapshots = [event(1, ["steer"], []), event(2, ["steer"], ["later"])];
+    const apply = () => snapshots.reduce(reduceProviderSessionActionState, undefined);
+    expect(apply()).toEqual(apply());
+    const cleared = reduceProviderSessionActionState(apply(), decodeRuntimeEvent({ type: "session.exited", eventId: "exit", provider: "prime-agent", providerInstanceId: "prime-agent", createdAt: "2026-01-01T00:00:01.000Z", threadId: "thread-1", payload: { exitKind: "graceful" } }));
+    expect(cleared).toEqual({ queuedCount: 0, steering: [], followUps: [] });
+  });
+  it("rejects unbounded action snapshots", () => {
+    expect(() => decodeRuntimeEvent({ type: "session.actions.updated", eventId: "bad", provider: "prime-agent", providerInstanceId: "prime-agent", createdAt: "2026-01-01T00:00:00.000Z", threadId: "thread-1", payload: { queuedCount: 33, steering: [], followUps: [] } })).toThrow();
   });
 });

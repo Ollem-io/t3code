@@ -306,6 +306,19 @@ const SourceProposedPlanReference = Schema.Struct({
   planId: OrchestrationProposedPlanId,
 });
 
+export const OrchestrationSessionActionState = Schema.Struct({
+  queuedCount: NonNegativeInt.check(Schema.isLessThanOrEqualTo(32)),
+  steering: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(Schema.isMaxLength(32)),
+  followUps: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(Schema.isMaxLength(32)),
+  active: Schema.optional(Schema.Struct({
+    kind: Schema.Literals(["turn", "session_command"]),
+    phase: Schema.Literals(["preparing", "committing", "running"]),
+    label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))),
+  })),
+});
+export type OrchestrationSessionActionState = typeof OrchestrationSessionActionState.Type;
+export const EMPTY_ORCHESTRATION_SESSION_ACTION_STATE: OrchestrationSessionActionState = Object.freeze({ queuedCount: 0, steering: Object.freeze([]), followUps: Object.freeze([]) });
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -326,6 +339,9 @@ export const OrchestrationSession = Schema.Struct({
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
+  /** Native authoritative action snapshot; absent means this runtime has not supplied one. */
+  actionState: Schema.optional(OrchestrationSessionActionState),
+  runtimeCapabilities: Schema.optional(Schema.Struct({ steer: Schema.optional(Schema.Boolean), followUps: Schema.optional(Schema.Boolean), followUpCancel: Schema.optional(Schema.Boolean) })),
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
 
@@ -883,6 +899,14 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadSteerAddCommand = Schema.Struct({
+  type: Schema.Literal("thread.steer.add"), commandId: CommandId, threadId: ThreadId,
+  steerId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime,
+});
+const ThreadFollowUpAddCommand = Schema.Struct({
+  type: Schema.Literal("thread.follow-up.add"), commandId: CommandId, threadId: ThreadId,
+  followUpId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime,
+});
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -949,6 +973,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadSteerAddCommand,
+  ThreadFollowUpAddCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -977,6 +1003,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ThreadSteerAddCommand,
+  ThreadFollowUpAddCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1097,6 +1125,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.message-sent",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
+  "thread.steer-add-requested",
+  "thread.follow-up-add-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1284,6 +1314,9 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadSteerAddRequestedPayload = Schema.Struct({ threadId: ThreadId, steerId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime });
+export const ThreadFollowUpAddRequestedPayload = Schema.Struct({ threadId: ThreadId, followUpId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime });
+
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
@@ -1462,6 +1495,8 @@ export const OrchestrationEvent = Schema.Union([
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
   }),
+  Schema.Struct({ ...EventBaseFields, type: Schema.Literal("thread.steer-add-requested"), payload: ThreadSteerAddRequestedPayload }),
+  Schema.Struct({ ...EventBaseFields, type: Schema.Literal("thread.follow-up-add-requested"), payload: ThreadFollowUpAddRequestedPayload }),
   Schema.Struct({
     ...EventBaseFields,
     type: Schema.Literal("thread.approval-response-requested"),

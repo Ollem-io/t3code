@@ -184,6 +184,27 @@ const ToolExecutionEnd = Schema.Struct({
   result: Schema.Unknown,
   isError: Schema.Boolean,
 });
+// The 0.7.2 action store is a complete snapshot, not an action log. Bound it
+// at this untrusted RPC boundary so a malformed native event cannot allocate
+// an unbounded client-visible queue. `onExcessProperty: error` intentionally
+// makes additions to this known event incompatible rather than silently using
+// a shape whose semantics we have not established.
+const PrimeRpcActionText = Schema.String.check(Schema.isMaxLength(4_096));
+const PrimeRpcActionList = Schema.Array(PrimeRpcActionText).check(Schema.isMaxLength(32));
+const PrimeRpcSessionActionSnapshot = Schema.Struct({
+  queuedCount: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 32 })),
+  steering: PrimeRpcActionList,
+  followUps: PrimeRpcActionList,
+  active: Schema.optional(Schema.Struct({
+    kind: Schema.Literals(["turn", "session_command"]),
+    phase: Schema.Literals(["preparing", "committing", "running"]),
+    label: Schema.optional(PrimeRpcActionText),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } })),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const SessionActionUpdateEvent = Schema.Struct({
+  type: Schema.Literal("session_action_update"),
+  actions: PrimeRpcSessionActionSnapshot,
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
 const ExtensionUiRequest = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("extension_ui_request"),
@@ -263,6 +284,7 @@ export const PrimeRpcKnownEvent = Schema.Union([
   ToolExecutionUpdate,
   ToolExecutionEnd,
   ExtensionUiRequest,
+  SessionActionUpdateEvent,
 ]);
 export type PrimeRpcCommand = typeof PrimeRpcCommand.Type;
 export type PrimeRpcResponse = typeof PrimeRpcResponse.Type;
@@ -356,6 +378,7 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "tool_execution_update",
     "tool_execution_end",
     "extension_ui_request",
+    "session_action_update",
   ]);
   if (knownCommandTypes.has(envelope.type))
     return { _tag: "malformed", error: new PrimeRpcCompatibilityError("command") };

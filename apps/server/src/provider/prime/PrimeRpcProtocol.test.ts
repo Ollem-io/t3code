@@ -67,3 +67,16 @@ it("decodes declaration-shaped tool and extension UI envelopes", () => {
   assert.strictEqual(decodePrimeRpcEnvelope({ type: "extension_ui_response", id: "empty" })._tag, "malformed");
   assert.strictEqual(decodePrimeRpcEnvelope({ type: "extension_ui_response", id: "ambiguous", value: "x", confirmed: true })._tag, "malformed");
 });
+
+
+it("decodes exact 0.7.2 session_action_update snapshots without inventing action ids", () => {
+  const result = decodePrimeRpcEnvelope({ type: "session_action_update", actions: { queuedCount: 2, steering: ["steer"], followUps: ["later"], active: { kind: "turn", phase: "running" } } });
+  assert.strictEqual(result._tag, "known-event");
+  // This is a known native event; unknown fields are not additive because they
+  // could imply an action identity/cancellation semantic we do not support.
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "session_action_update", actions: { queuedCount: 1, steering: [], followUps: [], actionId: "invented" } })._tag, "malformed");
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "session_action_update", actions: { queuedCount: 1.5, steering: [], followUps: [] } })._tag, "malformed");
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "session_action_update", actions: { queuedCount: 33, steering: [], followUps: [] } })._tag, "malformed");
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "session_action_update", actions: { queuedCount: 0, steering: Array(33).fill("x"), followUps: [] } })._tag, "malformed");
+  assert.strictEqual(decodePrimeRpcEnvelope({ type: "session_action_update", actions: { queuedCount: 0, steering: ["x".repeat(4097)], followUps: [] } })._tag, "malformed");
+});
