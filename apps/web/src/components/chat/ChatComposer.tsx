@@ -226,7 +226,7 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
-import { renderPrimeQueue, resolvePrimeSend, type PrimeActionMode } from "../primeQueue";
+import { hasPrimeRuntimeActions, renderPrimeQueue, resolvePrimeSend, type PrimeActionMode } from "../primeQueue";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -674,7 +674,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
   const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
-  const primeRuntimeActive = phase === "running" && activeThread?.session?.runtimeCapabilities !== undefined;
+  const primeRuntimeActive = phase === "running" && hasPrimeRuntimeActions(activeThread?.session?.runtimeCapabilities);
   const primeQueue = renderPrimeQueue(activeThread?.session?.actionState);
 
   // ------------------------------------------------------------------

@@ -325,6 +325,14 @@ describe("ProviderRuntimeIngestion", () => {
   it("replaces authoritative action snapshots for independent reads and clears them on terminal events", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
+    // No persisted active running turn: ignore an otherwise valid snapshot.
+    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-before-turn"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), createdAt: now, payload: { queuedCount: 1, steering: ["ignored"], followUps: [] } });
+    await harness.drain();
+    const beforeTurn = (await harness.readModel()).threads.find((thread) => thread.id === asThreadId("thread-1"));
+    expect(beforeTurn?.session?.actionState).toBeUndefined();
+
+    harness.emit({ type: "turn.started", eventId: asEventId("evt-actions-turn-started"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), turnId: asTurnId("turn-actions"), createdAt: now });
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "running" && thread.session?.activeTurnId === "turn-actions");
     harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-first"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), createdAt: now,
       payload: { queuedCount: 2, steering: ["first steer"], followUps: ["first follow-up"] } });
     await waitForThread(harness.readModel, (thread) => thread.session?.actionState?.queuedCount === 2);
@@ -338,11 +346,12 @@ describe("ProviderRuntimeIngestion", () => {
 
     harness.emit({ type: "turn.completed", eventId: asEventId("evt-actions-turn-completed"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), turnId: asTurnId("turn-actions"), createdAt: "2026-01-01T00:00:02.000Z", payload: { state: "completed" } });
     await waitForThread(harness.readModel, (thread) => thread.session?.actionState?.queuedCount === 0);
-    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-before-exit"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), createdAt: "2026-01-01T00:00:03.000Z", payload: { queuedCount: 1, steering: [], followUps: ["to clear"] } });
-    await waitForThread(harness.readModel, (thread) => thread.session?.actionState?.followUps[0] === "to clear");
-    harness.emit({ type: "session.exited", eventId: asEventId("evt-actions-exit"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), createdAt: "2026-01-01T00:00:04.000Z", payload: {} });
-    const cleared = await waitForThread(harness.readModel, (thread) => thread.session?.actionState?.queuedCount === 0);
-    expect(cleared.session?.actionState).toEqual({ queuedCount: 0, steering: [], followUps: [] });
+    // A late provider snapshot must not repopulate the terminal turn's cleared state.
+    harness.emit({ type: "session.actions.updated", eventId: asEventId("evt-actions-late-after-terminal"), provider: ProviderDriverKind.make("codex"), threadId: asThreadId("thread-1"), createdAt: "2026-01-01T00:00:03.000Z", payload: { queuedCount: 1, steering: [], followUps: ["late"] } });
+    await harness.drain();
+    const cleared = (await harness.readModel()).threads.find((thread) => thread.id === asThreadId("thread-1"));
+    expect(cleared?.session?.status).toBe("ready");
+    expect(cleared?.session?.actionState).toEqual({ queuedCount: 0, steering: [], followUps: [] });
   });
 
   it("maps turn started/completed events into thread session updates", async () => {

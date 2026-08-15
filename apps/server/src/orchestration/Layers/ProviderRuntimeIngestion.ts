@@ -1645,7 +1645,14 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "session.actions.updated") {
+      if (
+        event.type === "session.actions.updated" &&
+        // Snapshots belong only to a currently running persisted turn. Late
+        // provider notifications must never resurrect controls after a turn
+        // has reached a terminal state.
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId !== null
+      ) {
         // Replacement only: native event is the authoritative bounded snapshot.
         yield* orchestrationEngine.dispatch({
           type: "thread.session.set", commandId: yield* providerCommandId(event, "session-actions-snapshot"), threadId: thread.id,

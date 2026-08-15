@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vite-plus/test";
-import { renderPrimeQueue, resolvePrimeSend } from "./primeQueue";
+import { hasPrimeRuntimeActions, renderPrimeQueue, resolvePrimeSend } from "./primeQueue";
 describe("prime queue", () => {
   it("requires explicit choice and capability", () => {
     expect(resolvePrimeSend(null, { steer: true }, 0).ok).toBe(false);
     expect(resolvePrimeSend("steer", {}, 0).ok).toBe(false);
+  });
+
+  it("recognizes only actionable PA-A02 capabilities", () => {
+    expect(hasPrimeRuntimeActions(undefined)).toBe(false);
+    expect(hasPrimeRuntimeActions({})).toBe(false);
+    expect(hasPrimeRuntimeActions({ followUpCancel: true })).toBe(false);
+    expect(hasPrimeRuntimeActions({ steer: true })).toBe(true);
+    expect(hasPrimeRuntimeActions({ followUps: true })).toBe(true);
   });
   it("blocks attachments", () =>
     expect(resolvePrimeSend("steer", { steer: true }, 1).ok).toBe(false));

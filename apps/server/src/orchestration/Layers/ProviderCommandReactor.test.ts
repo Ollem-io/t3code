@@ -147,6 +147,11 @@ describe("ProviderCommandReactor", () => {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
+    readonly runtimeExtensions?: {
+      readonly steer?: boolean | undefined;
+      readonly followUps?: boolean | undefined;
+      readonly followUpCancel?: boolean | undefined;
+    } | undefined;
     readonly requiresNewThreadForModelChange?: boolean;
     readonly titleRegenerationCompletionDispatchFailures?: number;
     readonly titleRegenerationBeforeStart?: "one" | "two";
@@ -323,6 +328,9 @@ describe("ProviderCommandReactor", () => {
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
+          ...(input?.runtimeExtensions !== undefined
+            ? { runtimeExtensions: input.runtimeExtensions }
+            : {}),
         }),
       getInstanceInfo: (instanceId) => {
         const raw = String(instanceId);
@@ -574,6 +582,22 @@ describe("ProviderCommandReactor", () => {
     expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
     const thread = (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(JSON.stringify(thread)).not.toContain("must never be visible");
+  });
+
+  it("does not persist empty runtime capability objects", async () => {
+    const harness = await createHarness({ runtimeExtensions: {} });
+    await harness.runEffect(harness.engine.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-empty-runtime-capabilities"),
+      threadId: ThreadId.make("thread-1"),
+      message: { messageId: asMessageId("message-empty-runtime-capabilities"), role: "user", text: "hello", attachments: [] },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }));
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.runtimeCapabilities).toBeUndefined();
   });
 
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {

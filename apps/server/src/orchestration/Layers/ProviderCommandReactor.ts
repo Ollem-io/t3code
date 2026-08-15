@@ -47,6 +47,10 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+const hasRuntimeActionCapabilities = (capabilities: {
+  readonly steer?: boolean | undefined;
+  readonly followUps?: boolean | undefined;
+} | undefined): boolean => capabilities?.steer === true || capabilities?.followUps === true;
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -662,8 +666,9 @@ const make = Effect.gen(function* () {
             activeTurnId: null,
             lastError: session.lastError ?? null,
             updatedAt: session.updatedAt,
-            actionState: { queuedCount: 0, steering: [], followUps: [] },
-            runtimeCapabilities: capabilities.runtimeExtensions ?? {},
+            ...(hasRuntimeActionCapabilities(capabilities.runtimeExtensions)
+              ? { runtimeCapabilities: capabilities.runtimeExtensions }
+              : {}),
           },
           createdAt,
         });

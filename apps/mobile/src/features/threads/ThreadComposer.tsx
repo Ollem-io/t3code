@@ -77,7 +77,7 @@ import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerComm
 import { buildThreadSettingsMenu } from "./thread-settings-menu";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
-import { renderPrimeQueue, resolvePrimeSend, type PrimeActionMode } from "./primeQueue";
+import { hasPrimeRuntimeActions, renderPrimeQueue, resolvePrimeSend, type PrimeActionMode } from "./primeQueue";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -297,7 +297,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
   const primeRuntimeActive =
     props.selectedThread.session?.status === "running" &&
-    props.selectedThread.session.runtimeCapabilities !== undefined;
+    hasPrimeRuntimeActions(props.selectedThread.session.runtimeCapabilities);
   const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
   // Keep the runtime-action decision visible before send is pressed: a disabled
   // mode must explain how to proceed rather than silently dropping the draft.
