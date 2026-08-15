@@ -33,7 +33,6 @@ import {
   buildModelOptions,
   groupByProvider,
   resolveDefaultableModelSelection,
-  resolveSelectableModelSelection,
 } from "../../lib/modelOptions";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -397,15 +396,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const runtimeMode = selectedProjectDraft.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode = selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
 
-  // Stored selections only count while their provider is usable on the
-  // server; otherwise the server's default model wins instead of silently
-  // targeting a disabled provider. The draft selection is an explicit pick
-  // and passes through as-is; the project default (last used, possibly from
-  // desktop) is implicit and additionally never resolves to a legacy model.
-  const draftModelSelection = resolveSelectableModelSelection(
-    selectedEnvironmentServerConfig,
-    selectedProjectDraft.modelSelection ?? null,
-  );
+  // A model in this project's draft is an explicit user selection. Retain it
+  // verbatim, including when the provider is currently unavailable, so the
+  // draft screen can disable Start and require a deliberate re-selection.
+  // Project defaults, by contrast, are implicit last-used values and may fall
+  // through to another available default.
+  const draftModelSelection = selectedProjectDraft.modelSelection ?? null;
   const projectDefaultModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     selectedProject?.defaultModelSelection ?? null,
@@ -733,13 +729,10 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       }
       const draft = getComposerDraftSnapshot(selectedProjectDraftKey);
       const text = draft.text.trim();
-      // Same availability gate the composer display applies: a stored
-      // selection targeting a disabled provider must not ride into the queue.
-      const draftModelSelection =
-        resolveSelectableModelSelection(
-          selectedEnvironmentServerConfig,
-          draft.modelSelection ?? null,
-        ) ?? selectedModel;
+      // Draft selections are explicit. Keep their identity here as well; the
+      // caller's availability gate blocks an unavailable selection instead of
+      // silently retargeting this task to a fallback model.
+      const draftModelSelection = draft.modelSelection ?? selectedModel;
       if (text.length === 0 || !draftModelSelection) {
         return null;
       }
