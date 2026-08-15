@@ -53,6 +53,73 @@ describe("mobile model options", () => {
     ]);
   });
 
+  it("marks models unavailable when their provider cannot serve them", () => {
+    for (const providerState of [
+      {
+        enabled: false,
+        installed: true,
+        auth: { status: "authenticated" },
+        availability: "available",
+        status: "ready",
+      },
+      {
+        enabled: true,
+        installed: false,
+        auth: { status: "authenticated" },
+        availability: "available",
+        status: "ready",
+      },
+      {
+        enabled: true,
+        installed: true,
+        auth: { status: "unauthenticated" },
+        availability: "available",
+        status: "ready",
+      },
+      {
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        availability: "unavailable",
+        status: "ready",
+      },
+      {
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        availability: "available",
+        status: "error",
+      },
+      {
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        availability: "available",
+        status: "disabled",
+      },
+    ]) {
+      const config = {
+        providers: [
+          {
+            instanceId: "codex",
+            driver: "codex",
+            ...providerState,
+            models: [
+              {
+                slug: "gpt",
+                name: "GPT",
+                isCustom: false,
+                availability: "available",
+                capabilities: null,
+              },
+            ],
+          },
+        ],
+      } as unknown as ServerConfig;
+      expect(buildModelOptions(config, null)[0]?.availability).toBe("unavailable");
+    }
+  });
+
   it("normalizes a legacy fallback selection against current capabilities", () => {
     const config = {
       providers: [

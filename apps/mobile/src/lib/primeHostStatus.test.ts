@@ -34,4 +34,31 @@ describe("Prime host status", () => {
       ),
     ).toBeNull();
   });
+  it("never renders provider or session diagnostics", () => {
+    const hostile = "/home/user SECRET=do-not-render";
+    const provider = {
+      instanceId: "prime",
+      driver: "prime-agent",
+      enabled: true,
+      installed: true,
+      status: "error",
+      availability: "unavailable",
+      message: hostile,
+      unavailableReason: hostile,
+      auth: { status: "authenticated" },
+      checkedAt: "2026-01-01T00:00:00Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    } as const;
+    const presentation = primeHostPresentationForSelection(
+      { providers: [provider] } as never,
+      "prime",
+      hostile,
+    );
+    expect(JSON.stringify(presentation)).not.toContain(hostile);
+    expect(presentation?.detail).toBe(
+      "Prime Agent stopped unexpectedly on the remote host. Retry after the host recovers.",
+    );
+  });
 });

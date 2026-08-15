@@ -44,10 +44,7 @@ import {
   type ComposerDraft,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
-import {
-  getModelSelectionAvailability,
-  resolveDefaultableModelSelection,
-} from "../../lib/modelOptions";
+import { getModelSelectionAvailability } from "../../lib/modelOptions";
 import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { enqueueThreadOutboxMessage, removeThreadOutboxMessage } from "../../state/thread-outbox";
@@ -722,18 +719,10 @@ export function NewTaskDraftScreen(props: {
       return;
     }
     const draft = getComposerDraftSnapshot(draftKey);
-    // Snapshot read keeps just-typed selector state; the availability gate
-    // still applies so a stored selection on a disabled provider falls back
-    // to the flow's resolved model.
-    const storedSelection = draft.modelSelection ?? null;
-    const explicitSelection = flow.selectedModel;
-    // A choice currently displayed in the picker is explicit and must block
-    // rather than silently changing provider/model. A stored implicit draft may
-    // fall through to the flow's already-resolved available default.
-    const modelSelection = storedSelection
-      ? (resolveDefaultableModelSelection(selectedEnvironmentServerConfig, storedSelection) ??
-        explicitSelection)
-      : explicitSelection;
+    // The flow retains an explicit project-draft choice exactly as saved.
+    // Check that exact choice here, rather than falling back and silently
+    // starting a task on a different provider or model.
+    const modelSelection = flow.selectedModel;
     const modelAvailability = getModelSelectionAvailability(
       selectedEnvironmentServerConfig,
       modelSelection,
@@ -883,9 +872,14 @@ export function NewTaskDraftScreen(props: {
   // The settings sheet dismisses the keyboard, so its flag keeps the Android
   // draft composer expanded through the blur (mirrors ThreadComposer).
   const isExpanded = !isAndroid || isComposerFocused || settingsSheetPresentation.isActive;
+  const selectedModelAvailability = getModelSelectionAvailability(
+    selectedEnvironmentServerConfig,
+    flow.selectedModel,
+  );
   const canStart =
     Boolean(flow.selectedProject) &&
     Boolean(flow.selectedModel) &&
+    selectedModelAvailability.available &&
     flow.prompt.trim().length > 0 &&
     isIncomingShareReady &&
     !isImportingShare &&

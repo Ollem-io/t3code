@@ -180,6 +180,15 @@ export function buildModelOptions(
 
   for (const provider of config?.providers ?? []) {
     const providerLabel = providerDisplayLabel(provider);
+    // A model is not selectable when its provider itself cannot serve it,
+    // even if the model snapshot reports an older "available" value.
+    const providerUnavailable =
+      !provider.enabled ||
+      !provider.installed ||
+      provider.auth.status === "unauthenticated" ||
+      provider.availability === "unavailable" ||
+      provider.status === "error" ||
+      provider.status === "disabled";
     for (const model of provider.models) {
       const key = `${provider.instanceId}:${model.slug}`;
       options.set(key, {
@@ -192,7 +201,7 @@ export function buildModelOptions(
         isDefault: model.isDefault === true,
         isLegacy: model.isLegacy === true,
         capabilities: model.capabilities,
-        availability: model.availability,
+        availability: providerUnavailable ? "unavailable" : model.availability,
         capabilityLabels: modelCapabilityLabels(model.capabilities),
         thinkingOptions: modelThinkingOptions(model.capabilities),
         selection: normalizeSelectionOptions(
