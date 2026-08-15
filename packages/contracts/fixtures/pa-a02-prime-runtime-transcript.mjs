@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 /** Source-derived Prime 0.7.2 action snapshot convergence fixture.
  * `steer` and `follow_up` return only success acknowledgements. A snapshot has
  * text lanes/count/active state, never action IDs, so clients replace state.
@@ -25,4 +27,7 @@ export function verifyTranscript() {
   if (NATIVE_COMMANDS.steer.type !== "steer" || NATIVE_COMMANDS.followUp.type !== "follow_up") throw new Error("native command shape changed");
   return true;
 }
-if (import.meta.url === `file://${process.argv[1]}`) verifyTranscript();
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
+  verifyTranscript();
+  console.log("PA-A02 Prime runtime transcript verified");
+}
