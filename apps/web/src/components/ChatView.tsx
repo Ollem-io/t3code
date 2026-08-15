@@ -187,7 +187,10 @@ import {
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import { resolveAppModelSelectionForInstance, resolveBoundModelSelectionState } from "../modelSelection";
+import {
+  resolveAppModelSelectionForInstance,
+  resolveBoundModelSelectionState,
+} from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { preventRepeatedTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
@@ -5339,19 +5342,37 @@ function ChatViewContent(props: ChatViewProps) {
   const onRuntimeAction = useCallback(
     async (mode: "steer" | "followUp", text: string): Promise<boolean> => {
       if (!activeThread || !text.trim()) return false;
-      const id = randomUUID();
-      const result = mode === "steer"
-        ? await steerThread({ environmentId, input: { threadId: activeThread.id, steerId: id, text: text.trim() } })
-        : await addThreadFollowUp({ environmentId, input: { threadId: activeThread.id, followUpId: id, text: text.trim() } });
+      const id = globalThis.crypto.randomUUID();
+      const result =
+        mode === "steer"
+          ? await steerThread({
+              environmentId,
+              input: { threadId: activeThread.id, steerId: id, text: text.trim() },
+            })
+          : await addThreadFollowUp({
+              environmentId,
+              input: { threadId: activeThread.id, followUpId: id, text: text.trim() },
+            });
       if (result._tag === "Failure") {
         const error = squashAtomCommandFailure(result);
-        setThreadError(activeThread.id, error instanceof Error ? error.message : "Runtime action failed.");
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Runtime action failed.",
+        );
         return false;
       }
       clearComposerDraftContent(composerDraftTarget);
       return true;
     },
-    [activeThread, addThreadFollowUp, clearComposerDraftContent, composerDraftTarget, environmentId, setThreadError, steerThread],
+    [
+      activeThread,
+      addThreadFollowUp,
+      clearComposerDraftContent,
+      composerDraftTarget,
+      environmentId,
+      setThreadError,
+      steerThread,
+    ],
   );
 
   const onRespondToApproval = useCallback(
@@ -5843,7 +5864,9 @@ function ChatViewContent(props: ChatViewProps) {
       if (!activeThread) {
         return null;
       }
-      const targetProvider = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
+      const targetProvider = providerStatuses.find(
+        (snapshot) => snapshot.instanceId === instanceId,
+      );
       if (!targetProvider) {
         return "This provider is no longer available. Open the model picker and re-select an available provider/model.";
       }
@@ -6382,7 +6405,17 @@ function ChatViewContent(props: ChatViewProps) {
                             phase={phase}
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
-                            sendDisabledReason={threadDetailLoading ? "Messages loading" : activeThread?.modelSelection ? resolveBoundModelSelectionState(settings, providerStatuses as ServerProvider[], activeThread.modelSelection).sendDisabledReason : null}
+                            sendDisabledReason={
+                              threadDetailLoading
+                                ? "Messages loading"
+                                : activeThread?.modelSelection
+                                  ? resolveBoundModelSelectionState(
+                                      settings,
+                                      providerStatuses as ServerProvider[],
+                                      activeThread.modelSelection,
+                                    ).sendDisabledReason
+                                  : null
+                            }
                             isPreparingWorktree={isPreparingWorktree}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}

@@ -295,8 +295,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
 
   const [previewImageUri, setPreviewImageUri] = useState<string | null>(null);
   const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
-  const primeRuntimeActive = props.selectedThread.session?.status === "running" && props.selectedThread.session.runtimeCapabilities !== undefined;
+  const primeRuntimeActive =
+    props.selectedThread.session?.status === "running" &&
+    props.selectedThread.session.runtimeCapabilities !== undefined;
   const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
+  // Keep the runtime-action decision visible before send is pressed: a disabled
+  // mode must explain how to proceed rather than silently dropping the draft.
+  const primeSendDecision = primeRuntimeActive
+    ? resolvePrimeSend(
+        primeActionMode,
+        props.selectedThread.session?.runtimeCapabilities,
+        props.draftAttachments.length,
+      )
+    : { ok: true };
   const hasContent = props.draftMessage.trim().length > 0 || props.draftAttachments.length > 0;
   // Opening and closing count as active so the composer stays expanded while
   // focus moves between its native editor and the settings modal.
@@ -567,7 +578,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     inFlightThreadIdsRef.current.add(threadKey);
     try {
       if (primeRuntimeActive) {
-        const decision = resolvePrimeSend(primeActionMode, props.selectedThread.session?.runtimeCapabilities, props.draftAttachments.length);
+        const decision = resolvePrimeSend(
+          primeActionMode,
+          props.selectedThread.session?.runtimeCapabilities,
+          props.draftAttachments.length,
+        );
         if (!decision.ok || !primeActionMode) return;
         const success = await props.onRuntimeAction?.(primeActionMode, props.draftMessage.trim());
         if (success) props.onChangeDraftMessage("");
@@ -980,11 +995,33 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         {primeRuntimeActive ? (
           <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
             <Text className="text-xs font-t3-bold">Running runtime action</Text>
-            <View className="mt-2 flex-row gap-2"><Pressable accessibilityRole="button" onPress={() => setPrimeActionMode("steer")} className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"><Text>Steer now</Text></Pressable><Pressable accessibilityRole="button" onPress={() => setPrimeActionMode("followUp")} className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"><Text>Queue next</Text></Pressable></View>
-            {primeQueue.map((item, index) => <Text key={`${index}:${item}`} className="mt-1 text-xs text-foreground-muted">{item}</Text>)}
-            {props.draftAttachments.length > 0 ? <Text className="mt-1 text-xs text-red-500">Runtime actions support plain text only; remove attachments.</Text> : null}
-            {!props.selectedThread.session?.runtimeCapabilities?.steer && !props.selectedThread.session?.runtimeCapabilities?.followUps ? <Text className="mt-1 text-xs text-red-500">This runtime does not support steering or queued follow-ups. Use Interrupt or Stop.</Text> : null}
-            <Text className="mt-1 text-xs text-foreground-muted">Interrupt stops the turn; Stop ends the session. Queued actions cannot be cancelled.</Text>
+            <View className="mt-2 flex-row gap-2">
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setPrimeActionMode("steer")}
+                className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"
+              >
+                <Text>Steer now</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setPrimeActionMode("followUp")}
+                className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"
+              >
+                <Text>Queue next</Text>
+              </Pressable>
+            </View>
+            {primeQueue.map((item, index) => (
+              <Text key={`${index}:${item}`} className="mt-1 text-xs text-foreground-muted">
+                {item}
+              </Text>
+            ))}
+            {!primeSendDecision.ok ? (
+              <Text className="mt-1 text-xs text-red-500">{primeSendDecision.reason}</Text>
+            ) : null}
+            <Text className="mt-1 text-xs text-foreground-muted">
+              Interrupt stops the turn; Stop ends the session. Queued actions cannot be cancelled.
+            </Text>
           </View>
         ) : null}
         {/* Queue count */}

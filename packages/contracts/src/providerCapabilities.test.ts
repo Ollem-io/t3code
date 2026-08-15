@@ -27,7 +27,10 @@ const operations: ReadonlyArray<[unknown, string]> = [
     { type: "follow-up.reorder", commandId: "c1", threadId: "t1", followUpId: "f1", position: 0 },
     "followUps",
   ],
-  [{ type: "follow-up.cancel", commandId: "c1", threadId: "t1", followUpId: "f1" }, "followUps"],
+  [
+    { type: "follow-up.cancel", commandId: "c1", threadId: "t1", followUpId: "f1" },
+    "followUpCancel",
+  ],
   [
     {
       type: "follow-up.reverse",
@@ -244,10 +247,20 @@ describe("provider runtime extension contract", () => {
   });
 });
 
-
 it("does not imply follow-up cancellation from enqueue capability", () => {
-  const add = decodeOperation({ type: "follow-up.add", commandId: "c1", threadId: "t1", followUpId: "f1", text: "later" });
-  const cancel = decodeOperation({ type: "follow-up.cancel", commandId: "c2", threadId: "t1", followUpId: "f1" });
+  const add = decodeOperation({
+    type: "follow-up.add",
+    commandId: "c1",
+    threadId: "t1",
+    followUpId: "f1",
+    text: "later",
+  });
+  const cancel = decodeOperation({
+    type: "follow-up.cancel",
+    commandId: "c2",
+    threadId: "t1",
+    followUpId: "f1",
+  });
   expect(supportsRuntimeOperation({ followUps: true }, add)).toBe(true);
   expect(supportsRuntimeOperation({ followUps: true }, cancel)).toBe(false);
   expect(supportsRuntimeOperation({ followUpCancel: true }, cancel)).toBe(true);

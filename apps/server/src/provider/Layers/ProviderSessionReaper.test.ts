@@ -168,8 +168,10 @@ describe("ProviderSessionReaper", () => {
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
       stopSession,
+      executeRuntimeOperation: () => unsupported(),
       listSessions: () => Effect.succeed([]),
-      getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session", conversationRollback: "supported" }),
+      getCapabilities: () =>
+        Effect.succeed({ sessionModelSwitch: "in-session", conversationRollback: "supported" }),
       getInstanceInfo: (instanceId) => {
         const driverKind = ProviderDriverKind.make(String(instanceId));
         return Effect.succeed({

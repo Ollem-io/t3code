@@ -788,11 +788,13 @@ const SessionActionsUpdatedPayload = Schema.Struct({
   queuedCount: NonNegativeInt.check(Schema.isLessThanOrEqualTo(32)),
   steering: SessionActionList,
   followUps: SessionActionList,
-  active: Schema.optional(Schema.Struct({
-    kind: Schema.Literals(["turn", "session_command"]),
-    phase: Schema.Literals(["preparing", "committing", "running"]),
-    label: Schema.optional(SessionActionText),
-  })),
+  active: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literals(["turn", "session_command"]),
+      phase: Schema.Literals(["preparing", "committing", "running"]),
+      label: Schema.optional(SessionActionText),
+    }),
+  ),
 });
 export type SessionActionsUpdatedPayload = typeof SessionActionsUpdatedPayload.Type;
 
@@ -804,10 +806,16 @@ export interface ProviderSessionActionState {
   readonly queuedCount: number;
   readonly steering: ReadonlyArray<string>;
   readonly followUps: ReadonlyArray<string>;
-  readonly active?: { readonly kind: "turn" | "session_command"; readonly phase: "preparing" | "committing" | "running"; readonly label?: string };
+  readonly active?: {
+    readonly kind: "turn" | "session_command";
+    readonly phase: "preparing" | "committing" | "running";
+    readonly label?: string;
+  };
 }
 export const EMPTY_PROVIDER_SESSION_ACTION_STATE: ProviderSessionActionState = Object.freeze({
-  queuedCount: 0, steering: Object.freeze([]), followUps: Object.freeze([]),
+  queuedCount: 0,
+  steering: Object.freeze([]),
+  followUps: Object.freeze([]),
 });
 /** Apply canonical runtime events in arrival order. Full snapshots make this
  * deterministic for every attached client; session termination clears stale UI. */
@@ -821,7 +829,15 @@ export const reduceProviderSessionActionState = (
       queuedCount: payload.queuedCount,
       steering: [...payload.steering],
       followUps: [...payload.followUps],
-      ...(payload.active ? { active: { ...payload.active } } : {}),
+      ...(payload.active
+        ? {
+            active: {
+              kind: payload.active.kind,
+              phase: payload.active.phase,
+              ...(payload.active.label === undefined ? {} : { label: payload.active.label }),
+            },
+          }
+        : {}),
     };
   }
   return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_ACTION_STATE : current;
@@ -1192,7 +1208,8 @@ const ProviderRuntimeSessionActionsUpdatedEvent = Schema.Struct({
   type: SessionActionsUpdatedType,
   payload: SessionActionsUpdatedPayload,
 });
-export type ProviderRuntimeSessionActionsUpdatedEvent = typeof ProviderRuntimeSessionActionsUpdatedEvent.Type;
+export type ProviderRuntimeSessionActionsUpdatedEvent =
+  typeof ProviderRuntimeSessionActionsUpdatedEvent.Type;
 
 export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
