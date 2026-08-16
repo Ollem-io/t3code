@@ -44,6 +44,7 @@ import {
   PRIME_SESSION_STATS_COMMAND,
   normalizePrimeSessionStats,
 } from "../prime/PrimeCompaction.ts";
+import { PRIME_GET_COMMANDS_COMMAND, PrimeCommandCache } from "../prime/PrimeCommands.ts";
 
 const PROVIDER = ProviderDriverKind.make("prime-agent");
 const HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -65,6 +66,7 @@ type SessionContext = {
   selectedModel: { readonly provider: string; readonly modelId: string } | undefined;
   thinkingLevel: string | undefined;
   readonly normalizer: PrimeEventNormalizer;
+  readonly commands: PrimeCommandCache;
   readonly ownershipPath: string;
   readonly processIdentity: { readonly pid: number; readonly startToken: string } | undefined;
   eventDrain: Promise<void> | undefined;
@@ -264,6 +266,7 @@ export const makePrimeAdapter = (
           selectedModel: undefined,
           thinkingLevel: undefined,
           normalizer,
+          commands: new PrimeCommandCache(),
           eventDrain: undefined,
           pendingRequests: new Map(),
           ownershipPath: layout.ownership,
@@ -352,6 +355,10 @@ export const makePrimeAdapter = (
             await Effect.runPromise(Queue.offer(runtimeEvents, event));
           }
         });
+        // Discovery is best effort and never gates session readiness: a runtime
+        // that does not answer `get_commands` simply offers no catalog, and the
+        // capability-gated surfaces stay hidden.
+        await discoverCommands(context).catch(() => undefined);
         return session;
       } catch (cause) {
         client.close();
@@ -508,6 +515,16 @@ export const makePrimeAdapter = (
       if (!response.success || response.command !== command.type)
         throw new Error(`${command.type} failed`);
       return response.data;
+    };
+
+    /**
+     * Reads the authoritative command catalog and publishes it when it differs
+     * from the last published one. Nothing is invoked here.
+     */
+    const discoverCommands = async (context: SessionContext): Promise<void> => {
+      const data = await commandData(context, PRIME_GET_COMMANDS_COMMAND);
+      for (const event of context.normalizer.commandsSnapshot(context.commands.apply(data)))
+        await Effect.runPromise(Queue.offer(runtimeEvents, event));
     };
 
     const resolveTurnInput = async (input: ProviderSendTurnInput, context: SessionContext) => {
@@ -722,6 +739,14 @@ export const makePrimeAdapter = (
             await expectSuccess(context, PRIME_COMPACT_COMMAND);
             return;
           }
+          if (operation.type === "command.discover") {
+            // Explicit, bounded invalidation: the catalog is re-read once per
+            // request, so a command added or deleted on the host converges
+            // without any polling.
+            context.commands.invalidate();
+            await discoverCommands(context);
+            return;
+          }
           if (operation.type === "usage.snapshot.retry") {
             // "Retry" here re-reads the authoritative usage snapshot; it never
             // replays a model turn.
@@ -883,6 +908,10 @@ export const makePrimeAdapter = (
           compaction: true,
           compactionCancel: false,
           usageAndRetry: true,
+          // Discovery only. Prime 0.7.2 has no invoke RPC: an eligible command
+          // is sent as an ordinary prompt, so `command.invoke` stays refused
+          // rather than mapped onto a command that does not exist.
+          commandDiscovery: true,
         },
       },
       startSession,

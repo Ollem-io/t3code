@@ -68,6 +68,7 @@ const PUBLISHED_RUNTIME_CAPABILITY_KEYS = [
   "compaction",
   "compactionCancel",
   "usageAndRetry",
+  "commandDiscovery",
 ] as const;
 const hasRuntimeActionCapabilities = (
   capabilities:

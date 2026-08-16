@@ -11,6 +11,15 @@ import { sortThreads } from "../lib/threadSort";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 
+import {
+  PRIME_COMMAND_ORIGIN,
+  hasPrimeCommandSurface,
+  primeCommandOriginLabel,
+  resolvePrimeCommandInvocation,
+  type PrimeCommandCapabilities,
+  type PrimeCommandEntry,
+} from "./chat/primeCommands";
+
 export const RECENT_THREAD_LIMIT = 12;
 export const ITEM_ICON_CLASS = "size-4 text-icon-muted";
 export const ADDON_ICON_CLASS = "size-4";
@@ -148,6 +157,51 @@ export function buildProjectActionItems(input: {
     ...(input.shortcutCommand !== undefined ? { shortcutCommand: input.shortcutCommand } : {}),
     run: async () => {
       await input.runProject(project);
+    },
+  }));
+}
+
+/**
+ * Prime-discovered commands, prompts, and skills as palette actions.
+ *
+ * Every item states its Prime origin, and selecting one only writes an ordinary
+ * prompt into the composer — the palette never sends a turn by itself, and a
+ * command that vanished from the catalog fails with a stated reason instead of
+ * a prompt the runtime would reject.
+ */
+export function buildPrimeCommandItems(input: {
+  providerName: string | null | undefined;
+  capabilities: PrimeCommandCapabilities | undefined;
+  commands: ReadonlyArray<PrimeCommandEntry> | undefined;
+  icon: ReactNode;
+  insert: (prompt: string) => void;
+  onUnavailable?: (reason: string) => void;
+}): CommandPaletteActionItem[] {
+  if (!hasPrimeCommandSurface(input.providerName, input.capabilities)) return [];
+  return (input.commands ?? []).map((entry) => ({
+    kind: "action" as const,
+    value: `prime-command:${entry.name}`,
+    searchTerms: [
+      entry.name,
+      `/${entry.name}`,
+      PRIME_COMMAND_ORIGIN,
+      entry.kind,
+      entry.source,
+      ...(entry.description === undefined ? [] : [entry.description]),
+    ],
+    title: `/${entry.name}`,
+    description:
+      entry.description === undefined
+        ? primeCommandOriginLabel(entry)
+        : `${primeCommandOriginLabel(entry)} — ${entry.description}`,
+    icon: input.icon,
+    run: async () => {
+      const decision = resolvePrimeCommandInvocation(input.commands, entry.name);
+      if (!decision.ok) {
+        input.onUnavailable?.(decision.reason);
+        return;
+      }
+      input.insert(decision.prompt);
     },
   }));
 }

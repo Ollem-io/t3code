@@ -99,6 +99,7 @@ import {
 import {
   ADDON_ICON_CLASS,
   buildBrowseGroups,
+  buildPrimeCommandItems,
   buildProjectActionItems,
   buildRootGroups,
   buildThreadActionItems,
@@ -559,6 +560,7 @@ function OpenCommandPaletteDialog(props: {
   readonly clearOpenIntent: () => void;
 }) {
   const navigate = useNavigate();
+  const composerHandleRef = useComposerHandleContext();
   const { clearOpenIntent, openIntent, openOverlayMode, setOpen } = props;
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -1580,7 +1582,33 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
+  // Runtime-supplied commands are a separate, explicitly labelled group: a
+  // Prime command must never be mistaken for a T3 action. Selecting one writes
+  // an ordinary prompt into the composer and leaves sending to the user.
+  const primeCommandItems = buildPrimeCommandItems({
+    providerName: activeThread?.session?.providerName,
+    capabilities: activeThread?.session?.runtimeCapabilities,
+    commands: activeThread?.session?.commandCatalog?.commands,
+    icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+    insert: (prompt) => {
+      composerHandleRef?.current?.insertTextAtEnd(prompt, { ensureLeadingBoundary: true });
+    },
+    onUnavailable: (reason) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Command unavailable",
+          description: reason,
+        }),
+      );
+    },
+  });
+  const rootGroups = [
+    ...buildRootGroups({ actionItems, recentThreadItems }),
+    ...(primeCommandItems.length > 0
+      ? [{ value: "prime-commands", label: "Prime commands", items: primeCommandItems }]
+      : []),
+  ];
   const sourceSelectionViewValue =
     addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
   const activeGroups =

@@ -16,7 +16,9 @@ import {
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
   type OrchestrationSessionActionState,
+  EMPTY_ORCHESTRATION_SESSION_COMMAND_CATALOG,
   EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
+  type OrchestrationSessionCommandCatalog,
   type OrchestrationSessionContextState,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
@@ -140,6 +142,18 @@ function sameId(left: string | null | undefined, right: string | null | undefine
 function sameContextState(
   current: OrchestrationSessionContextState | undefined,
   next: OrchestrationSessionContextState,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+/**
+ * Structural equality for authoritative command catalogs. The catalog has no
+ * identifiers, so the serialized snapshot is the canonical comparison; this
+ * exists only to drop repeats that would write identical visible state.
+ */
+function sameCommandCatalog(
+  current: OrchestrationSessionCommandCatalog | undefined,
+  next: OrchestrationSessionCommandCatalog,
 ): boolean {
   return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
 }
@@ -1744,6 +1758,15 @@ const make = Effect.gen(function* () {
                     // A terminated or idle session has no live context work.
                     // Leaving the last snapshot would show a stale "Compacting".
                     contextState: EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
+                    // The catalog belongs to the live runtime process, so an
+                    // exited session drops it rather than offering commands
+                    // nothing can run. A finished turn keeps it: the session
+                    // still owns the same command files.
+                    ...(event.type === "session.exited"
+                      ? { commandCatalog: EMPTY_ORCHESTRATION_SESSION_COMMAND_CATALOG }
+                      : thread.session?.commandCatalog
+                        ? { commandCatalog: thread.session.commandCatalog }
+                        : {}),
                   }
                 : {
                     ...(thread.session?.actionState
@@ -1774,6 +1797,9 @@ const make = Effect.gen(function* () {
                                 }
                               : thread.session.contextState,
                         }
+                      : {}),
+                    ...(thread.session?.commandCatalog
+                      ? { commandCatalog: thread.session.commandCatalog }
                       : {}),
                   }),
               ...(thread.session?.runtimeCapabilities
@@ -1831,6 +1857,9 @@ const make = Effect.gen(function* () {
               updatedAt: now,
               actionState: nextActionState,
               ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -1917,6 +1946,64 @@ const make = Effect.gen(function* () {
               updatedAt: now,
               ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
               contextState: nextContextState,
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Runtime command/prompt/skill discovery. Like context status this is a
+      // current-state projection rather than scrollback, and it is deliberately
+      // not fenced to a turn: the catalog belongs to the session, and users pick
+      // commands between turns.
+      if (
+        event.type === "session.commands.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Authenticated to the persisted session binding exactly like the other
+        // authoritative snapshots: optional instance ids agree only when both
+        // are absent or equal.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextCommandCatalog: OrchestrationSessionCommandCatalog = {
+          commands: event.payload.commands.map((command) => ({
+            name: command.name,
+            kind: command.kind,
+            source: command.source,
+            ...(command.description === undefined ? {} : { description: command.description }),
+            ...(command.location === undefined ? {} : { location: command.location }),
+          })),
+        };
+        // Discovery is cached on the host and re-read only on request, but an
+        // identical catalog still costs nothing here: no durable event and no
+        // projection write.
+        if (!sameCommandCatalog(thread.session.commandCatalog, nextCommandCatalog)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-commands-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              commandCatalog: nextCommandCatalog,
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2172,6 +2259,11 @@ const make = Effect.gen(function* () {
               updatedAt: now,
               actionState: { queuedCount: 0, steering: [], followUps: [] },
               contextState: EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
+              // The process may still be alive behind a runtime error, so the
+              // catalog it reported is preserved rather than silently emptied.
+              ...(thread.session?.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),

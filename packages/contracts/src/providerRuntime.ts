@@ -197,6 +197,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "runtime.error",
   "session.actions.updated",
   "session.context.updated",
+  "session.commands.updated",
 ]);
 export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 
@@ -251,6 +252,7 @@ const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 const SessionActionsUpdatedType = Schema.Literal("session.actions.updated");
 const SessionContextUpdatedType = Schema.Literal("session.context.updated");
+const SessionCommandsUpdatedType = Schema.Literal("session.commands.updated");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
@@ -930,6 +932,49 @@ export const reduceProviderSessionContextState = (
   return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_CONTEXT_STATE : current;
 };
 
+/**
+ * Provider-neutral catalog of runtime-supplied commands, prompts, and skills.
+ *
+ * Deliberately a full snapshot with no identifiers: a runtime reports what it
+ * currently offers and replacing the value is the only safe reconciliation, so
+ * a removed command disappears everywhere instead of lingering per client.
+ *
+ * `location` is a display label only. Absolute host paths never reach this
+ * contract, because a remote client must not learn the host filesystem layout.
+ */
+const CommandCatalogName = TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(64));
+const CommandCatalogEntry = Schema.Struct({
+  name: CommandCatalogName,
+  kind: Schema.Literals(["command", "prompt", "skill"]),
+  description: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+  source: Schema.Literals(["builtin", "user", "project", "extension"]),
+  location: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(64))),
+});
+export type ProviderSessionCommandEntry = typeof CommandCatalogEntry.Type;
+const SessionCommandsUpdatedPayload = Schema.Struct({
+  commands: Schema.Array(CommandCatalogEntry).check(Schema.isMaxLength(128)),
+});
+export type SessionCommandsUpdatedPayload = typeof SessionCommandsUpdatedPayload.Type;
+
+export interface ProviderSessionCommandCatalog {
+  readonly commands: ReadonlyArray<ProviderSessionCommandEntry>;
+}
+export const EMPTY_PROVIDER_SESSION_COMMAND_CATALOG: ProviderSessionCommandCatalog = Object.freeze({
+  commands: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so a
+ * command deleted on the host stops being offered on every attached client;
+ * session termination clears the catalog rather than leaving stale entries.
+ */
+export const reduceProviderSessionCommandCatalog = (
+  current: ProviderSessionCommandCatalog = EMPTY_PROVIDER_SESSION_COMMAND_CATALOG,
+  event: ProviderRuntimeEvent,
+): ProviderSessionCommandCatalog => {
+  if (event.type === "session.commands.updated") return { commands: [...event.payload.commands] };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_COMMAND_CATALOG : current;
+};
+
 const ProviderRuntimeSessionStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionStartedType,
@@ -1306,6 +1351,14 @@ const ProviderRuntimeSessionContextUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionContextUpdatedEvent =
   typeof ProviderRuntimeSessionContextUpdatedEvent.Type;
 
+const ProviderRuntimeSessionCommandsUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionCommandsUpdatedType,
+  payload: SessionCommandsUpdatedPayload,
+});
+export type ProviderRuntimeSessionCommandsUpdatedEvent =
+  typeof ProviderRuntimeSessionCommandsUpdatedEvent.Type;
+
 export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
@@ -1358,6 +1411,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeErrorEvent,
   ProviderRuntimeSessionActionsUpdatedEvent,
   ProviderRuntimeSessionContextUpdatedEvent,
+  ProviderRuntimeSessionCommandsUpdatedEvent,
 ]);
 export type ProviderRuntimeEventV2 = typeof ProviderRuntimeEventV2.Type;
 

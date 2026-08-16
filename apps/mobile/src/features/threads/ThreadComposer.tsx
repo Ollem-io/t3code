@@ -93,6 +93,11 @@ import {
   resolvePrimeCompactionRequest,
   resolvePrimeUsageRefresh,
 } from "./primeContext";
+import {
+  hasPrimeCommandSurface,
+  primeCommandOriginLabel,
+  resolvePrimeCommandInvocation,
+} from "./primeCommands";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -321,6 +326,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     );
   const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
   const primeContextLines = renderPrimeContext(props.selectedThread.session?.contextState);
+  const primeCommands = props.selectedThread.session?.commandCatalog?.commands;
+  const primeCommandsAvailable = hasPrimeCommandSurface(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+  );
+  const [primeCommandsOpen, setPrimeCommandsOpen] = useState(false);
+  const [primeCommandError, setPrimeCommandError] = useState<string | null>(null);
   const primeHasRunningTurn = hasPrimeRunningTurn(props.selectedThread.session);
   const primeCompactionDecision = resolvePrimeCompactionRequest(
     props.selectedThread.session?.providerName,
@@ -1085,6 +1097,58 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             <Text className="mt-1 text-xs text-foreground-muted">
               {primeCancellationCopy(props.selectedThread.session?.runtimeCapabilities)}
             </Text>
+            {/* Runtime-supplied commands, prompts, and skills. Picking one only
+                fills the composer: the user still decides to send. */}
+            {primeCommandsAvailable ? (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Prime commands"
+                  onPress={() => {
+                    setPrimeCommandError(null);
+                    setPrimeCommandsOpen((open) => !open);
+                  }}
+                  className="mt-2 self-start rounded-md border border-border px-2 py-1"
+                >
+                  <Text className="text-xs text-foreground">
+                    {`Prime commands (${primeCommands?.length ?? 0})`}
+                  </Text>
+                </Pressable>
+                {primeCommandsOpen
+                  ? (primeCommands ?? []).map((command) => (
+                      <Pressable
+                        key={command.name}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Insert /${command.name}`}
+                        onPress={() => {
+                          const decision = resolvePrimeCommandInvocation(
+                            primeCommands,
+                            command.name,
+                          );
+                          if (!decision.ok) {
+                            setPrimeCommandError(decision.reason);
+                            return;
+                          }
+                          setPrimeCommandError(null);
+                          setPrimeCommandsOpen(false);
+                          props.onChangeDraftMessage(decision.prompt);
+                        }}
+                        className="mt-1"
+                      >
+                        <Text className="text-xs text-foreground">{`/${command.name}`}</Text>
+                        <Text className="text-xs text-foreground-muted">
+                          {command.description === undefined
+                            ? primeCommandOriginLabel(command)
+                            : `${primeCommandOriginLabel(command)} — ${command.description}`}
+                        </Text>
+                      </Pressable>
+                    ))
+                  : null}
+                {primeCommandError === null ? null : (
+                  <Text className="mt-1 text-xs text-red-500">{primeCommandError}</Text>
+                )}
+              </>
+            ) : null}
             {/* Compaction is the runtime's context management, never a checkpoint. */}
             {hasPrimeContextControls(
               props.selectedThread.session?.providerName,

@@ -52,3 +52,29 @@ the provider-neutral `session.context.updated` event.
 
 `packages/contracts/fixtures/pa-a03-prime-context-transcript.mjs` verifies the phase/status and
 activity-summary tables against the shipped source and fails if either drifts.
+
+## PA-A04 commands, skills, and prompt templates
+
+Prime 0.7.2 exposes a no-argument `get_commands`. T3 discovers once per session, caches the result
+for that session, and publishes it as the provider-neutral `session.commands.updated` snapshot.
+
+- **Discovery only.** `commandDiscovery: true` means the runtime can be _asked what it offers_. It
+  is not an invocation channel: Prime 0.7.2 has no invoke RPC, so an eligible entry is sent as an
+  ordinary prompt (`/name …`) and `command.invoke` stays refused rather than mapped onto a command
+  that does not exist.
+- **Ineligible entries do not exist.** TUI-only entries and anything that mutates authentication,
+  the daemon, or the T3-owned session lifecycle are dropped at the adapter boundary, so no surface
+  can offer one. An unrecognized response body yields an empty catalog and the feature stays hidden.
+- **No host path on the wire.** `location` is reduced to a bare file name. Absolute, home-relative,
+  parent-traversing, and Windows drive paths are dropped outright rather than trimmed: the label is
+  worth less than the certainty that a remote client learns nothing about host layout.
+- **Bounded and cached.** At most 128 entries, deduplicated by name with the first definition
+  winning; discovery re-runs only on an explicit `command.discover`, and a byte-identical catalog
+  produces neither a durable event nor a projection write. The cache dies with its session.
+- **Snapshots replace.** A command deleted on the host disappears on every attached client, and an
+  entry that vanished between render and click fails with a stated reason instead of a prompt the
+  runtime would reject.
+
+`packages/contracts/fixtures/pa-a04-prime-commands-transcript.mjs` builds a disposable
+extension/prompt/skill tree, verifies the filtering and sanitization rules against the shipped
+source, and fails if either drifts.

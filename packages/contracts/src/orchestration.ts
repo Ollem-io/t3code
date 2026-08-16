@@ -358,6 +358,26 @@ export type OrchestrationSessionContextState = typeof OrchestrationSessionContex
 export const EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE: OrchestrationSessionContextState =
   Object.freeze({ compaction: Object.freeze({ status: "idle", trigger: "automatic" }) });
 
+/**
+ * Runtime-supplied command/prompt/skill catalog. Mirrors the canonical
+ * `session.commands.updated` snapshot: replacement is the only reconciliation,
+ * and `location` is a bounded display label that never carries a host path.
+ */
+export const OrchestrationSessionCommandCatalog = Schema.Struct({
+  commands: Schema.Array(
+    Schema.Struct({
+      name: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+      kind: Schema.Literals(["command", "prompt", "skill"]),
+      description: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+      source: Schema.Literals(["builtin", "user", "project", "extension"]),
+      location: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
+    }),
+  ).check(Schema.isMaxLength(128)),
+});
+export type OrchestrationSessionCommandCatalog = typeof OrchestrationSessionCommandCatalog.Type;
+export const EMPTY_ORCHESTRATION_SESSION_COMMAND_CATALOG: OrchestrationSessionCommandCatalog =
+  Object.freeze({ commands: Object.freeze([]) });
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -382,6 +402,8 @@ export const OrchestrationSession = Schema.Struct({
   actionState: Schema.optional(OrchestrationSessionActionState),
   /** Native authoritative context/compaction/retry snapshot; absent means none supplied. */
   contextState: Schema.optional(OrchestrationSessionContextState),
+  /** Native authoritative command/prompt/skill catalog; absent means none supplied. */
+  commandCatalog: Schema.optional(OrchestrationSessionCommandCatalog),
   runtimeCapabilities: Schema.optional(
     Schema.Struct({
       steer: Schema.optional(Schema.Boolean),
@@ -390,6 +412,7 @@ export const OrchestrationSession = Schema.Struct({
       compaction: Schema.optional(Schema.Boolean),
       compactionCancel: Schema.optional(Schema.Boolean),
       usageAndRetry: Schema.optional(Schema.Boolean),
+      commandDiscovery: Schema.optional(Schema.Boolean),
     }),
   ),
 });
