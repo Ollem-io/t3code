@@ -43,7 +43,9 @@ import { PrimeRpcClient } from "../prime/PrimeRpcClient.ts";
 import { spawnPrimeRpcTransport } from "../prime/PrimeRpcProcessTransport.ts";
 import { primeHomeFingerprint, primeResourceLayout } from "../prime/PrimeResourceLayout.ts";
 import {
+  isPrimeOwnableHeartbeatId,
   primeThreadOwnershipRecord,
+  readPrimeOwnedHeartbeatIds,
   recoverPrimeInstanceOwnership,
   writePrimeOwnership,
 } from "../prime/PrimeOwnership.ts";
@@ -74,6 +76,7 @@ import {
 } from "../prime/PrimeObservation.ts";
 import {
   EMPTY_PRIME_GOAL_BOARD,
+  MAX_PRIME_HEARTBEATS,
   PRIME_GOAL_MUTATION_REFUSAL,
   primeGoalBoard,
   primeGoalBoardFingerprint,
@@ -145,6 +148,15 @@ type SessionContext = {
   resident: boolean;
   /** Ids of heartbeats this environment created. The only legal action targets. */
   readonly ownedHeartbeats: Set<string>;
+  /**
+   * Serializes heartbeat mutations for this session.
+   *
+   * Every heartbeat action decides against the owned set and then awaits the
+   * runtime. Two concurrent creates would both pass a bound check taken before
+   * their awaits and produce one more real schedule than the record can hold,
+   * so the whole decide-act-persist sequence runs one at a time.
+   */
+  heartbeatMutations: Promise<void>;
   goalBoard: PrimeGoalBoard;
   goalBoardFingerprint: string;
 };
@@ -284,6 +296,22 @@ export const makePrimeAdapter = (
      * nothing else, so a schedule made in the TUI or by another T3 thread is
      * untouchable even by a cleanup pass that runs over the same daemon.
      */
+    /**
+     * Runs one heartbeat mutation at a time for a session.
+     *
+     * Each mutation decides against the owned set, awaits the runtime, and then
+     * rewrites the record. Interleaving two of them could create one more real
+     * schedule than the eight-handle record can hold, and the surplus id would
+     * be lost the moment the write refused it.
+     */
+    const serializeHeartbeat = <A>(context: SessionContext, run: () => Promise<A>): Promise<A> => {
+      const next = context.heartbeatMutations.then(run, run);
+      context.heartbeatMutations = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
+    };
     const persistHeartbeatOwnership = async (context: SessionContext) => {
       if (!context.processIdentity) return;
       await writePrimeOwnership(
@@ -441,6 +469,19 @@ export const makePrimeAdapter = (
         requestIdPrefix: "t3-prime-bootstrap",
       });
       const processIdentity = await transport.processIdentityReady?.catch(() => undefined);
+      // A heartbeat this thread created outlives the session that made it, and
+      // the ownership record is thread-scoped, so the handles recorded by the
+      // previous session are rehydrated before this session replaces the
+      // record. Writing `[]` here would erase the only exact ids that keep a
+      // still-resident T3-created schedule listable, pausable, stoppable and
+      // provable — the daemon would stay up with no reverse control anywhere.
+      const rehydratedHeartbeatIds = [
+        ...new Set(
+          (await readPrimeOwnedHeartbeatIds(layout.ownership).catch(() => [])).filter(
+            isPrimeOwnableHeartbeatId,
+          ),
+        ),
+      ].slice(0, MAX_PRIME_HEARTBEATS);
       if (processIdentity) {
         await writePrimeOwnership(
           layout.ownership,
@@ -449,7 +490,7 @@ export const makePrimeAdapter = (
             instanceId: String(options.instanceId),
             threadId: String(input.threadId),
             process: processIdentity,
-            ownedHeartbeatIds: [],
+            ownedHeartbeatIds: rehydratedHeartbeatIds,
           }),
         );
       }
@@ -491,7 +532,8 @@ export const makePrimeAdapter = (
           nativeGoal: undefined,
           nativeHeartbeats: [],
           resident: false,
-          ownedHeartbeats: new Set(),
+          ownedHeartbeats: new Set(rehydratedHeartbeatIds),
+          heartbeatMutations: Promise.resolve(),
           goalBoard: EMPTY_PRIME_GOAL_BOARD,
           goalBoardFingerprint: primeGoalBoardFingerprint(EMPTY_PRIME_GOAL_BOARD),
           ownershipPath: layout.ownership,
@@ -643,6 +685,21 @@ export const makePrimeAdapter = (
         // that does not answer `get_commands` simply offers no catalog, and the
         // capability-gated surfaces stay hidden.
         await discoverCommands(context).catch(() => undefined);
+        // A handle carried over from a previous session is only half of the
+        // reverse path: the board is derived from the native store, so without
+        // a resync the rehydrated heartbeat stays invisible and untargetable
+        // until the daemon happens to push an update. Reading the store once
+        // also prunes handles whose schedule is genuinely gone, so the record
+        // never keeps an id cleanup could not prove. Best effort, like
+        // discovery: a runtime that does not answer leaves the board empty
+        // rather than failing the session.
+        if (rehydratedHeartbeatIds.length > 0)
+          await heartbeatSnapshot(context, { type: "heartbeat_get" })
+            .then(async () => {
+              await persistHeartbeatOwnership(context);
+              await publishGoals(context);
+            })
+            .catch(() => undefined);
         return session;
       } catch (cause) {
         client.close();
@@ -1122,77 +1179,96 @@ export const makePrimeAdapter = (
               operation: "executeRuntimeOperation",
               issue: PRIME_GOAL_MUTATION_REFUSAL,
             });
-          if (operation.type === "heartbeat.create") {
-            const decision = primeHeartbeatCreateDecision(
-              context.goalBoard,
-              operation.intervalSeconds,
-            );
-            if (!decision.allowed)
-              throw new ProviderAdapterValidationError({
-                provider: PROVIDER,
-                operation: "executeRuntimeOperation",
-                issue: primeHeartbeatRefusalMessage(decision.reason),
+          if (operation.type === "heartbeat.create")
+            return serializeHeartbeat(context, async () => {
+              const decision = primeHeartbeatCreateDecision(
+                context.goalBoard,
+                operation.intervalSeconds,
+              );
+              // The board can hold fewer rows than the owned set does — a row is
+              // dropped when the runtime reports it with text or an interval T3
+              // cannot state exactly — so the cap is also enforced against the
+              // handles that actually get persisted. Otherwise a ninth handle
+              // would make the ownership write throw after the heartbeat already
+              // exists, losing the only id that could ever stop it.
+              if (decision.allowed && context.ownedHeartbeats.size >= MAX_PRIME_HEARTBEATS)
+                throw new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "executeRuntimeOperation",
+                  issue: primeHeartbeatRefusalMessage("limit-reached"),
+                });
+              if (!decision.allowed)
+                throw new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "executeRuntimeOperation",
+                  issue: primeHeartbeatRefusalMessage(decision.reason),
+                });
+              // The runtime names the heartbeat it just made; that response is the
+              // only way T3 learns an id is its own. A creation that answers
+              // without one leaves the store untouched from T3's point of view
+              // rather than adopting whatever appeared.
+              const created = await heartbeatSnapshot(context, {
+                type: "heartbeat_create",
+                title: operation.title,
+                intervalSeconds: operation.intervalSeconds,
               });
-            // The runtime names the heartbeat it just made; that response is the
-            // only way T3 learns an id is its own. A creation that answers
-            // without one leaves the store untouched from T3's point of view
-            // rather than adopting whatever appeared.
-            const created = await heartbeatSnapshot(context, {
-              type: "heartbeat_create",
-              title: operation.title,
-              intervalSeconds: operation.intervalSeconds,
+              // An id the ownership record could not hold is not adopted: the
+              // write would throw after the heartbeat already exists, which is
+              // the one outcome that leaves a real T3-created schedule running
+              // with no handle at all. An id the board cannot render exactly is
+              // still recorded — cleanup proves a handle by its id, never by
+              // rendering it, so the reverse path stays available.
+              if (isPrimeOwnableHeartbeatId(created.heartbeatId))
+                context.ownedHeartbeats.add(created.heartbeatId);
+              await persistHeartbeatOwnership(context);
+              await publishGoals(context);
             });
-            if (created.heartbeatId) context.ownedHeartbeats.add(created.heartbeatId);
-            await persistHeartbeatOwnership(context);
-            await publishGoals(context);
-            return;
-          }
           if (
             operation.type === "heartbeat.pause" ||
             operation.type === "heartbeat.resume" ||
             operation.type === "heartbeat.delete" ||
             // Reversing a creation is deleting exactly that heartbeat.
             operation.type === "heartbeat.reverse"
-          ) {
-            const intent =
-              operation.type === "heartbeat.pause"
-                ? "pause"
-                : operation.type === "heartbeat.resume"
-                  ? "resume"
-                  : "delete";
-            const decision = primeHeartbeatDecision(
-              context.goalBoard,
-              String(operation.heartbeatId),
-              intent,
-            );
-            // Ownership is checked on every action against the board this
-            // T3-owned session currently reports. A stale id, another thread's
-            // schedule, and an id fished out of the daemon all stop here.
-            if (!decision.allowed)
-              throw new ProviderAdapterValidationError({
-                provider: PROVIDER,
-                operation: "executeRuntimeOperation",
-                issue: primeHeartbeatRefusalMessage(decision.reason),
+          )
+            return serializeHeartbeat(context, async () => {
+              const intent =
+                operation.type === "heartbeat.pause"
+                  ? "pause"
+                  : operation.type === "heartbeat.resume"
+                    ? "resume"
+                    : "delete";
+              const decision = primeHeartbeatDecision(
+                context.goalBoard,
+                String(operation.heartbeatId),
+                intent,
+              );
+              // Ownership is checked on every action against the board this
+              // T3-owned session currently reports. A stale id, another thread's
+              // schedule, and an id fished out of the daemon all stop here.
+              if (!decision.allowed)
+                throw new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "executeRuntimeOperation",
+                  issue: primeHeartbeatRefusalMessage(decision.reason),
+                });
+              const heartbeatId = decision.heartbeat.heartbeatId;
+              await expectSuccess(context, {
+                type:
+                  intent === "pause"
+                    ? "heartbeat_pause"
+                    : intent === "resume"
+                      ? "heartbeat_resume"
+                      : "heartbeat_stop",
+                heartbeatId,
               });
-            const heartbeatId = decision.heartbeat.heartbeatId;
-            await expectSuccess(context, {
-              type:
-                intent === "pause"
-                  ? "heartbeat_pause"
-                  : intent === "resume"
-                    ? "heartbeat_resume"
-                    : "heartbeat_stop",
-              heartbeatId,
+              if (intent === "delete") context.ownedHeartbeats.delete(heartbeatId);
+              // Re-read rather than assume: the runtime is the authority on what
+              // the schedule now is, including whether the session is still
+              // resident once the last owned heartbeat is gone.
+              await heartbeatSnapshot(context, { type: "heartbeat_get" });
+              await persistHeartbeatOwnership(context);
+              await publishGoals(context);
             });
-            if (intent === "delete") context.ownedHeartbeats.delete(heartbeatId);
-            // Re-read rather than assume: the runtime is the authority on what
-            // the schedule now is, including whether the session is still
-            // resident once the last owned heartbeat is gone.
-            await heartbeatSnapshot(context, { type: "heartbeat_get" });
-            await persistHeartbeatOwnership(context);
-            await publishGoals(context);
-            return;
-          }
           if (operation.type !== "steer.add" && operation.type !== "follow-up.add")
             throw new ProviderAdapterValidationError({
               provider: PROVIDER,

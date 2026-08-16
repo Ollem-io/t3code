@@ -17,6 +17,8 @@ import { basename, join } from "node:path";
 import {
   cleanupPrimeOwnership as cleanupPrimeOwnershipDelegated,
   unsafePathnameCleanupPrimeOwnershipForTests as cleanupPrimeOwnership,
+  primeThreadOwnershipRecord,
+  readPrimeOwnedHeartbeatIds,
   unsafePathnameRecoverPrimeOwnershipForTests as recoverPrimeOwnership,
   writePrimeOwnership,
 } from "./PrimeOwnership.ts";
@@ -85,6 +87,33 @@ describe("PrimeOwnership", () => {
     await stat(b.ownership);
     await stat(b.thread);
     assert.strictEqual(await readFile(sentinel, "utf8"), "safe");
+  });
+  it("reads back owned heartbeat handles for the same thread and nothing else", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-rehydrate-"));
+    const a = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    const b = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "b" });
+    const record = primeThreadOwnershipRecord({
+      environmentId: "env",
+      instanceId: "one",
+      threadId: "a",
+      process: { pid: 71, startToken: "captured-start" },
+      ownedHeartbeatIds: ["hb-1", "hb-2"],
+    });
+    await writePrimeOwnership(a.ownership, record);
+    // The handles survive the session that wrote them: this read is what lets
+    // the next session keep a resident schedule listable and stoppable.
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(a.ownership), ["hb-1", "hb-2"]);
+    // No record, another thread's record, and an already-cleaned record all
+    // yield nothing. Ownership is never inferred.
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(b.ownership), []);
+    await writeFile(a.ownership, JSON.stringify({ ...record, heartbeatsCleaned: true }));
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(a.ownership), []);
+    // A record that does not belong at this path, and a corrupt one, are
+    // refused rather than partially trusted.
+    await writeFile(a.ownership, JSON.stringify({ ...record, threadId: "b" }));
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(a.ownership), []);
+    await writeFile(a.ownership, "{ not json");
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(a.ownership), []);
   });
   it("binds record identity to decoded path and rejects symlink parents/targets", async () => {
     const home = await mkdtemp(join(tmpdir(), "prime-"));

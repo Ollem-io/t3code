@@ -73,6 +73,17 @@ export type PrimeOwnershipCleanup = {
    */
   readonly removeOwnedResource?: (resource: PrimeOwnedResource) => Promise<"removed" | "retained">;
 };
+/**
+ * Whether an id can be held as an ownership handle at all.
+ *
+ * This is deliberately the record's own rule, not the board's: a handle exists
+ * so cleanup can prove and stop exactly one native resource, which it does by
+ * the id itself, never by rendering it. An id the UI cannot display is still a
+ * schedule T3 created and must still be stoppable, so the only ids refused here
+ * are the ones the record could not hold — which would make the ownership write
+ * throw after the heartbeat already exists and orphan it for good.
+ */
+export const isPrimeOwnableHeartbeatId = (value: unknown): value is string => validId(value);
 const validId = (v: unknown): v is string =>
   typeof v === "string" && v.length > 0 && v.length <= MAX_ID_LENGTH;
 const exact = (v: Record<string, unknown>, keys: readonly string[]) =>
@@ -507,6 +518,42 @@ const decode = (text: string): { record?: PrimeOwnershipRecord; reason?: string 
     return { reason: "partial or corrupt ownership record; left intact" };
   }
 };
+/**
+ * Reads back the owned heartbeat handles recorded for one thread.
+ *
+ * The ownership record is thread-scoped and outlives any single session, while
+ * a T3-created heartbeat outlives the process that made it. A new session for
+ * the same thread must therefore rehydrate the handles it already owns before
+ * it replaces the record: without this the next write erases the only exact ids
+ * that make a resident schedule listable, stoppable, and provable, stranding a
+ * daemon T3 itself started.
+ *
+ * Fail-closed by construction: a missing, corrupt, future-versioned, or
+ * path-mismatched record, a daemon record, or a record whose heartbeats were
+ * already cleaned all yield no handles. Nothing here can invent an id — every
+ * id returned was written by this environment for this exact thread.
+ */
+export const readPrimeOwnedHeartbeatIds = async (path: string): Promise<readonly string[]> => {
+  const id = identify(path);
+  if (!id) return [];
+  let text: string;
+  try {
+    // Bound the read exactly the way the write is bound. Authenticating only
+    // the fields inside the file would let a symlinked ancestor or a symlinked
+    // target hand this environment ids it never created, and adopting those
+    // would be the one thing ownership exists to prevent.
+    await validateChain(dirname(path), true);
+    const s = await lstat(path);
+    if (s.isSymbolicLink() || !s.isFile()) return [];
+    text = await readFile(path, "utf8");
+  } catch {
+    return [];
+  }
+  const { record } = decode(text);
+  if (!record || !validate(path, record, id)) return [];
+  if (record.kind === "daemon" || record.heartbeatsCleaned === true) return [];
+  return record.heartbeatIds ? [...record.heartbeatIds] : [];
+};
 const warning = (path: string, reason: string): PrimeOwnershipAction => ({
   kind: "warning",
   warning: { path, reason },
@@ -699,9 +746,11 @@ export const unsafePathnameCleanupPrimeOwnershipForTests = async (
             await persist({ processStopped: true });
             actions.push({ kind: "process-stopped", path });
           }
-          // Owned heartbeats are stopped before the session that hosts them, so
-          // a schedule can never survive as an orphan pointing at a dead
-          // session. Each id is proven individually and stopped individually:
+          // Owned heartbeats are stopped before the daemon session that keeps
+          // them resident, so a schedule can never survive as an orphan
+          // pointing at a released daemon. (The thread process is stopped
+          // first, above: it hosts nothing a heartbeat depends on.)
+          // Each id is proven individually and stopped individually:
           // there is no delete-all, and an id that cannot be proven leaves that
           // heartbeat — and every unowned one — completely alone.
           if (r.heartbeatIds?.length && !r.heartbeatsCleaned) {

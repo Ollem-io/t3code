@@ -23,9 +23,16 @@ keeps a Prime session alive past a turn, so it has its own cleanup rules:
 
 - **T3 stops only heartbeats it created.** Each owned heartbeat id is recorded
   in the ownership record when it is created. Cleanup proves each id and stops
-  it individually, before the session hosting it. A schedule created in the
+  it individually, before releasing the daemon session that keeps it resident.
+  A schedule created in the
   Prime TUI or by another tool is never listed, never targeted, and never
   stopped — there is no stop-all path to invoke.
+- **Ownership survives a restart.** The record is per thread, not per session.
+  A new session for the same thread reads the recorded ids back before it
+  rewrites the record, then re-reads the runtime's schedule once so the
+  surviving heartbeat reappears on the board and stays pausable and stoppable.
+  Ids the runtime no longer reports are dropped at that point, so the record
+  never keeps a handle cleanup could not prove.
 - **Unprovable means untouched.** If an id cannot be proven, that heartbeat and
   everything after it in the cleanup sequence is left alone and the ownership
   record is retained for a later pass. Investigate manually; do not hand-delete.
