@@ -363,6 +363,45 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("redacts Prime native session action text from native logs", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "events.log");
+      try {
+        const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+        const logger = store.logger("native");
+        yield* logger.write(
+          {
+            type: "session_action_update",
+            actions: {
+              queuedCount: 2,
+              steering: ["SECRET_NATIVE_STEER"],
+              followUps: ["SECRET_NATIVE_FOLLOW_UP"],
+              active: { kind: "turn", phase: "running", label: "SECRET_NATIVE_LABEL" },
+            },
+          },
+          ThreadId.make("thread-native-actions"),
+        );
+        yield* store.close();
+        const [nativeActionFile] = NodeFS.readdirSync(tempDir).filter(
+          (name) => name.startsWith("events.") && name.endsWith(".log"),
+        );
+        assert.exists(nativeActionFile);
+        if (!nativeActionFile) return;
+        const contents = NodeFS.readFileSync(NodePath.join(tempDir, nativeActionFile), "utf8");
+        assert.notInclude(contents, "SECRET_NATIVE_STEER");
+        assert.notInclude(contents, "SECRET_NATIVE_FOLLOW_UP");
+        assert.notInclude(contents, "SECRET_NATIVE_LABEL");
+        assert.include(contents, '"steeringCount":1');
+        assert.include(contents, '"followUpCount":1');
+        assert.include(contents, '"label":"[REDACTED]"');
+        assert.include(contents, '"redaction":"[REDACTED]"');
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("contains hostile event accessors inside guarded serialization", () =>
     Effect.gen(function* () {
       const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));

@@ -48,10 +48,45 @@ const transientCanonicalEventTypes = new Set([
 
 const ACTION_TEXT_REDACTION_MARKER = "[REDACTED]";
 
-function redactCanonicalActionSnapshotForLog(event: unknown): unknown {
+function redactActionSnapshotForLog(stream: EventNdjsonStream, event: unknown): unknown {
   if (typeof event !== "object" || event === null) return event;
+  const native = stream === "native";
+  const type = native ? "session_action_update" : "session.actions.updated";
+  const snapshotKey = native ? "actions" : "payload";
   try {
-    if (Reflect.get(event, "type") !== "session.actions.updated") return event;
+    if (Reflect.get(event, "type") !== type) return event;
+    const snapshot = Reflect.get(event, snapshotKey);
+    const record =
+      typeof snapshot === "object" && snapshot !== null
+        ? (snapshot as Record<string, unknown>)
+        : {};
+    const steering = Reflect.get(record, "steering");
+    const followUps = Reflect.get(record, "followUps");
+    const active = Reflect.get(record, "active");
+    const activeRecord =
+      typeof active === "object" && active !== null
+        ? (active as Record<string, unknown>)
+        : undefined;
+    const safeSnapshot = {
+      queuedCount: typeof Reflect.get(record, "queuedCount") === "number" ? Reflect.get(record, "queuedCount") : 0,
+      steeringCount: Array.isArray(steering) ? steering.length : 0,
+      followUpCount: Array.isArray(followUps) ? followUps.length : 0,
+      ...(activeRecord
+        ? {
+            active: {
+              ...(typeof Reflect.get(activeRecord, "kind") === "string"
+                ? { kind: Reflect.get(activeRecord, "kind") }
+                : {}),
+              ...(typeof Reflect.get(activeRecord, "phase") === "string"
+                ? { phase: Reflect.get(activeRecord, "phase") }
+                : {}),
+              label: ACTION_TEXT_REDACTION_MARKER,
+            },
+          }
+        : {}),
+      redaction: ACTION_TEXT_REDACTION_MARKER,
+    };
+    if (native) return { type, actions: safeSnapshot };
     const safe: Record<string, unknown> = {};
     for (const key of [
       "type",
@@ -65,35 +100,11 @@ function redactCanonicalActionSnapshotForLog(event: unknown): unknown {
       const value = Reflect.get(event, key);
       if (value !== undefined) safe[key] = value;
     }
-    const payload = Reflect.get(event, "payload");
-    const record =
-      typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
-    const steering = Reflect.get(record, "steering");
-    const followUps = Reflect.get(record, "followUps");
-    const active = Reflect.get(record, "active");
-    const activeRecord =
-      typeof active === "object" && active !== null
-        ? (active as Record<string, unknown>)
-        : undefined;
-    safe.payload = {
-      queuedCount: typeof record.queuedCount === "number" ? record.queuedCount : 0,
-      steeringCount: Array.isArray(steering) ? steering.length : 0,
-      followUpCount: Array.isArray(followUps) ? followUps.length : 0,
-      ...(activeRecord
-        ? {
-            active: {
-              ...(typeof activeRecord.kind === "string" ? { kind: activeRecord.kind } : {}),
-              ...(typeof activeRecord.phase === "string" ? { phase: activeRecord.phase } : {}),
-              label: ACTION_TEXT_REDACTION_MARKER,
-            },
-          }
-        : {}),
-      redaction: ACTION_TEXT_REDACTION_MARKER,
-    };
+    safe.payload = safeSnapshot;
     return safe;
   } catch {
     // Never fall back to unredacted action text for hostile accessors.
-    return { type: "session.actions.updated", redaction: ACTION_TEXT_REDACTION_MARKER };
+    return { type, redaction: ACTION_TEXT_REDACTION_MARKER };
   }
 }
 
@@ -608,7 +619,7 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
     const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
       if (!shouldPersist(stream, event)) return;
       const payload = yield* serializeEvent(
-        stream === "canonical" ? redactCanonicalActionSnapshotForLog(event) : event,
+        redactActionSnapshotForLog(stream, event),
       );
       if (payload === undefined) return;
 
