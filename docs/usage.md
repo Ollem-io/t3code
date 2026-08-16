@@ -346,7 +346,7 @@ Name the Prime session behind a thread, and fork it into a new thread when you w
 
 **Forking** starts a new Prime session from a point you choose — one of the recent messages, or the whole session — and creates a new T3 thread for it. The list of fork points is the most recent ones; longer conversations say so rather than listing everything. Forking is disclosed before it happens, and cancelling that confirmation does nothing at all: no session, no thread.
 
-The new thread records where it came from: the thread it was forked from, the label of the point it was forked at, and that thread's latest checkpoint at that moment. That ancestry is a T3 record, so it stays readable even with Prime Agent uninstalled and every session long gone. The original thread is untouched.
+The new thread records where it came from: the thread it was forked from, the label of the point it was forked at, and that thread's latest checkpoint at that moment. A forked thread shows that line at the top on web and desktop, and above the composer on mobile, with **Open source thread** next to it to take you back. That ancestry is a T3 record and sits outside the Prime Agent controls, so it stays readable and navigable even with Prime Agent uninstalled and every session long gone. The original thread is untouched.
 
 **This is not durable resume.** A fork starts a _new_ session now. It does not reopen a past session, and nothing about it survives a server restart as a resumable conversation; durable resume is Beta.
 

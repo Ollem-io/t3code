@@ -7,6 +7,7 @@ import {
   MAX_PRIME_SESSION_NAME_CHARS,
   PRIME_FORK_NOT_RESUME_NOTE,
   PRIME_FORK_TRUNCATED_NOTE,
+  PRIME_FORK_OPEN_SOURCE_LABEL,
   PRIME_NAMING_UNAVAILABLE,
   hasLivePrimeSession,
   hasPrimeNaming,
@@ -18,6 +19,7 @@ import {
   type PrimeSessionIdentityCard,
 } from "./primeFork";
 import { PrimeForkPanel } from "./PrimeForkPanel";
+import { PrimeForkOriginBanner } from "./PrimeForkOriginBanner";
 
 const card: PrimeSessionIdentityCard = {
   name: "Migration work",
@@ -109,8 +111,42 @@ describe("prime session naming and forking surface", () => {
         checkpointId: "checkpoint-9",
         forkedAt: "2026-08-16T09:00:00.000Z",
       }),
-    ).toBe('Forked from another thread at "Adapter drafted" · source checkpoint checkpoint-9');
+    ).toBe(
+      'Forked from another thread at "Adapter drafted" · source thread\'s latest checkpoint checkpoint-9',
+    );
     expect(renderPrimeForkOrigin(null)).toBe("");
+  });
+
+  // Regression: the ancestry renderer once shipped with no product caller, so a
+  // forked thread showed no origin and offered no way back. The banner renders
+  // it, and it hangs off the thread rather than the Prime Agent panel so it
+  // survives a dead session and an uninstalled provider.
+  it("renders ancestry and the way back on a forked thread", () => {
+    const markup = renderToStaticMarkup(
+      <PrimeForkOriginBanner
+        origin={{
+          threadId: "thread-1",
+          forkPointLabel: "Adapter drafted",
+          checkpointId: "checkpoint-9",
+          forkedAt: "2026-08-16T09:00:00.000Z",
+        }}
+        onOpenSourceThread={() => {}}
+      />,
+    );
+    expect(markup).toContain("Adapter drafted");
+    expect(markup).toContain("checkpoint-9");
+    expect(markup).toContain(PRIME_FORK_OPEN_SOURCE_LABEL);
+    expect(
+      renderToStaticMarkup(<PrimeForkOriginBanner origin={null} onOpenSourceThread={() => {}} />),
+    ).toBe("");
+  });
+
+  it("mounts the ancestry banner on the thread, outside the Prime Agent panel", () => {
+    const chatView = readFileSync("apps/web/src/components/ChatView.tsx", "utf8");
+    expect(chatView).toContain("<PrimeForkOriginBanner");
+    expect(chatView).toContain("origin={activeThread.forkedFrom ?? null}");
+    // The way back is plain thread navigation, so it needs no live session.
+    expect(chatView).toContain("onOpenSourceThread={(sourceThreadId) => {");
   });
 
   it("renders the name, the fork points, and no disclosure until a fork is requested", () => {

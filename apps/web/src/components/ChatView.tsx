@@ -13,7 +13,7 @@ import {
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
-  type ThreadId,
+  ThreadId,
   type TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
@@ -278,6 +278,7 @@ import {
   shouldShowThreadErrorBanner,
   ThreadErrorBanner,
 } from "./chat/ThreadErrorBanner";
+import { PrimeForkOriginBanner } from "./chat/PrimeForkOriginBanner";
 import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import { ThreadSyncStatusPill } from "./chat/ThreadSyncStatusPill";
@@ -6496,6 +6497,21 @@ function ChatViewContent(props: ChatViewProps) {
             setThreadError(activeThread.id, null);
             dismissThreadErrorBannerForSession(threadErrorBannerKey);
             setThreadErrorBannerDismissTick((tick) => tick + 1);
+          }}
+        />
+        {/* Ancestry sits with the thread, not with the provider panel: a fork
+            has to state where it came from and offer the way back even when the
+            Prime Agent session is gone. */}
+        <PrimeForkOriginBanner
+          origin={activeThread.forkedFrom ?? null}
+          onOpenSourceThread={(sourceThreadId) => {
+            void navigate({
+              to: "/$environmentId/$threadId",
+              params: {
+                environmentId: activeThread.environmentId,
+                threadId: ThreadId.make(sourceThreadId),
+              },
+            });
           }}
         />
         {/* Main content area with optional plan sidebar */}

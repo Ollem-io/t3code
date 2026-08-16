@@ -126,12 +126,15 @@ import {
   renderPrimeHeartbeat,
 } from "./primeHeartbeat";
 import {
+  PRIME_FORK_OPEN_SOURCE_LABEL,
   PRIME_FORK_TRUNCATED_NOTE,
   PRIME_FORK_WHOLE_SESSION_LABEL,
   primeForkDraftDecision,
   primeIdentityView,
   primeRenameDraftDecision,
+  renderPrimeForkOrigin,
   renderPrimeForkPoint,
+  type PrimeThreadForkOrigin,
 } from "./primeFork";
 
 /**
@@ -197,6 +200,13 @@ export interface ThreadComposerProps {
   readonly onRenameSession?: (name: string) => Promise<boolean>;
   /** Fork this thread's provider session into a new thread the host creates. */
   readonly onForkSession?: (forkPointId: string | undefined) => Promise<boolean>;
+  /**
+   * Ancestry of this thread, straight off the thread record. Rendered outside
+   * the Prime Agent block so a fork keeps its origin and its way back with no
+   * live session and no Prime Agent installed.
+   */
+  readonly forkOrigin?: PrimeThreadForkOrigin | null | undefined;
+  readonly onOpenSourceThread?: (threadId: string) => void;
   /** Explicit, bounded re-read of the runtime command catalog. Never polled. */
   readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
@@ -425,6 +435,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session?.runtimeCapabilities,
     { title: heartbeatTitle, intervalSeconds: heartbeatIntervalSeconds },
   );
+  // Ancestry is read from the thread, not the session, so it outlives both.
+  const forkOriginThreadId = props.forkOrigin?.threadId ?? null;
   // The session's own name and the points it can be forked from.
   const primeIdentitySurface = primeIdentityView(
     props.selectedThread.session?.providerName,
@@ -1720,6 +1732,27 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             ) : null}
           </View>
         )}
+        {/* Thread ancestry and the way back. Ungated on purpose: this is a T3
+            thread record, so it must survive an exited session, an older
+            runtime, and Prime Agent being uninstalled. */}
+        {props.forkOrigin ? (
+          <View className="mt-2 flex-row items-center gap-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            <Text className="flex-1 text-xs text-foreground-muted">
+              {renderPrimeForkOrigin(props.forkOrigin)}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={PRIME_FORK_OPEN_SOURCE_LABEL}
+              onPress={() => {
+                if (forkOriginThreadId === null) return;
+                props.onOpenSourceThread?.(forkOriginThreadId);
+              }}
+              className="rounded-md border border-border px-2 py-1"
+            >
+              <Text className="text-xs text-foreground">{PRIME_FORK_OPEN_SOURCE_LABEL}</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {/* Queue count */}
         {props.queueCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>

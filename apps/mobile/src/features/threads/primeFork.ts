@@ -120,17 +120,26 @@ export function renderPrimeIdentityCard(
   ];
 }
 
+/** The action that takes a reader from a fork back to the thread it came from. */
+export const PRIME_FORK_OPEN_SOURCE_LABEL = "Open source thread";
+
 /**
  * The reverse-navigation label on a forked thread.
  *
  * Ancestry outlives the sessions on both sides, so this reads from the thread
  * record and never from a provider card: a fork stays traceable to its origin
  * with Prime Agent uninstalled.
+ *
+ * The checkpoint is named for what it is — the source thread's latest
+ * checkpoint when the fork was taken, not a checkpoint of the chosen fork
+ * point — so the line never claims a precision the record does not have.
  */
 export function renderPrimeForkOrigin(origin: PrimeThreadForkOrigin | null | undefined): string {
   if (!origin) return "";
   const at = origin.forkPointLabel ? ` at "${origin.forkPointLabel}"` : "";
-  const checkpoint = origin.checkpointId ? ` · source checkpoint ${origin.checkpointId}` : "";
+  const checkpoint = origin.checkpointId
+    ? ` · source thread's latest checkpoint ${origin.checkpointId}`
+    : "";
   return `Forked from another thread${at}${checkpoint}`;
 }
 

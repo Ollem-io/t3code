@@ -27,6 +27,7 @@ import {
 } from "../../components/AndroidScreenHeader";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { uuidv4 } from "../../lib/uuid";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { connectionTone } from "../connection/connectionTone";
 
@@ -609,13 +610,28 @@ function ThreadRouteContent(
         environmentId: selectedThread.environmentId,
         input: {
           threadId: selectedThread.id,
-          forkThreadId: ThreadId.make(`fork-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`),
+          // A real v4 uuid, never a clock reading: two forks in the same
+          // millisecond must not collide onto one thread id.
+          forkThreadId: ThreadId.make(`fork-${uuidv4()}`),
           ...(forkPointId === undefined ? {} : { forkPointId }),
         },
       });
       return result._tag !== "Failure";
     },
     [forkThreadSession, selectedThread],
+  );
+
+  // Reverse navigation for a fork. Ancestry is a thread record, so this works
+  // with the Prime Agent session gone and the provider uninstalled.
+  const handleOpenSourceThread = useCallback(
+    (sourceThreadId: string) => {
+      if (!selectedThread) return;
+      navigation.navigate("Thread", {
+        environmentId: selectedThread.environmentId,
+        threadId: ThreadId.make(sourceThreadId),
+      });
+    },
+    [navigation, selectedThread],
   );
 
   // Creating owned scheduled work. The disclosure has already been shown and
@@ -991,6 +1007,8 @@ function ThreadRouteContent(
           onHeartbeatAction={handleHeartbeatAction}
           onRenameSession={handleRenameSession}
           onForkSession={handleForkSession}
+          forkOrigin={selectedThread.forkedFrom ?? null}
+          onOpenSourceThread={handleOpenSourceThread}
           onRefreshCommands={handleRefreshCommands}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}

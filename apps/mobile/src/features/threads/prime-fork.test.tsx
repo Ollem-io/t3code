@@ -82,6 +82,31 @@ describe("prime session naming and forking surface (mobile)", () => {
     expect(composer).toContain('accessibilityLabel="Cancel fork"');
   });
 
+  // Regression: ancestry was persisted and contract-exposed but rendered
+  // nowhere, so a forked thread had no origin and no way back. It renders on
+  // the composer outside the Prime Agent gate, because a thread record has to
+  // outlive the session and the provider.
+  it("renders thread ancestry and the way back, ungated by Prime Agent", () => {
+    const composer = readFileSync("apps/mobile/src/features/threads/ThreadComposer.tsx", "utf8");
+    expect(composer).toContain("renderPrimeForkOrigin(props.forkOrigin)");
+    expect(composer).toContain("accessibilityLabel={PRIME_FORK_OPEN_SOURCE_LABEL}");
+    expect(composer).toContain("props.onOpenSourceThread?.(forkOriginThreadId)");
+    // Ancestry is read from the thread, never from the session's identity card.
+    expect(composer).toContain("props.forkOrigin?.threadId ?? null");
+
+    const route = readFileSync("apps/mobile/src/features/threads/ThreadRouteScreen.tsx", "utf8");
+    expect(route).toContain("forkOrigin={selectedThread.forkedFrom ?? null}");
+    expect(route).toContain("onOpenSourceThread={handleOpenSourceThread}");
+    expect(route).toContain('navigation.navigate("Thread", {');
+  });
+
+  // Two forks in the same millisecond must not collide onto one thread id.
+  it("mints forked thread ids from a uuid, never from the clock", () => {
+    const route = readFileSync("apps/mobile/src/features/threads/ThreadRouteScreen.tsx", "utf8");
+    expect(route).toContain("forkThreadId: ThreadId.make(`fork-${uuidv4()}`)");
+    expect(route).not.toContain("fork-${globalThis.crypto?.randomUUID?.() ?? Date.now()}");
+  });
+
   it("keeps an older runtime explained rather than hidden", () => {
     expect(primeIdentityView("prime-agent", {}, card, live)).toEqual({
       kind: "unavailable",

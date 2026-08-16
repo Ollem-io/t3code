@@ -76,6 +76,7 @@ import {
   COMPOSER_EXPANDED_CHROME,
   ThreadComposer,
 } from "./ThreadComposer";
+import type { PrimeThreadForkOrigin } from "./primeFork";
 import { ThreadFeed } from "./ThreadFeed";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 
@@ -133,6 +134,9 @@ export interface ThreadDetailScreenProps {
   ) => Promise<boolean>;
   readonly onRenameSession?: (name: string) => Promise<boolean>;
   readonly onForkSession?: (forkPointId: string | undefined) => Promise<boolean>;
+  /** Thread ancestry and the way back to the thread this one was forked from. */
+  readonly forkOrigin?: PrimeThreadForkOrigin | null | undefined;
+  readonly onOpenSourceThread?: (threadId: string) => void;
   readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
@@ -764,6 +768,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onHeartbeatAction={props.onHeartbeatAction}
                 onRenameSession={props.onRenameSession}
                 onForkSession={props.onForkSession}
+                forkOrigin={props.forkOrigin}
+                onOpenSourceThread={props.onOpenSourceThread}
                 onRefreshCommands={props.onRefreshCommands}
                 onSendMessage={handleSendMessage}
                 onReconnectEnvironment={props.onReconnectEnvironment}

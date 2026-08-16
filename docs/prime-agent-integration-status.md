@@ -279,7 +279,9 @@ Delivered: Prime `set_session_name`, `get_fork_messages`, `fork`/`clone`, and th
 labels never message bodies, ids dropped rather than renamed); `thread.rename` and `thread.fork`
 runtime operations gated on `namingAndForking`; T3 thread ancestry (`forkedFrom`: source thread,
 fork-point label, and the source thread's latest checkpoint) recorded on the forked thread and
-readable with no Prime Agent installed; the forked thread created only after the provider confirms
+readable with no Prime Agent installed and rendered on both clients as a fork-origin line with an
+"Open source thread" reverse-navigation control, mounted outside the Prime Agent controls so it
+survives a dead session and an uninstalled provider; the forked thread created only after the provider confirms
 the fork, so a refused or cancelled fork leaves nothing behind; the forked native session handed to
 its new thread by a bounded, expiring, one-shot in-process handoff (`new_session { parentSession }`)
 that degrades to a fresh session rather than to a stale pointer; web Agents-surface panel and mobile
@@ -300,9 +302,10 @@ against and could not be re-verified against an installed `prime-agent` on this 
 evidence is truthfully **not captured** because UI-launch permission was never granted — no browser,
 Electron, or simulator was launched. Exact steps once granted — web: `vp run dev` in a worktree, open
 the printed `pairingUrl:`, start a Prime Agent thread, run one turn, open the Agents panel, and
-screenshot the session-identity block before and after a rename and with the fork disclosure open;
-mobile: `test-t3-mobile` against the same server and screenshot the composer identity block with
-`namingAndForking` on and off.
+screenshot the session-identity block before and after a rename and with the fork disclosure open,
+then open the forked thread and screenshot the fork-origin banner and its "Open source thread"
+control; mobile: `test-t3-mobile` against the same server and screenshot the composer identity block
+with `namingAndForking` on and off, plus the fork-origin row on the forked thread.
 
 ## Pending milestones
 
