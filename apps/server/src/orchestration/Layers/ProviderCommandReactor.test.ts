@@ -147,11 +147,13 @@ describe("ProviderCommandReactor", () => {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
-    readonly runtimeExtensions?: {
-      readonly steer?: boolean | undefined;
-      readonly followUps?: boolean | undefined;
-      readonly followUpCancel?: boolean | undefined;
-    } | undefined;
+    readonly runtimeExtensions?:
+      | {
+          readonly steer?: boolean | undefined;
+          readonly followUps?: boolean | undefined;
+          readonly followUpCancel?: boolean | undefined;
+        }
+      | undefined;
     readonly requiresNewThreadForModelChange?: boolean;
     readonly titleRegenerationCompletionDispatchFailures?: number;
     readonly titleRegenerationBeforeStart?: "one" | "two";
@@ -241,8 +243,8 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
-    const executeRuntimeOperation = vi.fn<ProviderServiceShape["executeRuntimeOperation"]>(() =>
-      Effect.void,
+    const executeRuntimeOperation = vi.fn<ProviderServiceShape["executeRuntimeOperation"]>(
+      () => Effect.void,
     );
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
@@ -320,7 +322,8 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
-      executeRuntimeOperation: executeRuntimeOperation as ProviderServiceShape["executeRuntimeOperation"],
+      executeRuntimeOperation:
+        executeRuntimeOperation as ProviderServiceShape["executeRuntimeOperation"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
@@ -535,29 +538,47 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-runtime-actions-session"),
         threadId: ThreadId.make("thread-1"),
         session: {
-          threadId: ThreadId.make("thread-1"), status: "running", providerName: "codex",
-          runtimeMode: "approval-required", activeTurnId: asTurnId("turn-runtime-actions"),
-          lastError: null, updatedAt: now,
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-runtime-actions"),
+          lastError: null,
+          updatedAt: now,
         },
         createdAt: now,
       }),
     );
 
-    await harness.runEffect(harness.engine.dispatch({
-      type: "thread.steer.add", commandId: CommandId.make("cmd-steer-add"),
-      threadId: ThreadId.make("thread-1"), steerId: "steer-1", text: "steer provider only", createdAt: now,
-    }));
-    await harness.runEffect(harness.engine.dispatch({
-      type: "thread.follow-up.add", commandId: CommandId.make("cmd-follow-up-add"),
-      threadId: ThreadId.make("thread-1"), followUpId: "follow-up-1", text: "follow up provider only", createdAt: now,
-    }));
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.steer.add",
+        commandId: CommandId.make("cmd-steer-add"),
+        threadId: ThreadId.make("thread-1"),
+        steerId: "steer-1",
+        text: "steer provider only",
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.follow-up.add",
+        commandId: CommandId.make("cmd-follow-up-add"),
+        threadId: ThreadId.make("thread-1"),
+        followUpId: "follow-up-1",
+        text: "follow up provider only",
+        createdAt: now,
+      }),
+    );
     // Replayed durable events contain only identifiers; provider text stays in
     // the one-shot process-local handoff and is not persisted for restart.
     const durableEvents = await harness.runEffect(
       harness.engine.readEvents(0, 10_000).pipe(Stream.runCollect, Effect.map(Array.from)),
     );
     const runtimeIntents = durableEvents.filter(
-      (event) => event.type === "thread.steer-add-requested" || event.type === "thread.follow-up-add-requested",
+      (event) =>
+        event.type === "thread.steer-add-requested" ||
+        event.type === "thread.follow-up-add-requested",
     );
     expect(runtimeIntents).toHaveLength(2);
     expect(JSON.stringify(runtimeIntents)).not.toContain("steer provider only");
@@ -566,50 +587,163 @@ describe("ProviderCommandReactor", () => {
 
     expect(harness.executeRuntimeOperation).toHaveBeenCalledTimes(2);
     expect(harness.executeRuntimeOperation.mock.calls.map(([operation]) => operation)).toEqual([
-      expect.objectContaining({ type: "steer.add", threadId: ThreadId.make("thread-1"), steerId: "steer-1", text: "steer provider only" }),
-      expect.objectContaining({ type: "follow-up.add", threadId: ThreadId.make("thread-1"), followUpId: "follow-up-1", text: "follow up provider only" }),
+      expect.objectContaining({
+        type: "steer.add",
+        threadId: ThreadId.make("thread-1"),
+        steerId: "steer-1",
+        text: "steer provider only",
+      }),
+      expect.objectContaining({
+        type: "follow-up.add",
+        threadId: ThreadId.make("thread-1"),
+        followUpId: "follow-up-1",
+        text: "follow up provider only",
+      }),
     ]);
-    const thread = (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.activities.some((activity) => activity.detail?.includes("provider only"))).toBe(false);
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.activities.some((activity) => activity.detail?.includes("provider only"))).toBe(
+      false,
+    );
     expect(thread?.messages.some((message) => message.text.includes("provider only"))).toBe(false);
 
-    harness.executeRuntimeOperation.mockReturnValue(Effect.die(new Error("provider rejected action")) as never);
-    await harness.runEffect(harness.engine.dispatch({
-      type: "thread.steer.add", commandId: CommandId.make("cmd-steer-add-failed"),
-      threadId: ThreadId.make("thread-1"), steerId: "steer-failed", text: "secret rejected runtime text", createdAt: now,
-    }));
+    harness.executeRuntimeOperation.mockReturnValue(
+      Effect.die(new Error("provider rejected action")) as never,
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.steer.add",
+        commandId: CommandId.make("cmd-steer-add-failed"),
+        threadId: ThreadId.make("thread-1"),
+        steerId: "steer-failed",
+        text: "secret rejected runtime text",
+        createdAt: now,
+      }),
+    );
     await harness.drain();
-    const afterFailure = (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    const failure = afterFailure?.activities.find((activity) => activity.kind === "provider.runtime-action.failed");
+    const afterFailure = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    const failure = afterFailure?.activities.find(
+      (activity) => activity.kind === "provider.runtime-action.failed",
+    );
     expect(failure).toBeDefined();
     expect(JSON.stringify(failure)).not.toContain("secret rejected runtime text");
   });
 
   it("rejects runtime actions without an active running session without projecting their text", async () => {
     const harness = await createHarness();
-    await expect(harness.runEffect(harness.engine.dispatch({
-      type: "thread.steer.add", commandId: CommandId.make("cmd-inactive-steer-add"),
-      threadId: ThreadId.make("thread-1"), steerId: "steer-inactive", text: "must never be visible", createdAt: "2026-01-01T00:00:00.000Z",
-    }))).rejects.toThrow("Runtime actions require an active running provider turn");
+    await expect(
+      harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.steer.add",
+          commandId: CommandId.make("cmd-inactive-steer-add"),
+          threadId: ThreadId.make("thread-1"),
+          steerId: "steer-inactive",
+          text: "must never be visible",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      ),
+    ).rejects.toThrow("Runtime actions require an active running provider turn");
     expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
-    const thread = (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
     expect(JSON.stringify(thread)).not.toContain("must never be visible");
   });
 
   it("does not persist empty runtime capability objects", async () => {
     const harness = await createHarness({ runtimeExtensions: {} });
-    await harness.runEffect(harness.engine.dispatch({
-      type: "thread.turn.start",
-      commandId: CommandId.make("cmd-empty-runtime-capabilities"),
-      threadId: ThreadId.make("thread-1"),
-      message: { messageId: asMessageId("message-empty-runtime-capabilities"), role: "user", text: "hello", attachments: [] },
-      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-      runtimeMode: "approval-required",
-      createdAt: "2026-01-01T00:00:00.000Z",
-    }));
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-empty-runtime-capabilities"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("message-empty-runtime-capabilities"),
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
     await waitFor(() => harness.startSession.mock.calls.length === 1);
-    const thread = (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
     expect(thread?.session?.runtimeCapabilities).toBeUndefined();
+  });
+
+  it("keeps runtime capabilities across consecutive turns on one live session", async () => {
+    const harness = await createHarness({ runtimeExtensions: { steer: true, followUps: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-runtime-capabilities-turn-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("message-runtime-capabilities-1"),
+          role: "user",
+          text: "first turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const afterFirstTurn = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(afterFirstTurn?.session?.runtimeCapabilities).toEqual({ steer: true, followUps: true });
+
+    // The provider session stays live between turns; the reactor's
+    // pendingTurnStart session replacement must not drop negotiated
+    // capabilities, because bindSessionToThread never runs again.
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-runtime-capabilities-ready"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          ...afterFirstTurn!.session!,
+          status: "ready",
+          activeTurnId: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-runtime-capabilities-turn-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("message-runtime-capabilities-2"),
+          role: "user",
+          text: "second turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    const afterSecondTurn = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(afterSecondTurn?.session?.runtimeCapabilities).toEqual({ steer: true, followUps: true });
   });
 
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
@@ -3054,7 +3188,12 @@ describe("ProviderCommandReactor", () => {
         type: "thread.turn.start",
         commandId: CommandId.make(commandId),
         threadId: ThreadId.make("thread-1"),
-        message: { messageId: asMessageId(messageId), role: "user", text: commandId, attachments: [] },
+        message: {
+          messageId: asMessageId(messageId),
+          role: "user",
+          text: commandId,
+          attachments: [],
+        },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         createdAt: now,
@@ -3071,10 +3210,12 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn).toHaveBeenCalledTimes(1);
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.activities.some((activity) =>
-      activity.kind === "provider.turn.start.failed" &&
-      String(activity.payload.detail).includes("authoritative turn start in flight"),
-    )).toBe(true);
+    expect(
+      thread?.activities.some(
+        (activity) =>
+          activity.kind === "provider.turn.start.failed" &&
+          String(activity.payload.detail).includes("authoritative turn start in flight"),
+      ),
+    ).toBe(true);
   });
-
 });

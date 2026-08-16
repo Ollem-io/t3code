@@ -226,7 +226,12 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
-import { hasPrimeRuntimeActions, renderPrimeQueue, resolvePrimeSend, type PrimeActionMode } from "../primeQueue";
+import {
+  hasPrimeRuntimeActions,
+  renderPrimeQueue,
+  resolvePrimeSend,
+  type PrimeActionMode,
+} from "../primeQueue";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -674,7 +679,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
   const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
-  const primeRuntimeActive = phase === "running" && hasPrimeRuntimeActions(activeThread?.session?.providerName, activeThread?.session?.runtimeCapabilities);
+  const primeRuntimeActive =
+    phase === "running" &&
+    hasPrimeRuntimeActions(
+      activeThread?.session?.providerName,
+      activeThread?.session?.runtimeCapabilities,
+    );
   const primeQueue = renderPrimeQueue(activeThread?.session?.actionState);
 
   // ------------------------------------------------------------------
@@ -1827,10 +1837,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           activeThread?.session?.providerName,
           primeActionMode,
           activeThread?.session?.runtimeCapabilities,
-          composerImages.length + composerTerminalContexts.length + composerElementContexts.length + composerPreviewAnnotations.length + composerReviewComments.length,
+          composerImages.length +
+            composerTerminalContexts.length +
+            composerElementContexts.length +
+            composerPreviewAnnotations.length +
+            composerReviewComments.length,
         );
         if (!decision.ok) {
-          toastManager.add({ type: "warning", title: "Runtime action not sent", description: decision.reason });
+          toastManager.add({
+            type: "warning",
+            title: "Runtime action not sent",
+            description: decision.reason,
+          });
           return;
         }
         void onRuntimeAction?.(primeActionMode as Exclude<PrimeActionMode, null>, prompt.trim());
@@ -3112,12 +3130,61 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </div>
 
           {primeRuntimeActive ? (
-            <div className="mx-3 mb-2 rounded-md border border-border p-2 text-xs" data-prime-runtime-actions="true">
+            <div
+              className="mx-3 mb-2 rounded-md border border-border p-2 text-xs"
+              data-prime-runtime-actions="true"
+            >
               <div className="mb-1 font-medium">Running runtime action</div>
-              <div className="flex gap-2"><Button type="button" disabled={activeThread?.session?.runtimeCapabilities?.steer !== true} variant={primeActionMode === "steer" ? "default" : "outline"} onClick={() => setPrimeActionMode("steer")}>Steer now</Button><Button type="button" disabled={activeThread?.session?.runtimeCapabilities?.followUps !== true} variant={primeActionMode === "followUp" ? "default" : "outline"} onClick={() => setPrimeActionMode("followUp")}>Queue next</Button></div>
-              {activeThread?.session?.runtimeCapabilities?.steer !== true ? <p className="mt-1 text-muted-foreground">Steering is unavailable in this runtime.</p> : null}{activeThread?.session?.runtimeCapabilities?.followUps !== true ? <p className="mt-1 text-muted-foreground">Queued follow-ups are unavailable in this runtime.</p> : null}
-              {primeQueue.length ? <ol className="mt-2 list-decimal pl-4">{primeQueue.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ol> : null}
-              <p className="mt-1 text-muted-foreground">Interrupt stops the current turn; Stop ends the session. Queued actions cannot be cancelled by this runtime.</p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  disabled={activeThread?.session?.runtimeCapabilities?.steer !== true}
+                  variant={primeActionMode === "steer" ? "default" : "outline"}
+                  onClick={() => setPrimeActionMode("steer")}
+                >
+                  Steer now
+                </Button>
+                <Button
+                  type="button"
+                  disabled={activeThread?.session?.runtimeCapabilities?.followUps !== true}
+                  variant={primeActionMode === "followUp" ? "default" : "outline"}
+                  onClick={() => setPrimeActionMode("followUp")}
+                >
+                  Queue next
+                </Button>
+              </div>
+              {activeThread?.session?.runtimeCapabilities?.steer !== true ? (
+                <p className="mt-1 text-muted-foreground">
+                  Steering is unavailable in this runtime.
+                </p>
+              ) : null}
+              {activeThread?.session?.runtimeCapabilities?.followUps !== true ? (
+                <p className="mt-1 text-muted-foreground">
+                  Queued follow-ups are unavailable in this runtime.
+                </p>
+              ) : null}
+              {primeQueue.length ? (
+                <ol className="mt-2 list-decimal pl-4">
+                  {primeQueue.map((item, index) => (
+                    <li key={`${index}:${item}`}>{item}</li>
+                  ))}
+                </ol>
+              ) : null}
+              <div className="mt-2 flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  data-prime-runtime-send="true"
+                  disabled={isSendBusy || isSendDisabled || prompt.trim().length === 0}
+                  onClick={() => submitComposer()}
+                >
+                  {primeActionMode === "followUp" ? "Queue follow-up" : "Send steering"}
+                </Button>
+              </div>
+              <p className="mt-1 text-muted-foreground">
+                Interrupt stops the current turn; Stop ends the session. Queued actions cannot be
+                cancelled by this runtime.
+              </p>
             </div>
           ) : null}
 
@@ -3222,7 +3289,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   activeContextWindow={activeContextWindow}
                   activeThreadProviderDisplayName={activeThreadProviderDisplayName}
                   pendingAction={pendingPrimaryAction}
-                  isRunning={phase === "running" && !primeRuntimeActive}
+                  isRunning={phase === "running"}
                   showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
                   promptHasText={prompt.trim().length > 0}
                   isSendBusy={isSendBusy}

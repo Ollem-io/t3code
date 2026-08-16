@@ -47,10 +47,14 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
-const hasRuntimeActionCapabilities = (capabilities: {
-  readonly steer?: boolean | undefined;
-  readonly followUps?: boolean | undefined;
-} | undefined): boolean => capabilities?.steer === true || capabilities?.followUps === true;
+const hasRuntimeActionCapabilities = (
+  capabilities:
+    | {
+        readonly steer?: boolean | undefined;
+        readonly followUps?: boolean | undefined;
+      }
+    | undefined,
+): boolean => capabilities?.steer === true || capabilities?.followUps === true;
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -580,6 +584,12 @@ const make = Effect.gen(function* () {
           activeTurnId: null,
           lastError: null,
           updatedAt: createdAt,
+          // thread.session.set replaces the session wholesale; a live reused
+          // session never passes through bindSessionToThread again, so the
+          // negotiated runtime capabilities must be carried forward here.
+          ...(thread.session?.runtimeCapabilities
+            ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+            : {}),
         },
         createdAt,
       });
@@ -1220,27 +1230,74 @@ const make = Effect.gen(function* () {
   });
 
   const processRuntimeActionRequested = Effect.fn("processRuntimeActionRequested")(function* (
-    event: Extract<ProviderIntentEvent, { type: "thread.steer-add-requested" | "thread.follow-up-add-requested" }>,
+    event: Extract<
+      ProviderIntentEvent,
+      { type: "thread.steer-add-requested" | "thread.follow-up-add-requested" }
+    >,
   ) {
     // One-time consumption is deliberately before every provider or failure path.
     // After restart the ephemeral value is absent, so the durable intent fails closed.
     const commandId = event.commandId;
-    const text = commandId ? yield* orchestrationEngine.takeRuntimeActionText(commandId) : undefined;
+    const text = commandId
+      ? yield* orchestrationEngine.takeRuntimeActionText(commandId)
+      : undefined;
     if (text === undefined) {
-      return yield* appendProviderFailureActivity({ threadId: event.payload.threadId, kind: "provider.runtime-action.failed", summary: "Runtime action failed", detail: "Runtime action expired before it could be delivered; please retry.", turnId: null, createdAt: event.payload.createdAt });
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.runtime-action.failed",
+        summary: "Runtime action failed",
+        detail: "Runtime action expired before it could be delivered; please retry.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
     }
     const thread = yield* resolveThread(event.payload.threadId);
     // Do not optimistically project or log native text. Only the provider's next
     // session_action_update snapshot may change the visible queue.
-    if (!thread?.session || thread.session.status !== "running" || thread.session.activeTurnId === null) {
-      return yield* appendProviderFailureActivity({ threadId: event.payload.threadId, kind: "provider.runtime-action.failed", summary: "Runtime action failed", detail: "No active running provider turn is bound to this thread.", turnId: null, createdAt: event.payload.createdAt });
+    if (
+      !thread?.session ||
+      thread.session.status !== "running" ||
+      thread.session.activeTurnId === null
+    ) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.runtime-action.failed",
+        summary: "Runtime action failed",
+        detail: "No active running provider turn is bound to this thread.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
     }
-    const operation = event.type === "thread.steer-add-requested"
-      ? { type: "steer.add" as const, commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`), threadId: event.payload.threadId, steerId: event.payload.steerId, text }
-      : { type: "follow-up.add" as const, commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`), threadId: event.payload.threadId, followUpId: event.payload.followUpId, text };
-    yield* providerService.executeRuntimeOperation(operation).pipe(
-      Effect.catchCause(() => appendProviderFailureActivity({ threadId: event.payload.threadId, kind: "provider.runtime-action.failed", summary: "Runtime action failed", detail: "The provider did not accept this runtime action.", turnId: null, createdAt: event.payload.createdAt })),
-    );
+    const operation =
+      event.type === "thread.steer-add-requested"
+        ? {
+            type: "steer.add" as const,
+            commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`),
+            threadId: event.payload.threadId,
+            steerId: event.payload.steerId,
+            text,
+          }
+        : {
+            type: "follow-up.add" as const,
+            commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`),
+            threadId: event.payload.threadId,
+            followUpId: event.payload.followUpId,
+            text,
+          };
+    yield* providerService
+      .executeRuntimeOperation(operation)
+      .pipe(
+        Effect.catchCause(() =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.runtime-action.failed",
+            summary: "Runtime action failed",
+            detail: "The provider did not accept this runtime action.",
+            turnId: null,
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+      );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
