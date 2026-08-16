@@ -4,8 +4,9 @@ import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
   getAppModelOptionsForInstance,
+  isModelSelectionAvailable,
   resolveAppModelSelectionForInstance,
-  resolveAppModelSelectionState,
+  resolveAppModelSelectionState, resolveBoundModelSelectionState,
 } from "./modelSelection";
 
 function provider(input: {
@@ -55,6 +56,21 @@ function settingsWithProviderInstances(): UnifiedSettings {
 }
 
 describe("instance-scoped model selection", () => {
+  it("treats identical slugs on different instances as distinct available identities", () => {
+    const providers = [
+      provider({ instanceId: "claudeAgent", models: ["same-model"] }),
+      provider({ instanceId: "claude_personal", models: ["same-model"] }),
+    ];
+    const settings = settingsWithProviderInstances();
+    expect(isModelSelectionAvailable(settings, providers, {
+      instanceId: ProviderInstanceId.make("claudeAgent"), model: "same-model",
+    })).toBe(true);
+    expect(isModelSelectionAvailable(settings, providers, {
+      instanceId: ProviderInstanceId.make("missing"), model: "same-model",
+    })).toBe(false);
+  });
+
+
   it("preserves server-provided legacy model metadata", () => {
     const baseProvider = provider({
       instanceId: "claudeAgent",
@@ -319,5 +335,33 @@ describe("instance-scoped model selection", () => {
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
     });
+  });
+});
+
+
+describe("bound thread model selection", () => {
+  it("keeps an unavailable exact instance/model pair instead of falling back", () => {
+    const settings = settingsWithProviderInstances();
+    const selection = { instanceId: ProviderInstanceId.make("claude_openrouter"), model: "same-slug" } as const;
+    const state = resolveBoundModelSelectionState(settings, [
+      provider({ instanceId: "claudeAgent", models: ["same-slug"] }),
+      provider({ instanceId: "claude_openrouter", models: ["other-slug"] }),
+    ], selection);
+    expect(state.selection).toEqual(selection);
+    expect(state.isAvailable).toBe(false);
+    expect(state.sendDisabledReason).toContain("same-slug");
+    expect(state.sendDisabledReason).toContain("re-select an available provider/model");
+  });
+
+  it("rejects a stale native model without selecting another instance", () => {
+    const settings = settingsWithProviderInstances();
+    const stale = provider({ instanceId: "claude_openrouter", models: ["same-slug"] });
+    stale.models[0] = { ...stale.models[0]!, availability: "stale" };
+    const selection = { instanceId: ProviderInstanceId.make("claude_openrouter"), model: "same-slug" } as const;
+    const state = resolveBoundModelSelectionState(settings, [
+      provider({ instanceId: "claudeAgent", models: ["same-slug"] }), stale,
+    ], selection);
+    expect(state.selection).toEqual(selection);
+    expect(state.isAvailable).toBe(false);
   });
 });

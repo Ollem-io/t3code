@@ -11,6 +11,15 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationSessionActionState,
+  OrchestrationSessionCommandCatalog,
+  OrchestrationSessionNoticeBoard,
+  OrchestrationSessionAgentRoster,
+  OrchestrationSessionGoalBoard,
+  OrchestrationSessionIdentityCard,
+  OrchestrationSessionContextState,
+  ProviderRuntimeCapabilities,
+  PrimeResumeState,
   ProjectScript,
   TurnId,
   type OrchestrationCheckpointSummary,
@@ -85,6 +94,9 @@ const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
+    forkedFrom: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThread.fields.forkedFrom)),
+    ),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -93,7 +105,33 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     sequence: Schema.NullOr(NonNegativeInt),
   }),
 );
-const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
+const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
+  Struct.assign({
+    actionState: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionActionState)),
+    ),
+    commandCatalog: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionCommandCatalog)),
+    ),
+    noticeBoard: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionNoticeBoard)),
+    ),
+    agentRoster: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionAgentRoster)),
+    ),
+    goalBoard: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSessionGoalBoard))),
+    identityCard: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionIdentityCard)),
+    ),
+    contextState: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionContextState)),
+    ),
+    runtimeCapabilities: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProviderRuntimeCapabilities)),
+    ),
+    resumeState: Schema.optional(Schema.NullOr(Schema.fromJsonString(PrimeResumeState))),
+  }),
+);
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
@@ -303,6 +341,31 @@ function mapSessionRow(
     activeTurnId: row.activeTurnId,
     lastError: row.lastError,
     updatedAt: row.updatedAt,
+    ...(row.actionState !== null && row.actionState !== undefined
+      ? { actionState: row.actionState }
+      : {}),
+    ...(row.commandCatalog !== null && row.commandCatalog !== undefined
+      ? { commandCatalog: row.commandCatalog }
+      : {}),
+    ...(row.noticeBoard !== null && row.noticeBoard !== undefined
+      ? { noticeBoard: row.noticeBoard }
+      : {}),
+    ...(row.agentRoster !== null && row.agentRoster !== undefined
+      ? { agentRoster: row.agentRoster }
+      : {}),
+    ...(row.goalBoard !== null && row.goalBoard !== undefined ? { goalBoard: row.goalBoard } : {}),
+    ...(row.identityCard !== null && row.identityCard !== undefined
+      ? { identityCard: row.identityCard }
+      : {}),
+    ...(row.contextState !== null && row.contextState !== undefined
+      ? { contextState: row.contextState }
+      : {}),
+    ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined
+      ? { runtimeCapabilities: row.runtimeCapabilities }
+      : {}),
+    ...(row.resumeState !== null && row.resumeState !== undefined
+      ? { resumeState: row.resumeState }
+      : {}),
   };
 }
 
@@ -418,6 +481,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          forked_from_json AS "forkedFrom",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -454,6 +518,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          forked_from_json AS "forkedFrom",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -492,6 +557,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          forked_from_json AS "forkedFrom",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -594,7 +660,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          command_catalog_json AS "commandCatalog",
+          notice_board_json AS "noticeBoard",
+          agent_roster_json AS "agentRoster",
+          goal_board_json AS "goalBoard",
+          identity_card_json AS "identityCard",
+          context_state_json AS "contextState",
+          runtime_capabilities_json AS "runtimeCapabilities",
+          resume_state_json AS "resumeState"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
       `,
@@ -615,7 +690,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
-          sessions.updated_at AS "updatedAt"
+          sessions.updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          command_catalog_json AS "commandCatalog",
+          notice_board_json AS "noticeBoard",
+          agent_roster_json AS "agentRoster",
+          goal_board_json AS "goalBoard",
+          identity_card_json AS "identityCard",
+          context_state_json AS "contextState",
+          runtime_capabilities_json AS "runtimeCapabilities",
+          resume_state_json AS "resumeState"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
           ON threads.thread_id = sessions.thread_id
@@ -640,7 +724,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
-          sessions.updated_at AS "updatedAt"
+          sessions.updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          command_catalog_json AS "commandCatalog",
+          notice_board_json AS "noticeBoard",
+          agent_roster_json AS "agentRoster",
+          goal_board_json AS "goalBoard",
+          identity_card_json AS "identityCard",
+          context_state_json AS "contextState",
+          runtime_capabilities_json AS "runtimeCapabilities",
+          resume_state_json AS "resumeState"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
           ON threads.thread_id = sessions.thread_id
@@ -934,6 +1027,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          forked_from_json AS "forkedFrom",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1037,7 +1131,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          command_catalog_json AS "commandCatalog",
+          notice_board_json AS "noticeBoard",
+          agent_roster_json AS "agentRoster",
+          goal_board_json AS "goalBoard",
+          identity_card_json AS "identityCard",
+          context_state_json AS "contextState",
+          runtime_capabilities_json AS "runtimeCapabilities",
+          resume_state_json AS "resumeState"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
         LIMIT 1
@@ -1536,6 +1639,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   activeTurnId: row.activeTurnId,
                   lastError: row.lastError,
                   updatedAt: row.updatedAt,
+                  ...(row.actionState !== null && row.actionState !== undefined
+                    ? { actionState: row.actionState }
+                    : {}),
+                  ...(row.commandCatalog !== null && row.commandCatalog !== undefined
+                    ? { commandCatalog: row.commandCatalog }
+                    : {}),
+                  ...(row.noticeBoard !== null && row.noticeBoard !== undefined
+                    ? { noticeBoard: row.noticeBoard }
+                    : {}),
+                  ...(row.agentRoster !== null && row.agentRoster !== undefined
+                    ? { agentRoster: row.agentRoster }
+                    : {}),
+                  ...(row.goalBoard !== null && row.goalBoard !== undefined
+                    ? { goalBoard: row.goalBoard }
+                    : {}),
+                  ...(row.identityCard !== null && row.identityCard !== undefined
+                    ? { identityCard: row.identityCard }
+                    : {}),
+                  ...(row.contextState !== null && row.contextState !== undefined
+                    ? { contextState: row.contextState }
+                    : {}),
+                  ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined
+                    ? { runtimeCapabilities: row.runtimeCapabilities }
+                    : {}),
+                  ...(row.resumeState !== null && row.resumeState !== undefined
+                    ? { resumeState: row.resumeState }
+                    : {}),
                 });
               }
 
@@ -1567,6 +1697,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 interactionMode: row.interactionMode,
                 branch: row.branch,
                 worktreePath: row.worktreePath,
+                forkedFrom: row.forkedFrom ?? null,
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -1774,6 +1905,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   interactionMode: row.interactionMode,
                   branch: row.branch,
                   worktreePath: row.worktreePath,
+                  forkedFrom: row.forkedFrom ?? null,
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -1910,6 +2042,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       interactionMode: row.interactionMode,
                       branch: row.branch,
                       worktreePath: row.worktreePath,
+                      forkedFrom: row.forkedFrom ?? null,
                       latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                       createdAt: row.createdAt,
                       updatedAt: row.updatedAt,
@@ -2055,6 +2188,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   interactionMode: row.interactionMode,
                   branch: row.branch,
                   worktreePath: row.worktreePath,
+                  forkedFrom: row.forkedFrom ?? null,
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -2346,6 +2480,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         pinOrderKey: threadRow.value.pinOrderKey ?? null,
         titleRegeneration: mapTitleRegeneration(threadRow.value),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
+        forkedFrom: threadRow.value.forkedFrom ?? null,
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
@@ -2449,6 +2584,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
+        forkedFrom: threadRow.value.forkedFrom ?? null,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,

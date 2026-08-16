@@ -55,7 +55,10 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "../builtInDrivers.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
-import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistryLive.ts";
+import {
+  ProviderInstanceRegistryMutableLayer,
+  type ProviderInstanceRemovalListener,
+} from "./ProviderInstanceRegistryLive.ts";
 
 /**
  * Synthesize a `ProviderInstanceConfigMap` from a `ServerSettings` snapshot.
@@ -149,6 +152,29 @@ const SettingsWatcherLive = Layer.effectDiscard(
  * The mutator tag is technically also exposed; only this module imports
  * it, so the visibility leak is harmless in practice.
  */
+/**
+ * PA-B05 — the production removal notice.
+ *
+ * Removing (or replacing) a provider instance in settings is reversible, so
+ * this records what happened and stops there: no durable resource is planned,
+ * confirmed or deleted here. It is what makes the guarantee observable rather
+ * than merely intended — an operator can see in the log that removal tore the
+ * running entry down and left the data alone.
+ *
+ * Instance id and driver are already settings-authored, non-secret identifiers
+ * the server logs elsewhere; nothing about the durable scope, its paths or its
+ * contents is named.
+ */
+const primeAwareRemovalNotice: ProviderInstanceRemovalListener = (notice) =>
+  Effect.logInfo("provider instance removed; durable data untouched").pipe(
+    Effect.annotateLogs({
+      instanceId: String(notice.instanceId),
+      driver: String(notice.driver),
+      reason: notice.reason,
+      deletesDurableData: false,
+    }),
+  );
+
 export const ProviderInstanceRegistryHydrationLive: Layer.Layer<
   ProviderInstanceRegistry,
   never,
@@ -167,6 +193,7 @@ export const ProviderInstanceRegistryHydrationLive: Layer.Layer<
     const mutableLayer = ProviderInstanceRegistryMutableLayer({
       drivers: BUILT_IN_DRIVERS,
       configMap: initialConfigMap,
+      onInstanceRemoved: primeAwareRemovalNotice,
     });
 
     return SettingsWatcherLive.pipe(Layer.provideMerge(mutableLayer));

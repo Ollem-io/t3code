@@ -27,6 +27,7 @@ import { cn } from "../../lib/utils";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
+import { AlertDialog, AlertDialogClose, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
@@ -394,6 +395,7 @@ export function ProviderInstanceCard({
   onRunUpdate,
   isUpdating = false,
 }: ProviderInstanceCardProps) {
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
   // "disabled"/"warning" based on the local `enabled` flag so the dot
@@ -410,6 +412,10 @@ export function ProviderInstanceCard({
     : null;
   const summary = rawSummary;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
+  const compatibilityLabel = liveProvider?.compatibility && liveProvider.compatibility !== "unknown"
+    ? liveProvider.compatibility === "compatible" ? "Compatible" : liveProvider.compatibility === "advisory" ? "Compatibility advisory" : "Incompatible"
+    : null;
+  const staleModelCount = liveProvider?.models.filter((model) => model.availability === "stale").length ?? 0;
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const FallbackIconComponent = driverOption?.icon;
@@ -563,7 +569,7 @@ export function ProviderInstanceCard({
                   size="icon-xs"
                   variant="ghost"
                   className="size-5 rounded-sm p-0 text-muted-foreground hover:text-destructive"
-                  onClick={onDelete}
+                  onClick={() => setDeleteConfirmationOpen(true)}
                   aria-label={`Delete provider instance ${instanceId}`}
                 >
                   <Trash2Icon className="size-3" />
@@ -705,6 +711,12 @@ export function ProviderInstanceCard({
               {titleTailNode}
             </div>
             {authRowNode}
+ <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+ {versionLabel ? <span>Version {versionLabel}</span> : null}
+ {compatibilityLabel ? <span>{compatibilityLabel}</span> : null}
+ {staleModelCount > 0 ? <span>{staleModelCount} stale model{staleModelCount === 1 ? "" : "s"}</span> : null}
+ {liveProvider?.checkedAt ? <time dateTime={liveProvider.checkedAt}>Last checked {new Date(liveProvider.checkedAt).toLocaleString()}</time> : null}
+ </div>
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button
@@ -801,6 +813,20 @@ export function ProviderInstanceCard({
           </div>
         </CollapsibleContent>
       </Collapsible>
+      <AlertDialog open={deleteConfirmationOpen} onOpenChange={setDeleteConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove provider instance?</AlertDialogTitle>
+            <AlertDialogDescription>
+              T3-owned sessions for this instance will be stopped. Bound threads are retained but may become unavailable. Credentials outside T3 Code are untouched.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline">Cancel</Button>} />
+            <AlertDialogClose render={<Button variant="destructive" onClick={() => onDelete?.()}>Remove instance</Button>} />
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

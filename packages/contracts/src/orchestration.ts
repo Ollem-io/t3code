@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Struct from "effect/Struct";
-import { ProviderOptionSelections } from "./model.ts";
+import { NativeModelIdentity, ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
   ApprovalRequestId,
@@ -22,6 +22,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { PrimeResumeState } from "./primeResume.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -65,7 +66,10 @@ export type ProviderSandboxMode = typeof ProviderSandboxMode.Type;
  */
 const ModelSelectionWire = Schema.Struct({
   instanceId: ProviderInstanceId,
+  // Readable legacy slug. Prime additionally carries nativeIdentity so an
+  // upstream provider/model pair is never reconstructed by splitting it.
   model: TrimmedNonEmptyString,
+  nativeIdentity: Schema.optionalKey(NativeModelIdentity),
   options: Schema.optionalKey(ProviderOptionSelections),
 });
 
@@ -77,6 +81,7 @@ const ModelSelectionSource = Schema.Struct({
   provider: Schema.optional(Schema.Unknown),
   instanceId: Schema.optional(Schema.Unknown),
   model: Schema.Unknown,
+  nativeIdentity: Schema.optional(Schema.Unknown),
   options: Schema.optional(Schema.Unknown),
 });
 
@@ -100,6 +105,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           instanceId: instanceIdSource,
           model: raw.model,
         };
+        if (raw.nativeIdentity !== undefined) base.nativeIdentity = raw.nativeIdentity;
         if (raw.options !== undefined) base.options = raw.options;
         return Effect.succeed(base as typeof ModelSelectionWire.Encoded);
       },
@@ -108,6 +114,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           model: value.model,
           instanceId: value.instanceId,
         };
+        if (value.nativeIdentity !== undefined) base.nativeIdentity = value.nativeIdentity;
         if (value.options !== undefined) base.options = value.options;
         return Effect.succeed(base as typeof ModelSelectionSource.Encoded);
       },
@@ -164,6 +171,20 @@ export const ChatImageAttachment = Schema.Struct({
   sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)),
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
+export const PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES = 1 * 1024 * 1024;
+export const ChatTextAttachment = Schema.Struct({
+  type: Schema.Literal("text"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(100),
+    Schema.isPattern(/^(?:text\/|application\/(?:json|xml|javascript|x-yaml)$)/i),
+  ),
+  sizeBytes: NonNegativeInt.check(
+    Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES),
+  ),
+});
+export type ChatTextAttachment = typeof ChatTextAttachment.Type;
 
 const UploadChatImageAttachment = Schema.Struct({
   type: Schema.Literal("image"),
@@ -175,10 +196,25 @@ const UploadChatImageAttachment = Schema.Struct({
   ),
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
+const UploadChatTextAttachment = Schema.Struct({
+  type: Schema.Literal("text"),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(100),
+    Schema.isPattern(/^(?:text\/|application\/(?:json|xml|javascript|x-yaml)$)/i),
+  ),
+  sizeBytes: NonNegativeInt.check(
+    Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES),
+  ),
+  dataUrl: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(Math.ceil(PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES * 1.5)),
+  ),
+});
+export type UploadChatTextAttachment = typeof UploadChatTextAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment]);
+export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatTextAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
-const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+const UploadChatAttachment = Schema.Union([UploadChatImageAttachment, UploadChatTextAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -271,6 +307,179 @@ const SourceProposedPlanReference = Schema.Struct({
   planId: OrchestrationProposedPlanId,
 });
 
+export const OrchestrationSessionActionState = Schema.Struct({
+  queuedCount: NonNegativeInt.check(Schema.isLessThanOrEqualTo(32)),
+  steering: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(
+    Schema.isMaxLength(32),
+  ),
+  followUps: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(
+    Schema.isMaxLength(32),
+  ),
+  active: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literals(["turn", "session_command"]),
+      phase: Schema.Literals(["preparing", "committing", "running"]),
+      label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))),
+    }),
+  ),
+});
+export type OrchestrationSessionActionState = typeof OrchestrationSessionActionState.Type;
+export const EMPTY_ORCHESTRATION_SESSION_ACTION_STATE: OrchestrationSessionActionState =
+  Object.freeze({ queuedCount: 0, steering: Object.freeze([]), followUps: Object.freeze([]) });
+
+/**
+ * Runtime context management state. Deliberately mirrors the canonical
+ * `session.context.updated` snapshot: replacement is the only reconciliation,
+ * and compaction here is never a T3 checkpoint.
+ */
+export const OrchestrationSessionContextState = Schema.Struct({
+  compaction: Schema.Struct({
+    status: Schema.Literals(["idle", "running", "succeeded", "failed", "cancelled"]),
+    trigger: Schema.Literals(["manual", "automatic"]),
+    reason: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+  }),
+  retry: Schema.optional(
+    Schema.Struct({
+      attempt: NonNegativeInt.check(Schema.isLessThanOrEqualTo(64)),
+      maxAttempts: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(64))),
+      reason: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+    }),
+  ),
+  usage: Schema.optional(
+    Schema.Struct({
+      usedTokens: NonNegativeInt,
+      maxTokens: Schema.optional(PositiveInt),
+      inputTokens: Schema.optional(NonNegativeInt),
+      outputTokens: Schema.optional(NonNegativeInt),
+      compactsAutomatically: Schema.optional(Schema.Boolean),
+    }),
+  ),
+});
+export type OrchestrationSessionContextState = typeof OrchestrationSessionContextState.Type;
+export const EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE: OrchestrationSessionContextState =
+  Object.freeze({ compaction: Object.freeze({ status: "idle", trigger: "automatic" }) });
+
+/**
+ * Runtime-supplied command/prompt/skill catalog. Mirrors the canonical
+ * `session.commands.updated` snapshot: replacement is the only reconciliation,
+ * and `location` is a bounded display label that never carries a host path.
+ */
+export const OrchestrationSessionCommandCatalog = Schema.Struct({
+  commands: Schema.Array(
+    Schema.Struct({
+      name: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+      kind: Schema.Literals(["command", "prompt", "skill"]),
+      description: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+      source: Schema.Literals(["builtin", "user", "project", "extension"]),
+      location: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
+    }),
+  ).check(Schema.isMaxLength(128)),
+});
+export type OrchestrationSessionCommandCatalog = typeof OrchestrationSessionCommandCatalog.Type;
+export const EMPTY_ORCHESTRATION_SESSION_COMMAND_CATALOG: OrchestrationSessionCommandCatalog =
+  Object.freeze({ commands: Object.freeze([]) });
+
+/**
+ * Runtime-supplied transient status board. Mirrors the canonical
+ * `session.notices.updated` snapshot: entries are replaced by key, the board is
+ * bounded, and nothing here is transcript history.
+ */
+export const OrchestrationSessionNoticeBoard = Schema.Struct({
+  notices: Schema.Array(
+    Schema.Struct({
+      key: TrimmedNonEmptyString.check(Schema.isMaxLength(96)),
+      kind: Schema.Literals(["notification", "status", "widget", "title", "editor-text"]),
+      severity: Schema.Literals(["info", "warning", "error"]),
+      text: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+      lines: Schema.optional(
+        Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(160))).check(
+          Schema.isMaxLength(4),
+        ),
+      ),
+    }),
+  ).check(Schema.isMaxLength(8)),
+});
+export type OrchestrationSessionNoticeBoard = typeof OrchestrationSessionNoticeBoard.Type;
+export const EMPTY_ORCHESTRATION_SESSION_NOTICE_BOARD: OrchestrationSessionNoticeBoard =
+  Object.freeze({ notices: Object.freeze([]) });
+
+/**
+ * Runtime-supplied agent roster. Mirrors the canonical `session.agents.updated`
+ * snapshot: bounded, replaced whole, opaque runtime-owned identities, and
+ * deliberately not transcript - a subagent's output never lands in the thread.
+ */
+export const OrchestrationSessionAgentRoster = Schema.Struct({
+  agents: Schema.Array(
+    Schema.Struct({
+      agentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      role: Schema.Literals(["root", "subagent"]),
+      status: Schema.Literals(["running", "paused", "completed", "cancelled", "failed"]),
+      title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+      observed: Schema.Boolean,
+      detail: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+    }),
+  ).check(Schema.isMaxLength(16)),
+});
+export type OrchestrationSessionAgentRoster = typeof OrchestrationSessionAgentRoster.Type;
+export const EMPTY_ORCHESTRATION_SESSION_AGENT_ROSTER: OrchestrationSessionAgentRoster =
+  Object.freeze({ agents: Object.freeze([]) });
+
+/**
+ * Runtime-supplied goal and owned-heartbeat board. Mirrors the canonical
+ * `session.goals.updated` snapshot: bounded, replaced whole, listing only
+ * schedules this environment created, and disclosing resident-daemon promotion
+ * with the exact owner so its reverse control cannot be aimed anywhere else.
+ */
+export const OrchestrationSessionGoalBoard = Schema.Struct({
+  goal: Schema.optional(
+    Schema.Struct({
+      goalId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+      status: Schema.Literals(["active", "completed", "cancelled"]),
+      detail: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+    }),
+  ),
+  heartbeats: Schema.Array(
+    Schema.Struct({
+      heartbeatId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+      intervalSeconds: PositiveInt,
+      status: Schema.Literals(["active", "paused"]),
+      nextRunAt: Schema.optional(IsoDateTime),
+    }),
+  ).check(Schema.isMaxLength(8)),
+  resident: Schema.optional(
+    Schema.Struct({ owner: TrimmedNonEmptyString.check(Schema.isMaxLength(120)) }),
+  ),
+});
+export type OrchestrationSessionGoalBoard = typeof OrchestrationSessionGoalBoard.Type;
+export const EMPTY_ORCHESTRATION_SESSION_GOAL_BOARD: OrchestrationSessionGoalBoard = Object.freeze({
+  heartbeats: Object.freeze([]),
+});
+
+/**
+ * Runtime-supplied session identity card. Mirrors the canonical
+ * `session.identity.updated` snapshot: the name the runtime reports for this
+ * session and a bounded page of the points a fork may start from, carrying
+ * labels rather than message bodies.
+ */
+export const OrchestrationSessionIdentityCard = Schema.Struct({
+  name: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  forkPoints: Schema.Array(
+    Schema.Struct({
+      forkPointId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      label: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+      role: Schema.Literals(["user", "assistant"]),
+      index: NonNegativeInt,
+    }),
+  ).check(Schema.isMaxLength(20)),
+  /** Present only when the runtime reported more fork points than this page holds. */
+  truncated: Schema.optional(Schema.Literal(true)),
+});
+export type OrchestrationSessionIdentityCard = typeof OrchestrationSessionIdentityCard.Type;
+export const EMPTY_ORCHESTRATION_SESSION_IDENTITY_CARD: OrchestrationSessionIdentityCard =
+  Object.freeze({ forkPoints: Object.freeze([]) });
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -291,6 +500,46 @@ export const OrchestrationSession = Schema.Struct({
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
+  /** Native authoritative action snapshot; absent means this runtime has not supplied one. */
+  actionState: Schema.optional(OrchestrationSessionActionState),
+  /** Native authoritative context/compaction/retry snapshot; absent means none supplied. */
+  contextState: Schema.optional(OrchestrationSessionContextState),
+  /** Native authoritative command/prompt/skill catalog; absent means none supplied. */
+  commandCatalog: Schema.optional(OrchestrationSessionCommandCatalog),
+  /** Native transient status board; absent means this runtime supplied none. */
+  noticeBoard: Schema.optional(OrchestrationSessionNoticeBoard),
+  /** Native root/subagent roster; absent means this runtime supplied none. */
+  agentRoster: Schema.optional(OrchestrationSessionAgentRoster),
+  /** Native goal and owned-heartbeat board; absent means this runtime supplied none. */
+  goalBoard: Schema.optional(OrchestrationSessionGoalBoard),
+  /** Native session name and fork-point page; absent means this runtime supplied none. */
+  identityCard: Schema.optional(OrchestrationSessionIdentityCard),
+  /**
+   * PA-B04 — the coarse durable-resume outcome for this thread, or absent when
+   * the runtime never had a durable session to reconnect to. Reason codes only;
+   * a client learns *that* an exact session refused to reopen, never where it
+   * lived or who else holds it.
+   */
+  resumeState: Schema.optional(PrimeResumeState),
+  runtimeCapabilities: Schema.optional(
+    Schema.Struct({
+      steer: Schema.optional(Schema.Boolean),
+      followUps: Schema.optional(Schema.Boolean),
+      followUpCancel: Schema.optional(Schema.Boolean),
+      compaction: Schema.optional(Schema.Boolean),
+      compactionCancel: Schema.optional(Schema.Boolean),
+      usageAndRetry: Schema.optional(Schema.Boolean),
+      commandDiscovery: Schema.optional(Schema.Boolean),
+      /** Typed dialogs and transient status from runtime extension UI. */
+      interactions: Schema.optional(Schema.Boolean),
+      /** Root/subagent roster and observation controls. */
+      tasks: Schema.optional(Schema.Boolean),
+      /** Goal state plus T3-owned heartbeat create/pause/resume/delete. */
+      goals: Schema.optional(Schema.Boolean),
+      /** Session naming plus forking into a new T3 thread. */
+      namingAndForking: Schema.optional(Schema.Boolean),
+    }),
+  ),
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
 
@@ -361,9 +610,31 @@ export const ThreadTitleRegeneration = Schema.Struct({
 });
 export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
 
+/**
+ * Where a forked thread came from.
+ *
+ * Additive and provider-neutral: it records the T3 thread the fork was taken
+ * from, the label of the point it was taken at, and the source thread's latest
+ * checkpoint at that moment, so the ancestry stays readable with no Prime Agent
+ * installed and no session alive. It is not a resume cursor: nothing here can
+ * reattach to the original provider session.
+ */
+export const OrchestrationThreadForkOrigin = Schema.Struct({
+  threadId: ThreadId,
+  forkPointLabel: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  checkpointId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  forkedAt: IsoDateTime,
+});
+export type OrchestrationThreadForkOrigin = typeof OrchestrationThreadForkOrigin.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  /**
+   * Ancestry of a forked thread. Optional so payloads from servers that predate
+   * forking still decode, and null for every thread that was simply created.
+   */
+  forkedFrom: Schema.optional(Schema.NullOr(OrchestrationThreadForkOrigin)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -434,6 +705,8 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  /** Ancestry of a forked thread; null for every thread that was simply created. */
+  forkedFrom: Schema.optional(Schema.NullOr(OrchestrationThreadForkOrigin)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -655,6 +928,8 @@ const ThreadCreateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
+  /** Set only when this thread was created by forking another one. */
+  forkedFrom: Schema.optional(OrchestrationThreadForkOrigin),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -848,6 +1123,164 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadSteerAddCommand = Schema.Struct({
+  type: Schema.Literal("thread.steer.add"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  steerId: TrimmedNonEmptyString,
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)),
+  createdAt: IsoDateTime,
+});
+const ThreadFollowUpAddCommand = Schema.Struct({
+  type: Schema.Literal("thread.follow-up.add"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  followUpId: TrimmedNonEmptyString,
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)),
+  createdAt: IsoDateTime,
+});
+/**
+ * Manual runtime compaction. This is the runtime's own context management and
+ * never a T3 checkpoint, so it carries no revert target.
+ */
+const ThreadCompactionRequestCommand = Schema.Struct({
+  type: Schema.Literal("thread.compaction.request"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  compactionId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+/** On-demand re-read of the runtime's authoritative usage snapshot. */
+const ThreadUsageRefreshCommand = Schema.Struct({
+  type: Schema.Literal("thread.usage.refresh"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+/** Explicit, bounded re-read of the runtime's command catalog; never polled. */
+const ThreadCommandRefreshCommand = Schema.Struct({
+  type: Schema.Literal("thread.commands.refresh"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+/**
+ * Start or stop observing one runtime-reported agent.
+ *
+ * `agentId` is the runtime's own identity, carried opaquely; the host re-checks
+ * that this exact session still reports it before anything reaches the runtime.
+ * Observing always ships with its reverse, so there is no one-way door.
+ */
+const ThreadAgentObserveCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent.observe"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  createdAt: IsoDateTime,
+});
+const ThreadAgentUnobserveCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent.unobserve"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  createdAt: IsoDateTime,
+});
+/**
+ * Create a T3-owned heartbeat on this thread's session.
+ *
+ * The title is a bounded label, never the prompt body: a schedule that keeps a
+ * session resident is described by what it is for, and nothing here is content.
+ * Creating one may promote the session to a resident daemon, which is why the
+ * clients disclose that before dispatching this command.
+ */
+const ThreadHeartbeatCreateCommand = Schema.Struct({
+  type: Schema.Literal("thread.heartbeat.create"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  intervalSeconds: PositiveInt.check(Schema.isBetween({ minimum: 60, maximum: 86_400 })),
+  createdAt: IsoDateTime,
+});
+/**
+ * Pause, resume, or delete one owned heartbeat.
+ *
+ * `heartbeatId` is the runtime's own identity, carried opaquely; the host
+ * re-checks that this exact session still reports it as T3-owned before
+ * anything reaches the runtime, so an unowned schedule is never a target.
+ */
+const heartbeatActionFields = {
+  commandId: CommandId,
+  threadId: ThreadId,
+  heartbeatId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  createdAt: IsoDateTime,
+};
+const ThreadHeartbeatPauseCommand = Schema.Struct({
+  type: Schema.Literal("thread.heartbeat.pause"),
+  ...heartbeatActionFields,
+});
+const ThreadHeartbeatResumeCommand = Schema.Struct({
+  type: Schema.Literal("thread.heartbeat.resume"),
+  ...heartbeatActionFields,
+});
+const ThreadHeartbeatDeleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.heartbeat.delete"),
+  ...heartbeatActionFields,
+});
+/**
+ * Rename the provider session bound to this thread.
+ *
+ * The name is a label the runtime owns; T3 asks, re-reads what the runtime
+ * accepted, and keeps the T3 thread title in step so one rename does not leave
+ * two different names for the same work.
+ */
+const ThreadSessionRenameCommand = Schema.Struct({
+  type: Schema.Literal("thread.session.rename"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  createdAt: IsoDateTime,
+});
+/**
+ * Fork this thread's provider session into a new session and a new T3 thread.
+ *
+ * `forkThreadId` is chosen by the caller exactly as `thread.create` does, so the
+ * fork is idempotent and a retry cannot produce two threads. An absent
+ * `forkPointId` means the whole session is copied; a present one must still be
+ * on the session's published fork-point page when the host re-checks it. The
+ * new thread is created only after the runtime confirms the fork, so a refused
+ * or cancelled fork leaves no half-created thread behind.
+ */
+const ThreadSessionForkCommand = Schema.Struct({
+  type: Schema.Literal("thread.session.fork"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  forkThreadId: ThreadId,
+  forkPointId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  createdAt: IsoDateTime,
+});
+/**
+ * PA-B04 — the user's answer to a Prime Agent resume that refused.
+ *
+ * `retry` re-runs the same durable validation, so a refusal that was only
+ * transient (another writer that has since finished) can clear without losing
+ * anything. `fresh` is the explicit, confirmed choice to stop pointing this
+ * thread at its earlier session; `discardCursor` is what makes that honest,
+ * because a cursor that keeps refusing would otherwise leave the thread unable
+ * to start at all. Neither value deletes durable session data, and forking is
+ * deliberately not modelled here: it is already `thread.session.fork`.
+ */
+const ThreadPrimeResumeRecoverCommand = Schema.Struct({
+  type: Schema.Literal("thread.prime-resume.recover"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  intent: Schema.Literals(["retry", "fresh"]),
+  discardCursor: Schema.optional(Schema.Boolean),
+  createdAt: IsoDateTime,
+});
+
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -914,6 +1347,20 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadSteerAddCommand,
+  ThreadFollowUpAddCommand,
+  ThreadCompactionRequestCommand,
+  ThreadUsageRefreshCommand,
+  ThreadCommandRefreshCommand,
+  ThreadAgentObserveCommand,
+  ThreadAgentUnobserveCommand,
+  ThreadHeartbeatCreateCommand,
+  ThreadHeartbeatPauseCommand,
+  ThreadHeartbeatResumeCommand,
+  ThreadHeartbeatDeleteCommand,
+  ThreadSessionRenameCommand,
+  ThreadSessionForkCommand,
+  ThreadPrimeResumeRecoverCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -942,6 +1389,20 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ThreadSteerAddCommand,
+  ThreadFollowUpAddCommand,
+  ThreadCompactionRequestCommand,
+  ThreadUsageRefreshCommand,
+  ThreadCommandRefreshCommand,
+  ThreadAgentObserveCommand,
+  ThreadAgentUnobserveCommand,
+  ThreadHeartbeatCreateCommand,
+  ThreadHeartbeatPauseCommand,
+  ThreadHeartbeatResumeCommand,
+  ThreadHeartbeatDeleteCommand,
+  ThreadSessionRenameCommand,
+  ThreadSessionForkCommand,
+  ThreadPrimeResumeRecoverCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1062,6 +1523,17 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.message-sent",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
+  "thread.steer-add-requested",
+  "thread.follow-up-add-requested",
+  "thread.compaction-requested",
+  "thread.usage-refresh-requested",
+  "thread.command-refresh-requested",
+  "thread.agent-observation-requested",
+  "thread.heartbeat-create-requested",
+  "thread.heartbeat-action-requested",
+  "thread.session-rename-requested",
+  "thread.session-fork-requested",
+  "thread.prime-resume-recover-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1111,6 +1583,8 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  /** Set only when this thread was created by forking another one. */
+  forkedFrom: Schema.optional(OrchestrationThreadForkOrigin),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -1246,6 +1720,70 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadSteerAddRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  steerId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadFollowUpAddRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  followUpId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadCompactionRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  compactionId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadUsageRefreshRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadCommandRefreshRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadAgentObservationRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  intent: Schema.Literals(["observe", "unobserve"]),
+  createdAt: IsoDateTime,
+});
+export const ThreadHeartbeatCreateRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  intervalSeconds: PositiveInt.check(Schema.isBetween({ minimum: 60, maximum: 86_400 })),
+  createdAt: IsoDateTime,
+});
+export const ThreadHeartbeatActionRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  heartbeatId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  intent: Schema.Literals(["pause", "resume", "delete"]),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadSessionRenameRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  createdAt: IsoDateTime,
+});
+export const ThreadSessionForkRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  forkThreadId: ThreadId,
+  forkPointId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadPrimeResumeRecoverRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  intent: Schema.Literals(["retry", "fresh"]),
+  discardCursor: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -1426,6 +1964,61 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.steer-add-requested"),
+    payload: ThreadSteerAddRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.follow-up-add-requested"),
+    payload: ThreadFollowUpAddRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.compaction-requested"),
+    payload: ThreadCompactionRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.usage-refresh-requested"),
+    payload: ThreadUsageRefreshRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.command-refresh-requested"),
+    payload: ThreadCommandRefreshRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.agent-observation-requested"),
+    payload: ThreadAgentObservationRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.heartbeat-create-requested"),
+    payload: ThreadHeartbeatCreateRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.heartbeat-action-requested"),
+    payload: ThreadHeartbeatActionRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.session-rename-requested"),
+    payload: ThreadSessionRenameRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.session-fork-requested"),
+    payload: ThreadSessionForkRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.prime-resume-recover-requested"),
+    payload: ThreadPrimeResumeRecoverRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

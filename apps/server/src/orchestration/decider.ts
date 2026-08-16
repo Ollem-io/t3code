@@ -371,6 +371,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          ...(command.forkedFrom === undefined ? {} : { forkedFrom: command.forkedFrom }),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -1022,6 +1023,277 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       return [...lifecycleResetEvents, userMessageEvent, turnStartRequestedEvent];
+    }
+
+    case "thread.steer.add":
+    case "thread.follow-up.add": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session?.status !== "running" || thread.session.activeTurnId === null) {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Runtime actions require an active running provider turn.",
+          }),
+        );
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type:
+          command.type === "thread.steer.add"
+            ? "thread.steer-add-requested"
+            : "thread.follow-up-add-requested",
+        payload:
+          command.type === "thread.steer.add"
+            ? { threadId: command.threadId, steerId: command.steerId, createdAt: command.createdAt }
+            : {
+                threadId: command.threadId,
+                followUpId: command.followUpId,
+                createdAt: command.createdAt,
+              },
+      };
+    }
+
+    // Runtime context management. Like the runtime actions above these require a
+    // live running turn, but they carry no native text, so nothing is redacted
+    // and nothing is held ephemerally.
+    case "thread.compaction.request":
+    case "thread.usage.refresh": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session?.status !== "running" || thread.session.activeTurnId === null) {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Context runtime actions require an active running provider turn.",
+          }),
+        );
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        ...(command.type === "thread.compaction.request"
+          ? {
+              type: "thread.compaction-requested" as const,
+              payload: {
+                threadId: command.threadId,
+                compactionId: command.compactionId,
+                createdAt: command.createdAt,
+              },
+            }
+          : {
+              type: "thread.usage-refresh-requested" as const,
+              payload: {
+                threadId: command.threadId,
+                requestId: command.requestId,
+                createdAt: command.createdAt,
+              },
+            }),
+      };
+    }
+
+    // Observation is bound to a live session: an agent inside a dead process
+    // cannot be watched, and pretending otherwise would leave a control that
+    // never resolves.
+    case "thread.agent.observe":
+    case "thread.agent.unobserve": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null || thread.session.status === "stopped") {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Watching a runtime agent requires a live provider session.",
+          }),
+        );
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.agent-observation-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          agentId: command.agentId,
+          intent:
+            command.type === "thread.agent.observe" ? ("observe" as const) : ("unobserve" as const),
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    // Scheduled work is bound to a live session: a heartbeat cannot be created
+    // in, or removed from, a dead process, and pretending otherwise would leave
+    // a control that never resolves.
+    case "thread.heartbeat.create":
+    case "thread.heartbeat.pause":
+    case "thread.heartbeat.resume":
+    case "thread.heartbeat.delete": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null || thread.session.status === "stopped") {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Owning a Prime Agent heartbeat requires a live provider session.",
+          }),
+        );
+      }
+      const base = yield* withEventBase({
+        aggregateKind: "thread",
+        aggregateId: command.threadId,
+        occurredAt: command.createdAt,
+        commandId: command.commandId,
+      });
+      if (command.type === "thread.heartbeat.create") {
+        return {
+          ...base,
+          type: "thread.heartbeat-create-requested" as const,
+          payload: {
+            threadId: command.threadId,
+            title: command.title,
+            intervalSeconds: command.intervalSeconds,
+            createdAt: command.createdAt,
+          },
+        };
+      }
+      return {
+        ...base,
+        type: "thread.heartbeat-action-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          heartbeatId: command.heartbeatId,
+          intent:
+            command.type === "thread.heartbeat.pause"
+              ? ("pause" as const)
+              : command.type === "thread.heartbeat.resume"
+                ? ("resume" as const)
+                : ("delete" as const),
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    // Naming and forking both act on a live provider session: a name is set on
+    // the running session, and a fork is taken from it. Neither is a durable
+    // operation on a stopped session, so neither pretends to be one.
+    case "thread.session.rename": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null || thread.session.status === "stopped") {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Renaming a provider session requires a live provider session.",
+          }),
+        );
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.session-rename-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          name: command.name,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.session.fork": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null || thread.session.status === "stopped") {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Forking a provider session requires a live provider session.",
+          }),
+        );
+      }
+      // The caller names the thread the fork will become, so a retried fork
+      // resolves to the same thread instead of creating a second one. The
+      // thread itself is created only after the runtime confirms the fork.
+      yield* requireThreadAbsent({ readModel, command, threadId: command.forkThreadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.session-fork-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          forkThreadId: command.forkThreadId,
+          ...(command.forkPointId === undefined ? {} : { forkPointId: command.forkPointId }),
+          ...(command.title === undefined ? {} : { title: command.title }),
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.prime-resume.recover": {
+      // Recovery is answerable precisely when a session could not be brought
+      // up, so — unlike fork or rename — it deliberately does not require a
+      // live session. It does require the thread, because the cursor it may
+      // discard is scoped to that thread and nothing else.
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.prime-resume-recover-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          intent: command.intent,
+          // A discard is only ever honoured for an explicit fresh start; a
+          // retry that arrived with the flag set must not delete anything.
+          ...(command.intent === "fresh" && command.discardCursor === true
+            ? { discardCursor: true }
+            : {}),
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.commands.refresh": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null) {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Refreshing the runtime command catalog requires a bound provider session.",
+          }),
+        );
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.command-refresh-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          requestId: command.requestId,
+          createdAt: command.createdAt,
+        },
+      };
     }
 
     case "thread.turn.interrupt": {

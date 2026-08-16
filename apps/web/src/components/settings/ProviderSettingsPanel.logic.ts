@@ -158,3 +158,27 @@ export function classifyProviderEnvironmentAccess(input: {
   }
   return { kind: "editable" };
 }
+
+
+export type ProviderImpact = { readonly activeThreads: number; readonly boundThreads: number };
+export type ProviderConfirmationAction = "disable" | "reconfigure" | "remove";
+export function providerConfirmationCopy(action: ProviderConfirmationAction, impact: ProviderImpact) {
+  const verb = action === "disable" ? "Disable" : action === "reconfigure" ? "Reconfigure" : "Remove";
+  const affected = impact.activeThreads + impact.boundThreads;
+  return {
+    title: `${verb} provider instance?`,
+    description: affected > 0
+      ? `T3-owned sessions stopped. ${affected} thread${affected === 1 ? "" : "s"} retained but unavailable. Credentials untouched.`
+      : "No active T3-owned sessions will be stopped. Threads are retained. Credentials untouched.",
+    confirmLabel: verb,
+    requiresConfirmation: true,
+  } as const;
+}
+
+export function primeSetupCopy(input: { installed: boolean; compatibility: "unknown" | "compatible" | "advisory" | "incompatible"; stale: boolean; enabled: boolean }) {
+  if (!input.enabled) return { headline: "Disabled", detail: "Prime Agent is disabled for new T3 Code sessions." };
+  if (!input.installed) return { headline: "Setup required", detail: "Install Prime Agent on this host, then refresh status." };
+  if (input.compatibility === "incompatible") return { headline: "Incompatible", detail: "This Prime Agent version is incompatible with T3 Code. Update Prime Agent, then refresh status." };
+  if (input.stale) return { headline: "Needs refresh", detail: "Prime Agent model information is stale. Refresh status to check again." };
+  return { headline: "Ready", detail: "Prime Agent is available on this host." };
+}

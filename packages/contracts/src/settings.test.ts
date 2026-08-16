@@ -5,6 +5,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
+  bootstrapPrimeAgentServerSettings,
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
   ServerSettingsPatch,
@@ -158,6 +159,42 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     });
   });
 
+  it("enforces Prime settings at the full ServerSettings boundary", () => {
+    const decoded = decodeServerSettings({
+      providerInstances: {
+        prime_work: {
+          driver: "prime-agent",
+          displayName: "  Prime Work  ",
+          environment: [{ name: "  PRIME_TOKEN  ", value: "secret" }],
+          config: {
+            binaryPath: "  /opt/prime-agent  ",
+            launchArgs: "--dangerous",
+            mode: "rpc",
+            workspace: "/tmp/foreign",
+            model: "foreign",
+            session: "foreign",
+          },
+        },
+        fork_local: {
+          driver: "fork-driver",
+          config: { launchArgs: "--fork-owned", nested: { preserved: true } },
+        },
+      },
+    });
+
+    expect(decoded.providerInstances[ProviderInstanceId.make("prime_work")]).toEqual({
+      driver: "prime-agent",
+      displayName: "Prime Work",
+      environment: [{ name: "PRIME_TOKEN", value: "secret", sensitive: false }],
+      config: { binaryPath: "/opt/prime-agent" },
+    });
+    expect(decoded.providerInstances[ProviderInstanceId.make("fork_local")]?.config).toEqual({
+      launchArgs: "--fork-owned",
+      nested: { preserved: true },
+    });
+    expect(encodeServerSettings(decoded).providerInstances).toEqual(decoded.providerInstances);
+  });
+
   it("rejects instance keys that violate the slug pattern", () => {
     expect(() =>
       decodeServerSettings({
@@ -220,6 +257,20 @@ describe("ServerSettingsPatch.providerInstances", () => {
     expect(replacement.providerInstances?.[ProviderInstanceId.make("codex_personal")]?.driver).toBe(
       "codex",
     );
+  });
+
+  it("normalizes Prime entries in whole-map replacements", () => {
+    const patch = decodeServerSettingsPatch({
+      providerInstances: {
+        prime_work: {
+          driver: "prime-agent",
+          config: { binaryPath: "  custom-prime  ", launchArgs: "--not-owned" },
+        },
+      },
+    });
+    expect(patch.providerInstances?.[ProviderInstanceId.make("prime_work")]?.config).toEqual({
+      binaryPath: "custom-prime",
+    });
   });
 
   it("preserves a fork-defined driver entry through patch decoding", () => {
@@ -295,5 +346,26 @@ describe("ServerSettingsPatch string normalization", () => {
     expect(encoded.addProjectBaseDirectory).toBe("~/Development");
     expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(encoded.providers?.codex?.launchArgs).toBe("--strict-config");
+  });
+});
+
+describe("Prime Agent legacy settings bootstrap", () => {
+  it("adds a stable Prime instance without altering readable legacy settings", () => {
+    const legacy = decodeServerSettings({
+      providers: { codex: { binaryPath: "/opt/codex" } },
+      textGenerationModelSelection: { provider: "codex", model: "gpt-5.6" },
+    });
+    const bootstrapped = bootstrapPrimeAgentServerSettings(legacy);
+    expect(bootstrapped.providers.codex.binaryPath).toBe("/opt/codex");
+    expect(bootstrapped.textGenerationModelSelection).toMatchObject({
+      instanceId: "codex",
+      model: "gpt-5.6",
+    });
+    expect(bootstrapped.providerInstances[ProviderInstanceId.make("prime-agent")]).toMatchObject({
+      driver: "prime-agent",
+      enabled: false,
+      config: { binaryPath: "prime-agent" },
+    });
+    expect(bootstrapPrimeAgentServerSettings(bootstrapped)).toBe(bootstrapped);
   });
 });

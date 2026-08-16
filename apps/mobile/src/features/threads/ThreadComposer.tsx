@@ -23,6 +23,7 @@ import {
   Platform,
   Pressable,
   StyleSheet,
+  TextInput,
   useColorScheme,
   View,
   type ViewStyle,
@@ -55,7 +56,12 @@ import {
 import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  getModelSelectionAvailability,
+  groupByProvider,
+} from "../../lib/modelOptions";
+import { primeHostPresentationForSelection } from "../../lib/primeHostStatus";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
@@ -72,6 +78,64 @@ import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerComm
 import { buildThreadSettingsMenu } from "./thread-settings-menu";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
+import {
+  hasPrimeRuntimeActions,
+  primeCancellationCopy,
+  renderPrimeQueue,
+  resolvePrimeSend,
+  type PrimeActionMode,
+} from "./primeQueue";
+import {
+  PRIME_COMPACTION_NOT_CHECKPOINT,
+  hasPrimeContextControls,
+  hasPrimeRunningTurn,
+  primeCompactionCancelCopy,
+  renderPrimeContext,
+  resolvePrimeCompactionRequest,
+  resolvePrimeUsageRefresh,
+} from "./primeContext";
+import {
+  appendPrimeCommandToDraft,
+  hasPrimeCommandSurface,
+  primeCommandOriginLabel,
+  resolvePrimeCommandInvocation,
+} from "./primeCommands";
+import {
+  PRIME_DIALOG_CANCELLED_NOTE,
+  PRIME_EDITOR_TEXT_IS_A_SUGGESTION,
+  PRIME_NOTICES_ARE_TRANSIENT,
+  hasPrimeExtensionUi,
+  primeNoticeFingerprint,
+  renderPrimeDialogStatus,
+  renderPrimeNotice,
+  visiblePrimeNotices,
+} from "./primeExtensionUi";
+import {
+  PRIME_AGENTS_ARE_NOT_TRANSCRIPT,
+  primeAgentControl,
+  primeAgentsView,
+  renderPrimeAgent,
+} from "./primeAgents";
+import {
+  PRIME_GOAL_READ_ONLY,
+  PRIME_HEARTBEAT_OWNERSHIP_NOTE,
+  primeGoalBoardView,
+  primeHeartbeatControls,
+  primeHeartbeatDraftDecision,
+  renderPrimeGoal,
+  renderPrimeHeartbeat,
+} from "./primeHeartbeat";
+import {
+  PRIME_FORK_OPEN_SOURCE_LABEL,
+  PRIME_FORK_TRUNCATED_NOTE,
+  PRIME_FORK_WHOLE_SESSION_LABEL,
+  primeForkDraftDecision,
+  primeIdentityView,
+  primeRenameDraftDecision,
+  renderPrimeForkOrigin,
+  renderPrimeForkPoint,
+  type PrimeThreadForkOrigin,
+} from "./primeFork";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -103,6 +167,8 @@ export interface ThreadComposerProps {
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
+  /** Typed Prime dialogs still waiting on this viewer; 0 hides the dialog copy. */
+  readonly pendingDialogCount?: number;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -111,7 +177,38 @@ export interface ThreadComposerProps {
   readonly onPickDraftImages: () => Promise<void>;
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
+  readonly onInterruptThread: () => void;
   readonly onStopThread: () => void;
+  readonly onRuntimeAction?: (mode: "steer" | "followUp", text: string) => Promise<boolean>;
+  /** Runtime context management. Compaction is never a checkpoint or a revert. */
+  readonly onRequestCompaction?: () => Promise<boolean>;
+  readonly onRefreshUsage?: () => Promise<boolean>;
+  readonly onToggleAgentObservation?: (
+    agentId: string,
+    action: "task.observe" | "task.unobserve",
+  ) => Promise<boolean>;
+  /** Owned scheduled work. Creating one may keep the session resident. */
+  readonly onCreateHeartbeat?: (draft: {
+    readonly title: string;
+    readonly intervalSeconds: number;
+  }) => Promise<boolean>;
+  readonly onHeartbeatAction?: (
+    heartbeatId: string,
+    action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
+  ) => Promise<boolean>;
+  /** Rename this thread's provider session. Reversible by renaming again. */
+  readonly onRenameSession?: (name: string) => Promise<boolean>;
+  /** Fork this thread's provider session into a new thread the host creates. */
+  readonly onForkSession?: (forkPointId: string | undefined) => Promise<boolean>;
+  /**
+   * Ancestry of this thread, straight off the thread record. Rendered outside
+   * the Prime Agent block so a fork keeps its origin and its way back with no
+   * live session and no Prime Agent installed.
+   */
+  readonly forkOrigin?: PrimeThreadForkOrigin | null | undefined;
+  readonly onOpenSourceThread?: (threadId: string) => void;
+  /** Explicit, bounded re-read of the runtime command catalog. Never polled. */
+  readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -277,6 +374,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
+  // Heartbeat draft state. The confirmation is a deliberate second step: the
+  // resident-daemon consequence is read before it happens, not after.
+  const [heartbeatTitle, setHeartbeatTitle] = useState("");
+  const [heartbeatIntervalSeconds, setHeartbeatIntervalSeconds] = useState(1_200);
+  const [heartbeatConfirming, setHeartbeatConfirming] = useState(false);
+  // Naming and fork draft state. Renaming is reversible, so it commits
+  // directly; forking makes a session and a thread, so it passes through a
+  // disclosure first.
+  const [sessionName, setSessionName] = useState("");
+  const [forkPointId, setForkPointId] = useState<string | undefined>(undefined);
+  const [forkConfirming, setForkConfirming] = useState(false);
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
     isEditorFocused: isFocused,
@@ -286,11 +394,107 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const { onExpandedChange } = props;
 
   const [previewImageUri, setPreviewImageUri] = useState<string | null>(null);
+  const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
+  const primeRuntimeActive =
+    props.selectedThread.session?.status === "running" &&
+    hasPrimeRuntimeActions(
+      props.selectedThread.session.providerName,
+      props.selectedThread.session.runtimeCapabilities,
+    );
+  const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
+  const primeContextLines = renderPrimeContext(props.selectedThread.session?.contextState);
+  // Dismissal is per viewer and per exact message: the host owns replacement.
+  const [dismissedPrimeNotices, setDismissedPrimeNotices] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const primeNotices = visiblePrimeNotices(
+    props.selectedThread.session?.noticeBoard,
+    props.selectedThread.session,
+    dismissedPrimeNotices,
+  );
+  const primeDialogStatus = renderPrimeDialogStatus(props.pendingDialogCount ?? 0);
+  // Root and subagent rows. Watching an agent always shows its exact reverse,
+  // and a subagent's output stays here instead of flooding the thread.
+  const primeAgentsSurface = primeAgentsView(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+    props.selectedThread.session?.agentRoster,
+    props.selectedThread.session,
+  );
+  // Goal state and the heartbeats this environment owns. Creation discloses the
+  // resident-daemon consequence before anything is dispatched.
+  const primeGoalsSurface = primeGoalBoardView(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+    props.selectedThread.session?.goalBoard,
+    props.selectedThread.session,
+  );
+  const primeHeartbeatDraft = primeHeartbeatDraftDecision(
+    props.selectedThread.session?.goalBoard,
+    props.selectedThread.session,
+    props.selectedThread.session?.runtimeCapabilities,
+    { title: heartbeatTitle, intervalSeconds: heartbeatIntervalSeconds },
+  );
+  // Ancestry is read from the thread, not the session, so it outlives both.
+  const forkOriginThreadId = props.forkOrigin?.threadId ?? null;
+  // The session's own name and the points it can be forked from.
+  const primeIdentitySurface = primeIdentityView(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+    props.selectedThread.session?.identityCard,
+    props.selectedThread.session,
+  );
+  const primeRenameDraft = primeRenameDraftDecision(
+    props.selectedThread.session?.identityCard,
+    props.selectedThread.session,
+    props.selectedThread.session?.runtimeCapabilities,
+    sessionName,
+  );
+  const primeForkDraft = primeForkDraftDecision(
+    props.selectedThread.session?.identityCard,
+    props.selectedThread.session,
+    props.selectedThread.session?.runtimeCapabilities,
+    forkPointId,
+  );
+  const primeCommands = props.selectedThread.session?.commandCatalog?.commands;
+  const primeCommandCatalogRef = useRef(primeCommands);
+  primeCommandCatalogRef.current = primeCommands;
+  const primeCommandsAvailable = hasPrimeCommandSurface(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+  );
+  const [primeCommandsOpen, setPrimeCommandsOpen] = useState(false);
+  const [primeCommandError, setPrimeCommandError] = useState<string | null>(null);
+  const primeHasRunningTurn = hasPrimeRunningTurn(props.selectedThread.session);
+  const primeCompactionDecision = resolvePrimeCompactionRequest(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+    props.selectedThread.session?.contextState,
+    primeHasRunningTurn,
+  );
+  const primeUsageDecision = resolvePrimeUsageRefresh(
+    props.selectedThread.session?.runtimeCapabilities,
+    primeHasRunningTurn,
+  );
+  // Keep the runtime-action decision visible before send is pressed: a disabled
+  // mode must explain how to proceed rather than silently dropping the draft.
+  const primeSendDecision = primeRuntimeActive
+    ? resolvePrimeSend(
+        props.selectedThread.session?.providerName,
+        primeActionMode,
+        props.selectedThread.session?.runtimeCapabilities,
+        props.draftAttachments.length,
+      )
+    : { ok: true };
   const hasContent = props.draftMessage.trim().length > 0 || props.draftAttachments.length > 0;
   // Opening and closing count as active so the composer stays expanded while
   // focus moves between its native editor and the settings modal.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
-  const canSend = hasContent;
+  const modelAvailability = getModelSelectionAvailability(
+    props.serverConfig,
+    props.selectedThread.modelSelection,
+  );
+  const canSend = hasContent && modelAvailability.available;
 
   // Notify the parent from the derived value, not focus events: the parent
   // sizes the feed inset from this, and blur-during-sheet would otherwise
@@ -343,14 +547,27 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   });
   const toolbarFadeOpaque = isDarkMode ? "rgba(0,0,0,0.95)" : "rgba(255,255,255,0.95)";
   const toolbarFadeTransparent = isDarkMode ? "rgba(0,0,0,0)" : "rgba(255,255,255,0)";
-  const selectedProviderStatus = useMemo(() => {
-    if (!props.serverConfig) return null;
-    return (
-      props.serverConfig.providers.find(
-        (p) => p.instanceId === props.selectedThread.modelSelection.instanceId,
-      ) ?? null
-    );
-  }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  const selectedProviderStatus = useMemo(
+    () =>
+      props.serverConfig?.providers.find(
+        (provider) => provider.instanceId === props.selectedThread.modelSelection.instanceId,
+      ) ?? null,
+    [props.serverConfig, props.selectedThread.modelSelection.instanceId],
+  );
+  const primeHostPresentation = useMemo(
+    () =>
+      primeHostPresentationForSelection(
+        props.serverConfig,
+        props.selectedThread.modelSelection.instanceId,
+        props.selectedThread.session?.status === "error" ? props.connectionError : null,
+      ),
+    [
+      props.connectionError,
+      props.serverConfig,
+      props.selectedThread.modelSelection.instanceId,
+      props.selectedThread.session?.status,
+    ],
+  );
 
   // ── Trigger detection ────────────────────────────────────
   const [composerSelection, setComposerSelection] = useState(() => ({
@@ -538,6 +755,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
     try {
+      if (primeRuntimeActive) {
+        const decision = resolvePrimeSend(
+          props.selectedThread.session?.providerName,
+          primeActionMode,
+          props.selectedThread.session?.runtimeCapabilities,
+          props.draftAttachments.length,
+        );
+        if (!decision.ok || !primeActionMode) return;
+        const success = await props.onRuntimeAction?.(primeActionMode, props.draftMessage.trim());
+        if (success) props.onChangeDraftMessage("");
+        return;
+      }
       await onSendMessage();
       // Sending a prompt starts agent work: arm the lock-screen card while the
       // app is foregrounded and the activity token can be registered. Armed
@@ -552,6 +781,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
   }, [
     onSendMessage,
+    primeActionMode,
+    primeRuntimeActive,
+    props.draftAttachments.length,
+    props.draftMessage,
+    props.onChangeDraftMessage,
+    props.onRuntimeAction,
+    props.selectedThread.session,
     props.environmentId,
     props.environmentLabel,
     props.selectedThread.id,
@@ -697,6 +933,28 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : 6),
       }}
     >
+      {!modelAvailability.available || primeHostPresentation ? (
+        <Pressable
+          accessibilityRole="button"
+          className="mx-1 mb-2 rounded-xl border border-border bg-card px-3 py-2 active:opacity-70"
+          onPress={
+            modelAvailability.available
+              ? props.onReconnectEnvironment
+              : settingsSheetPresentation.open
+          }
+        >
+          <Text className="text-sm font-t3-bold text-foreground">
+            {primeHostPresentation?.title ?? "Selected model is unavailable"}
+          </Text>
+          <Text className="text-xs text-foreground-muted">
+            {primeHostPresentation?.detail ??
+              "Open thread settings and reselect an available model before sending."}
+          </Text>
+          <Text className="pt-1 text-xs font-t3-bold text-primary">
+            {primeHostPresentation?.action ?? "Reselect model"}
+          </Text>
+        </Pressable>
+      ) : null}
       {/* The backdrop gradient lives on a plain View: Reanimated's Animated.View
           silently drops experimental_backgroundImage on Android, which left this
           strip fully transparent and the feed text legible through the composer. */}
@@ -830,7 +1088,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           {!isExpanded ? (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
               {showStopAction ? (
-                <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
+                <ControlPill icon="stop.fill" variant="danger" onPress={props.onInterruptThread} />
               ) : (
                 <ControlPill
                   icon="arrow.up"
@@ -883,13 +1141,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   />
                 )}
                 {showStopAction ? (
-                  <ComposerToolbarButton
-                    accessibilityLabel="Stop"
-                    icon="stop.fill"
-                    variant="danger"
-                    onPress={props.onStopThread}
-                    showChevron={false}
-                  />
+                  <>
+                    <ComposerToolbarButton
+                      accessibilityLabel="Interrupt turn"
+                      icon="pause.fill"
+                      variant="danger"
+                      onPress={props.onInterruptThread}
+                      showChevron={false}
+                    />
+                    <ComposerToolbarButton
+                      accessibilityLabel="Stop Prime session"
+                      icon="stop.fill"
+                      variant="danger"
+                      onPress={props.onStopThread}
+                      showChevron={false}
+                    />
+                  </>
                 ) : null}
               </ComposerToolbarScroller>
               <ComposerToolbarButton
@@ -904,6 +1171,588 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Animated.View>
         ) : null}
 
+        {primeRuntimeActive ? (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            <Text className="text-xs font-t3-bold">Running runtime action</Text>
+            <View className="mt-2 flex-row gap-2">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  disabled: props.selectedThread.session?.runtimeCapabilities?.steer !== true,
+                  selected: primeActionMode === "steer",
+                }}
+                disabled={props.selectedThread.session?.runtimeCapabilities?.steer !== true}
+                onPress={() => setPrimeActionMode("steer")}
+                className={`rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700 ${
+                  props.selectedThread.session?.runtimeCapabilities?.steer !== true
+                    ? "opacity-40"
+                    : ""
+                }`}
+              >
+                <Text>Steer now</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  disabled: props.selectedThread.session?.runtimeCapabilities?.followUps !== true,
+                  selected: primeActionMode === "followUp",
+                }}
+                disabled={props.selectedThread.session?.runtimeCapabilities?.followUps !== true}
+                onPress={() => setPrimeActionMode("followUp")}
+                className={`rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700 ${
+                  props.selectedThread.session?.runtimeCapabilities?.followUps !== true
+                    ? "opacity-40"
+                    : ""
+                }`}
+              >
+                <Text>Queue next</Text>
+              </Pressable>
+            </View>
+            {props.selectedThread.session?.runtimeCapabilities?.steer !== true ? (
+              <Text className="mt-1 text-xs text-foreground-muted">
+                Steering is unavailable in this runtime.
+              </Text>
+            ) : null}
+            {props.selectedThread.session?.runtimeCapabilities?.followUps !== true ? (
+              <Text className="mt-1 text-xs text-foreground-muted">
+                Queued follow-ups are unavailable in this runtime.
+              </Text>
+            ) : null}
+            {primeQueue.map((item, index) => (
+              <Text key={`${index}:${item}`} className="mt-1 text-xs text-foreground-muted">
+                {item}
+              </Text>
+            ))}
+            {!primeSendDecision.ok ? (
+              <Text className="mt-1 text-xs text-red-500">{primeSendDecision.reason}</Text>
+            ) : null}
+            <Text className="mt-1 text-xs text-foreground-muted">
+              {primeCancellationCopy(props.selectedThread.session?.runtimeCapabilities)}
+            </Text>
+            {/* Runtime-supplied commands, prompts, and skills. Picking one only
+                fills the composer: the user still decides to send. */}
+            {primeCommandsAvailable ? (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Prime commands"
+                  onPress={() => {
+                    setPrimeCommandError(null);
+                    setPrimeCommandsOpen((open) => {
+                      // Opening is the one moment the list is about to be read,
+                      // so it is also the one moment worth re-reading the host.
+                      if (!open) void props.onRefreshCommands?.();
+                      return !open;
+                    });
+                  }}
+                  className="mt-2 self-start rounded-md border border-border px-2 py-1"
+                >
+                  <Text className="text-xs text-foreground">
+                    {`Prime commands (${primeCommands?.length ?? 0})`}
+                  </Text>
+                </Pressable>
+                {primeCommandsOpen
+                  ? (primeCommands ?? []).map((command) => (
+                      <Pressable
+                        key={command.name}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Insert /${command.name}`}
+                        onPress={() => {
+                          // Resolved against the newest catalog rather than the
+                          // rendered row, so an entry the host deleted since
+                          // this list was built says so instead of inserting
+                          // prose the runtime will ignore.
+                          const decision = resolvePrimeCommandInvocation(
+                            primeCommandCatalogRef.current,
+                            command.name,
+                          );
+                          if (!decision.ok) {
+                            setPrimeCommandError(decision.reason);
+                            return;
+                          }
+                          setPrimeCommandError(null);
+                          setPrimeCommandsOpen(false);
+                          props.onChangeDraftMessage(
+                            appendPrimeCommandToDraft(props.draftMessage, decision.prompt),
+                          );
+                        }}
+                        className="mt-1"
+                      >
+                        <Text className="text-xs text-foreground">{`/${command.name}`}</Text>
+                        <Text className="text-xs text-foreground-muted">
+                          {command.description === undefined
+                            ? primeCommandOriginLabel(command)
+                            : `${primeCommandOriginLabel(command)} — ${command.description}`}
+                        </Text>
+                      </Pressable>
+                    ))
+                  : null}
+                {primeCommandError === null ? null : (
+                  <Text className="mt-1 text-xs text-red-500">{primeCommandError}</Text>
+                )}
+              </>
+            ) : null}
+            {/* Compaction is the runtime's context management, never a checkpoint. */}
+            {hasPrimeContextControls(
+              props.selectedThread.session?.providerName,
+              props.selectedThread.session?.runtimeCapabilities,
+            ) ? (
+              <>
+                {primeContextLines.map((line) => (
+                  <Text key={line} className="mt-1 text-xs text-foreground-muted">
+                    {line}
+                  </Text>
+                ))}
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {PRIME_COMPACTION_NOT_CHECKPOINT}
+                </Text>
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {primeCompactionCancelCopy(props.selectedThread.session?.runtimeCapabilities)}
+                </Text>
+                <View className="mt-2 flex-row gap-2">
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Compact context"
+                    accessibilityState={{ disabled: !primeCompactionDecision.ok }}
+                    disabled={!primeCompactionDecision.ok}
+                    onPress={() => {
+                      void props.onRequestCompaction?.();
+                    }}
+                    className={`rounded-md border border-border px-2 py-1 ${primeCompactionDecision.ok ? "" : "opacity-50"}`}
+                  >
+                    <Text className="text-xs text-foreground">Compact context</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Refresh usage"
+                    accessibilityState={{ disabled: !primeUsageDecision.ok }}
+                    disabled={!primeUsageDecision.ok}
+                    onPress={() => {
+                      void props.onRefreshUsage?.();
+                    }}
+                    className={`rounded-md border border-border px-2 py-1 ${primeUsageDecision.ok ? "" : "opacity-50"}`}
+                  >
+                    <Text className="text-xs text-foreground">Refresh usage</Text>
+                  </Pressable>
+                </View>
+                {!primeCompactionDecision.ok ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeCompactionDecision.reason}
+                  </Text>
+                ) : null}
+                {!primeUsageDecision.ok ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeUsageDecision.reason}
+                  </Text>
+                ) : null}
+              </>
+            ) : null}
+            {/* Transient extension status: bounded, dismissible, never transcript. */}
+            {hasPrimeExtensionUi(
+              props.selectedThread.session?.providerName,
+              props.selectedThread.session?.runtimeCapabilities,
+            ) ? (
+              <>
+                {primeNotices.map((notice) => {
+                  const fingerprint = primeNoticeFingerprint(notice);
+                  return (
+                    <View key={fingerprint} className="mt-1 flex-row items-center gap-2">
+                      <Text className="text-xs text-foreground-muted">
+                        {renderPrimeNotice(notice)}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Dismiss status"
+                        onPress={() => {
+                          setDismissedPrimeNotices((current) => new Set(current).add(fingerprint));
+                        }}
+                        className="rounded-md border border-border px-2 py-1"
+                      >
+                        <Text className="text-xs text-foreground">Dismiss</Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+                {primeNotices.length > 0 ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {PRIME_NOTICES_ARE_TRANSIENT}
+                  </Text>
+                ) : null}
+                {primeNotices.some((notice) => notice.kind === "editor-text") ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {PRIME_EDITOR_TEXT_IS_A_SUGGESTION}
+                  </Text>
+                ) : null}
+                {/* The pending dialog itself is the questionnaire card above;
+                    these lines name how many are waiting and what cancellation
+                    means there. With nothing pending they would be clutter, so
+                    they render only alongside a live dialog — same rule as web. */}
+                {primeDialogStatus ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeDialogStatus} {PRIME_DIALOG_CANCELLED_NOTE}
+                  </Text>
+                ) : null}
+              </>
+            ) : null}
+          </View>
+        ) : null}
+        {/* Agents surface: an older runtime explains itself here instead of
+            rendering nothing, so it reads as outdated rather than broken. This
+            sits outside the runtime-action panel because observation does not
+            depend on steer or follow-up support. */}
+        {primeAgentsSurface.kind === "hidden" ? null : (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            {primeAgentsSurface.kind === "unavailable" ? (
+              <Text className="mt-1 text-xs text-foreground-muted">
+                {primeAgentsSurface.reason}
+              </Text>
+            ) : null}
+            {primeAgentsSurface.kind === "agents" ? (
+              <>
+                {primeAgentsSurface.agents.map((agent) => {
+                  const control = primeAgentControl(
+                    agent,
+                    props.selectedThread.session,
+                    props.selectedThread.session?.runtimeCapabilities,
+                  );
+                  return (
+                    <View key={agent.agentId} className="mt-1 flex-row items-center gap-2">
+                      <Text className="text-xs text-foreground-muted">
+                        {renderPrimeAgent(agent)}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={control.label}
+                        accessibilityState={{ disabled: !control.enabled }}
+                        disabled={!control.enabled}
+                        onPress={() => {
+                          void props.onToggleAgentObservation?.(agent.agentId, control.action);
+                        }}
+                        className={
+                          control.enabled
+                            ? "rounded-md border border-border px-2 py-1"
+                            : "rounded-md border border-border px-2 py-1 opacity-50"
+                        }
+                      >
+                        <Text className="text-xs text-foreground">{control.label}</Text>
+                      </Pressable>
+                      {control.reason ? (
+                        <Text className="text-xs text-foreground-muted">{control.reason}</Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {PRIME_AGENTS_ARE_NOT_TRANSCRIPT}
+                </Text>
+              </>
+            ) : null}
+          </View>
+        )}
+        {/* Goals and owned heartbeats: an older runtime explains itself here
+            instead of rendering nothing, and every schedule shown is one this
+            environment created. Creation always passes through the disclosure
+            below, so residency is never a surprise. */}
+        {primeGoalsSurface.kind === "hidden" ? null : (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            {primeGoalsSurface.kind === "unavailable" ? (
+              <Text className="mt-1 text-xs text-foreground-muted">{primeGoalsSurface.reason}</Text>
+            ) : null}
+            {primeGoalsSurface.kind === "board" ? (
+              <>
+                {primeGoalsSurface.goal ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {`${renderPrimeGoal(primeGoalsSurface.goal)} · ${PRIME_GOAL_READ_ONLY}`}
+                  </Text>
+                ) : null}
+                {primeGoalsSurface.resident ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {`Resident Prime Agent session owned by ${primeGoalsSurface.resident.owner}. Stopping the session ends only this T3-owned session.`}
+                  </Text>
+                ) : null}
+                {primeGoalsSurface.heartbeats.map((heartbeat) => (
+                  <View key={heartbeat.heartbeatId} className="mt-1 flex-row items-center gap-2">
+                    <Text className="text-xs text-foreground-muted">
+                      {renderPrimeHeartbeat(heartbeat)}
+                    </Text>
+                    {primeHeartbeatControls(
+                      heartbeat,
+                      props.selectedThread.session,
+                      props.selectedThread.session?.runtimeCapabilities,
+                    ).map((control) => (
+                      <Pressable
+                        key={control.action}
+                        accessibilityRole="button"
+                        accessibilityLabel={control.label}
+                        accessibilityState={{ disabled: !control.enabled }}
+                        disabled={!control.enabled}
+                        onPress={() => {
+                          void props.onHeartbeatAction?.(heartbeat.heartbeatId, control.action);
+                        }}
+                        className={
+                          control.enabled
+                            ? "rounded-md border border-border px-2 py-1"
+                            : "rounded-md border border-border px-2 py-1 opacity-50"
+                        }
+                      >
+                        <Text className="text-xs text-foreground">{control.label}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ))}
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {PRIME_HEARTBEAT_OWNERSHIP_NOTE}
+                </Text>
+                <View className="mt-1 flex-row items-center gap-2">
+                  <TextInput
+                    accessibilityLabel="Heartbeat name"
+                    value={heartbeatTitle}
+                    onChangeText={(next) => {
+                      setHeartbeatTitle(next);
+                      setHeartbeatConfirming(false);
+                    }}
+                    className="flex-1 rounded-md border border-border px-2 py-1 text-xs text-foreground"
+                  />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Heartbeat interval"
+                    onPress={() => {
+                      // A short cycle of sane intervals beats a free-form field
+                      // on a phone, and every value stays inside the bounds the
+                      // host enforces anyway.
+                      setHeartbeatIntervalSeconds((current) =>
+                        current === 900 ? 1_200 : current === 1_200 ? 3_600 : 900,
+                      );
+                      setHeartbeatConfirming(false);
+                    }}
+                    className="rounded-md border border-border px-2 py-1"
+                  >
+                    <Text className="text-xs text-foreground">
+                      {`Every ${Math.round(heartbeatIntervalSeconds / 60)} min`}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Create heartbeat"
+                    accessibilityState={{ disabled: !primeHeartbeatDraft.canCreate }}
+                    disabled={!primeHeartbeatDraft.canCreate}
+                    onPress={() => {
+                      setHeartbeatConfirming(true);
+                    }}
+                    className={
+                      primeHeartbeatDraft.canCreate
+                        ? "rounded-md border border-border px-2 py-1"
+                        : "rounded-md border border-border px-2 py-1 opacity-50"
+                    }
+                  >
+                    <Text className="text-xs text-foreground">Create heartbeat</Text>
+                  </Pressable>
+                </View>
+                {primeHeartbeatDraft.canCreate ? null : (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeHeartbeatDraft.reason}
+                  </Text>
+                )}
+                {primeHeartbeatDraft.canCreate && heartbeatConfirming ? (
+                  <View className="mt-1 flex-row items-center gap-2">
+                    <Text className="flex-1 text-xs text-foreground-muted">
+                      {primeHeartbeatDraft.disclosure}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Create and keep resident"
+                      onPress={() => {
+                        setHeartbeatConfirming(false);
+                        void props.onCreateHeartbeat?.({
+                          title: heartbeatTitle.trim(),
+                          intervalSeconds: heartbeatIntervalSeconds,
+                        });
+                        setHeartbeatTitle("");
+                      }}
+                      className="rounded-md border border-border px-2 py-1"
+                    >
+                      <Text className="text-xs text-foreground">Create and keep resident</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel heartbeat creation"
+                      onPress={() => {
+                        setHeartbeatConfirming(false);
+                      }}
+                      className="rounded-md border border-border px-2 py-1"
+                    >
+                      <Text className="text-xs text-foreground">Cancel</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </>
+            ) : null}
+          </View>
+        )}
+        {/* Session name and fork points: an older runtime explains itself here
+            instead of rendering nothing. Renaming commits directly because
+            renaming again is its own reverse; forking passes through the
+            "this is not resume" disclosure, and cancelling it dispatches
+            nothing at all. */}
+        {primeIdentitySurface.kind === "hidden" ? null : (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            {primeIdentitySurface.kind === "unavailable" ? (
+              <Text className="mt-1 text-xs text-foreground-muted">
+                {primeIdentitySurface.reason}
+              </Text>
+            ) : null}
+            {primeIdentitySurface.kind === "identity" ? (
+              <>
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {primeIdentitySurface.name === undefined
+                    ? "This Prime Agent session has no name yet."
+                    : `Session name: ${primeIdentitySurface.name}`}
+                </Text>
+                <View className="mt-1 flex-row items-center gap-2">
+                  <TextInput
+                    accessibilityLabel="Session name"
+                    value={sessionName}
+                    onChangeText={setSessionName}
+                    className="flex-1 rounded-md border border-border px-2 py-1 text-xs text-foreground"
+                  />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Rename session"
+                    accessibilityState={{ disabled: !primeRenameDraft.canRename }}
+                    disabled={!primeRenameDraft.canRename}
+                    onPress={() => {
+                      if (!primeRenameDraft.canRename) return;
+                      void props.onRenameSession?.(primeRenameDraft.name);
+                      setSessionName("");
+                    }}
+                    className={
+                      primeRenameDraft.canRename
+                        ? "rounded-md border border-border px-2 py-1"
+                        : "rounded-md border border-border px-2 py-1 opacity-50"
+                    }
+                  >
+                    <Text className="text-xs text-foreground">Rename session</Text>
+                  </Pressable>
+                </View>
+                {primeRenameDraft.canRename ? null : (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeRenameDraft.reason}
+                  </Text>
+                )}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={PRIME_FORK_WHOLE_SESSION_LABEL}
+                  accessibilityState={{ selected: forkPointId === undefined }}
+                  onPress={() => {
+                    setForkPointId(undefined);
+                    setForkConfirming(false);
+                  }}
+                  className="mt-1 rounded-md border border-border px-2 py-1"
+                >
+                  <Text className="text-xs text-foreground">
+                    {forkPointId === undefined
+                      ? `\u2713 ${PRIME_FORK_WHOLE_SESSION_LABEL}`
+                      : PRIME_FORK_WHOLE_SESSION_LABEL}
+                  </Text>
+                </Pressable>
+                {primeIdentitySurface.forkPoints.map((point) => (
+                  <Pressable
+                    key={point.forkPointId}
+                    accessibilityRole="button"
+                    accessibilityLabel={renderPrimeForkPoint(point)}
+                    accessibilityState={{ selected: forkPointId === point.forkPointId }}
+                    onPress={() => {
+                      setForkPointId(point.forkPointId);
+                      setForkConfirming(false);
+                    }}
+                    className="mt-1 rounded-md border border-border px-2 py-1"
+                  >
+                    <Text className="text-xs text-foreground">
+                      {forkPointId === point.forkPointId
+                        ? `\u2713 ${renderPrimeForkPoint(point)}`
+                        : renderPrimeForkPoint(point)}
+                    </Text>
+                  </Pressable>
+                ))}
+                {primeIdentitySurface.truncated ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {PRIME_FORK_TRUNCATED_NOTE}
+                  </Text>
+                ) : null}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Fork session"
+                  accessibilityState={{ disabled: !primeForkDraft.canFork }}
+                  disabled={!primeForkDraft.canFork}
+                  onPress={() => {
+                    setForkConfirming(true);
+                  }}
+                  className={
+                    primeForkDraft.canFork
+                      ? "mt-1 rounded-md border border-border px-2 py-1"
+                      : "mt-1 rounded-md border border-border px-2 py-1 opacity-50"
+                  }
+                >
+                  <Text className="text-xs text-foreground">Fork session</Text>
+                </Pressable>
+                {primeForkDraft.canFork ? null : (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeForkDraft.reason}
+                  </Text>
+                )}
+                {primeForkDraft.canFork && forkConfirming ? (
+                  <View className="mt-1 flex-row items-center gap-2">
+                    <Text className="flex-1 text-xs text-foreground-muted">
+                      {primeForkDraft.disclosure}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Fork into a new thread"
+                      onPress={() => {
+                        setForkConfirming(false);
+                        void props.onForkSession?.(forkPointId);
+                      }}
+                      className="rounded-md border border-border px-2 py-1"
+                    >
+                      <Text className="text-xs text-foreground">Fork into a new thread</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel fork"
+                      onPress={() => {
+                        setForkConfirming(false);
+                      }}
+                      className="rounded-md border border-border px-2 py-1"
+                    >
+                      <Text className="text-xs text-foreground">Cancel</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </>
+            ) : null}
+          </View>
+        )}
+        {/* Thread ancestry and the way back. Ungated on purpose: this is a T3
+            thread record, so it must survive an exited session, an older
+            runtime, and Prime Agent being uninstalled. */}
+        {props.forkOrigin ? (
+          <View className="mt-2 flex-row items-center gap-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            <Text className="flex-1 text-xs text-foreground-muted">
+              {renderPrimeForkOrigin(props.forkOrigin)}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={PRIME_FORK_OPEN_SOURCE_LABEL}
+              onPress={() => {
+                if (forkOriginThreadId === null) return;
+                props.onOpenSourceThread?.(forkOriginThreadId);
+              }}
+              className="rounded-md border border-border px-2 py-1"
+            >
+              <Text className="text-xs text-foreground">{PRIME_FORK_OPEN_SOURCE_LABEL}</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {/* Queue count */}
         {props.queueCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>

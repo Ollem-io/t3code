@@ -14,6 +14,8 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { GoalId, HeartbeatId, RuntimeExtensionId } from "./providerCapabilities.ts";
+import { PrimeResumeState } from "./primeResume.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -26,6 +28,7 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("claude.sdk.permission"),
   Schema.Literal("codex.sdk.thread-event"),
   Schema.Literal("opencode.sdk.event"),
+  Schema.Literal("prime.agent.rpc"),
   Schema.Literal("acp.jsonrpc"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);
@@ -194,6 +197,14 @@ const ProviderRuntimeEventType = Schema.Literals([
   "files.persisted",
   "runtime.warning",
   "runtime.error",
+  "session.actions.updated",
+  "session.context.updated",
+  "session.commands.updated",
+  "session.notices.updated",
+  "session.agents.updated",
+  "session.goals.updated",
+  "session.identity.updated",
+  "session.resume.updated",
 ]);
 export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 
@@ -246,6 +257,14 @@ const FilesPersistedType = Schema.Literal("files.persisted");
 const ToolDeniedType = Schema.Literal("tool.denied");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
+const SessionActionsUpdatedType = Schema.Literal("session.actions.updated");
+const SessionContextUpdatedType = Schema.Literal("session.context.updated");
+const SessionCommandsUpdatedType = Schema.Literal("session.commands.updated");
+const SessionNoticesUpdatedType = Schema.Literal("session.notices.updated");
+const SessionAgentsUpdatedType = Schema.Literal("session.agents.updated");
+const SessionGoalsUpdatedType = Schema.Literal("session.goals.updated");
+const SessionIdentityUpdatedType = Schema.Literal("session.identity.updated");
+const SessionResumeUpdatedType = Schema.Literal("session.resume.updated");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
@@ -465,6 +484,14 @@ export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
 const UserInputResolvedPayload = Schema.Struct({
   answers: UnknownRecordSchema,
+  /**
+   * Set only when the runtime closed the request without a user answer
+   * (cancelled, superseded, or timed out). Clients drop the pending dialog
+   * either way; the flag is what lets them say which of the two happened
+   * instead of implying the user answered.
+   */
+  cancelled: Schema.optional(Schema.Boolean),
+  reason: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
@@ -775,6 +802,459 @@ const RuntimeErrorPayload = Schema.Struct({
   detail: Schema.optional(Schema.Unknown),
 });
 export type RuntimeErrorPayload = typeof RuntimeErrorPayload.Type;
+
+/** Provider-neutral projection of Prime 0.7.2 `session_action_update`.
+ * Native snapshot contains lane text and active state, but no externally addressable action IDs.
+ */
+const SessionActionText = TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(4_096));
+const SessionActionList = Schema.Array(SessionActionText).check(Schema.isMaxLength(32));
+const SessionActionsUpdatedPayload = Schema.Struct({
+  queuedCount: NonNegativeInt.check(Schema.isLessThanOrEqualTo(32)),
+  steering: SessionActionList,
+  followUps: SessionActionList,
+  active: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literals(["turn", "session_command"]),
+      phase: Schema.Literals(["preparing", "committing", "running"]),
+      label: Schema.optional(SessionActionText),
+    }),
+  ),
+});
+export type SessionActionsUpdatedPayload = typeof SessionActionsUpdatedPayload.Type;
+
+/** Authoritative, provider-neutral view of a native action snapshot.
+ * There are deliberately no client-generated IDs here: 0.7.2 returns only
+ * lane text/count, so replacing this value is the sole safe reconciliation.
+ */
+export interface ProviderSessionActionState {
+  readonly queuedCount: number;
+  readonly steering: ReadonlyArray<string>;
+  readonly followUps: ReadonlyArray<string>;
+  readonly active?: {
+    readonly kind: "turn" | "session_command";
+    readonly phase: "preparing" | "committing" | "running";
+    readonly label?: string;
+  };
+}
+export const EMPTY_PROVIDER_SESSION_ACTION_STATE: ProviderSessionActionState = Object.freeze({
+  queuedCount: 0,
+  steering: Object.freeze([]),
+  followUps: Object.freeze([]),
+});
+/** Apply canonical runtime events in arrival order. Full snapshots make this
+ * deterministic for every attached client; session termination clears stale UI. */
+export const reduceProviderSessionActionState = (
+  current: ProviderSessionActionState = EMPTY_PROVIDER_SESSION_ACTION_STATE,
+  event: ProviderRuntimeEvent,
+): ProviderSessionActionState => {
+  if (event.type === "session.actions.updated") {
+    const payload = event.payload;
+    return {
+      queuedCount: payload.queuedCount,
+      steering: [...payload.steering],
+      followUps: [...payload.followUps],
+      ...(payload.active
+        ? {
+            active: {
+              kind: payload.active.kind,
+              phase: payload.active.phase,
+              ...(payload.active.label === undefined ? {} : { label: payload.active.label }),
+            },
+          }
+        : {}),
+    };
+  }
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_ACTION_STATE : current;
+};
+
+/**
+ * Provider-neutral context/compaction/retry status. This is deliberately a full
+ * snapshot with no identifiers of its own: a runtime reports what is happening
+ * to its own context window, and replacing the value is the only safe
+ * reconciliation. Compaction here is the *runtime's* context management; it is
+ * unrelated to T3 checkpoints and never reverts user work.
+ */
+const CompactionStatus = Schema.Literals(["idle", "running", "succeeded", "failed", "cancelled"]);
+const CompactionTrigger = Schema.Literals(["manual", "automatic"]);
+const SessionContextUpdatedPayload = Schema.Struct({
+  compaction: Schema.Struct({
+    status: CompactionStatus,
+    trigger: CompactionTrigger,
+    /** Runtime-supplied explanation. Never native transcript content. */
+    reason: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+  }),
+  retry: Schema.optional(
+    Schema.Struct({
+      attempt: NonNegativeInt.check(Schema.isLessThanOrEqualTo(64)),
+      maxAttempts: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(64))),
+      reason: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+    }),
+  ),
+  /** Post-compaction usage is legitimately absent until the runtime reports it. */
+  usage: Schema.optional(ThreadTokenUsageSnapshot),
+  /**
+   * True only when this snapshot carries a compaction phase transition. A
+   * snapshot published for retry or usage alone still repeats the last known
+   * compaction status, so consumers that report compaction *events* (durable
+   * activities) must require this marker rather than reading `compaction.status`
+   * — otherwise every retry restates a compaction that did not happen.
+   */
+  compactionTransitioned: Schema.optional(Schema.Boolean),
+});
+export type SessionContextUpdatedPayload = typeof SessionContextUpdatedPayload.Type;
+
+export interface ProviderSessionContextState {
+  readonly compaction: {
+    readonly status: "idle" | "running" | "succeeded" | "failed" | "cancelled";
+    readonly trigger: "manual" | "automatic";
+    readonly reason?: string;
+  };
+  readonly retry?: {
+    readonly attempt: number;
+    readonly maxAttempts?: number;
+    readonly reason?: string;
+  };
+  readonly usage?: ThreadTokenUsageSnapshot;
+}
+export const EMPTY_PROVIDER_SESSION_CONTEXT_STATE: ProviderSessionContextState = Object.freeze({
+  compaction: Object.freeze({ status: "idle" as const, trigger: "automatic" as const }),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so every
+ * attached client converges; session termination clears stale status.
+ */
+export const reduceProviderSessionContextState = (
+  current: ProviderSessionContextState = EMPTY_PROVIDER_SESSION_CONTEXT_STATE,
+  event: ProviderRuntimeEvent,
+): ProviderSessionContextState => {
+  if (event.type === "session.context.updated") {
+    const payload = event.payload;
+    return {
+      compaction: {
+        status: payload.compaction.status,
+        trigger: payload.compaction.trigger,
+        ...(payload.compaction.reason === undefined ? {} : { reason: payload.compaction.reason }),
+      },
+      ...(payload.retry === undefined
+        ? {}
+        : {
+            retry: {
+              attempt: payload.retry.attempt,
+              ...(payload.retry.maxAttempts === undefined
+                ? {}
+                : { maxAttempts: payload.retry.maxAttempts }),
+              ...(payload.retry.reason === undefined ? {} : { reason: payload.retry.reason }),
+            },
+          }),
+      ...(payload.usage === undefined ? {} : { usage: payload.usage }),
+    };
+  }
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_CONTEXT_STATE : current;
+};
+
+/**
+ * Provider-neutral catalog of runtime-supplied commands, prompts, and skills.
+ *
+ * Deliberately a full snapshot with no identifiers: a runtime reports what it
+ * currently offers and replacing the value is the only safe reconciliation, so
+ * a removed command disappears everywhere instead of lingering per client.
+ *
+ * `location` is a display label only. Absolute host paths never reach this
+ * contract, because a remote client must not learn the host filesystem layout.
+ */
+const CommandCatalogName = TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(64));
+const CommandCatalogEntry = Schema.Struct({
+  name: CommandCatalogName,
+  kind: Schema.Literals(["command", "prompt", "skill"]),
+  description: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+  source: Schema.Literals(["builtin", "user", "project", "extension"]),
+  location: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(64))),
+});
+export type ProviderSessionCommandEntry = typeof CommandCatalogEntry.Type;
+const SessionCommandsUpdatedPayload = Schema.Struct({
+  commands: Schema.Array(CommandCatalogEntry).check(Schema.isMaxLength(128)),
+});
+export type SessionCommandsUpdatedPayload = typeof SessionCommandsUpdatedPayload.Type;
+
+export interface ProviderSessionCommandCatalog {
+  readonly commands: ReadonlyArray<ProviderSessionCommandEntry>;
+}
+export const EMPTY_PROVIDER_SESSION_COMMAND_CATALOG: ProviderSessionCommandCatalog = Object.freeze({
+  commands: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so a
+ * command deleted on the host stops being offered on every attached client;
+ * session termination clears the catalog rather than leaving stale entries.
+ */
+export const reduceProviderSessionCommandCatalog = (
+  current: ProviderSessionCommandCatalog = EMPTY_PROVIDER_SESSION_COMMAND_CATALOG,
+  event: ProviderRuntimeEvent,
+): ProviderSessionCommandCatalog => {
+  if (event.type === "session.commands.updated") return { commands: [...event.payload.commands] };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_COMMAND_CATALOG : current;
+};
+
+/**
+ * Provider-neutral transient status surface.
+ *
+ * Runtimes emit fire-and-forget UI operations: notifications, a status string,
+ * a small widget, a window title, suggested editor text. None of that belongs
+ * in the transcript — each describes *now*, is replaced by key, and a whole
+ * snapshot is the only safe reconciliation across attached clients. The board
+ * is deliberately tiny so a chatty extension cannot flood a client.
+ */
+const SessionNoticeKind = Schema.Literals([
+  "notification",
+  "status",
+  "widget",
+  "title",
+  "editor-text",
+]);
+export type ProviderSessionNoticeKind = typeof SessionNoticeKind.Type;
+const SessionNoticeEntry = Schema.Struct({
+  /** Stable replacement key: a repeated key replaces, it never appends. */
+  key: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(96)),
+  kind: SessionNoticeKind,
+  severity: Schema.Literals(["info", "warning", "error"]),
+  text: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
+  lines: Schema.optional(
+    Schema.Array(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(160))).check(
+      Schema.isMaxLength(4),
+    ),
+  ),
+});
+export type ProviderSessionNotice = typeof SessionNoticeEntry.Type;
+export const PROVIDER_SESSION_NOTICE_LIMIT = 8;
+const SessionNoticesUpdatedPayload = Schema.Struct({
+  notices: Schema.Array(SessionNoticeEntry).check(
+    Schema.isMaxLength(PROVIDER_SESSION_NOTICE_LIMIT),
+  ),
+});
+export type SessionNoticesUpdatedPayload = typeof SessionNoticesUpdatedPayload.Type;
+
+export interface ProviderSessionNoticeBoard {
+  readonly notices: ReadonlyArray<ProviderSessionNotice>;
+}
+export const EMPTY_PROVIDER_SESSION_NOTICE_BOARD: ProviderSessionNoticeBoard = Object.freeze({
+  notices: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Status is transient by
+ * definition, so session termination clears the board instead of leaving a dead
+ * runtime's status text on screen.
+ */
+export const reduceProviderSessionNoticeBoard = (
+  current: ProviderSessionNoticeBoard = EMPTY_PROVIDER_SESSION_NOTICE_BOARD,
+  event: ProviderRuntimeEvent,
+): ProviderSessionNoticeBoard => {
+  if (event.type === "session.notices.updated") return { notices: [...event.payload.notices] };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_NOTICE_BOARD : current;
+};
+
+/**
+ * Provider-neutral agent roster.
+ *
+ * A runtime that delegates work to subagents needs somewhere to show that work
+ * that is *not* the main transcript: duplicating a subagent's output into the
+ * thread is exactly the flood this surface exists to avoid. The roster is a
+ * bounded current-state snapshot — one row per agent, the root included, each
+ * with its own identity, state, and whether this environment is observing it.
+ *
+ * Identities are opaque and adapter-owned. Nothing here is invented by T3, and
+ * an identity absent from the roster is not a legal action target.
+ */
+const SessionAgentRole = Schema.Literals(["root", "subagent"]);
+export type ProviderSessionAgentRole = typeof SessionAgentRole.Type;
+const SessionAgentStatus = Schema.Literals([
+  "running",
+  "paused",
+  "completed",
+  "cancelled",
+  "failed",
+]);
+export type ProviderSessionAgentStatus = typeof SessionAgentStatus.Type;
+const SessionAgentEntry = Schema.Struct({
+  /** Opaque runtime-owned identity; the only legal target of an agent action. */
+  agentId: RuntimeTaskId,
+  role: SessionAgentRole,
+  status: SessionAgentStatus,
+  title: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)),
+  /** True while this environment holds an observation on the agent. */
+  observed: Schema.Boolean,
+  /** Newest bounded observed line; deliberately a status, not scrollback. */
+  detail: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+});
+export type ProviderSessionAgent = typeof SessionAgentEntry.Type;
+export const PROVIDER_SESSION_AGENT_LIMIT = 16;
+const SessionAgentsUpdatedPayload = Schema.Struct({
+  agents: Schema.Array(SessionAgentEntry).check(Schema.isMaxLength(PROVIDER_SESSION_AGENT_LIMIT)),
+});
+export type SessionAgentsUpdatedPayload = typeof SessionAgentsUpdatedPayload.Type;
+
+export interface ProviderSessionAgentRoster {
+  readonly agents: ReadonlyArray<ProviderSessionAgent>;
+}
+export const EMPTY_PROVIDER_SESSION_AGENT_ROSTER: ProviderSessionAgentRoster = Object.freeze({
+  agents: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so every
+ * attached client converges on the same roster; a session that exits keeps no
+ * agents, because an observation cannot outlive the session that owned it.
+ */
+export const reduceProviderSessionAgentRoster = (
+  current: ProviderSessionAgentRoster = EMPTY_PROVIDER_SESSION_AGENT_ROSTER,
+  event: ProviderRuntimeEvent,
+): ProviderSessionAgentRoster => {
+  if (event.type === "session.agents.updated") return { agents: [...event.payload.agents] };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_AGENT_ROSTER : current;
+};
+
+/**
+ * Provider-neutral goal and owned-heartbeat board.
+ *
+ * Two different things share one snapshot because a client must never see one
+ * without the other: a heartbeat that keeps a session resident is only honest
+ * next to the goal it serves, and the reverse controls for both live together.
+ *
+ * Everything here is current state, replaced whole, and deliberately narrow:
+ *
+ * - **Only T3-created heartbeats exist.** The runtime may host any number of
+ *   schedules created elsewhere. None of them appears here and none is a legal
+ *   action target, so no client can enumerate or touch another owner's work.
+ * - **Titles, never prompts.** A heartbeat's prompt and a goal's instructions
+ *   are content; the board carries a bounded label, a schedule, and a state.
+ * - **Residency is disclosed, not implied.** When owned schedules keep this
+ *   session resident, the board says so and names the exact owner, so the
+ *   reverse control has an unambiguous target and never a global shutdown.
+ */
+const SessionGoalStatus = Schema.Literals(["active", "completed", "cancelled"]);
+export type ProviderSessionGoalStatus = typeof SessionGoalStatus.Type;
+const SessionGoalEntry = Schema.Struct({
+  /** Opaque runtime-owned identity. T3 invents none. */
+  goalId: GoalId,
+  title: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)),
+  status: SessionGoalStatus,
+  /** Bounded runtime-reported progress line; a status, not transcript. */
+  detail: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+});
+export type ProviderSessionGoal = typeof SessionGoalEntry.Type;
+
+const SessionHeartbeatStatus = Schema.Literals(["active", "paused"]);
+export type ProviderSessionHeartbeatStatus = typeof SessionHeartbeatStatus.Type;
+const SessionHeartbeatEntry = Schema.Struct({
+  /** Opaque runtime-owned identity of a heartbeat this environment created. */
+  heartbeatId: HeartbeatId,
+  title: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)),
+  intervalSeconds: PositiveInt,
+  status: SessionHeartbeatStatus,
+  /** Runtime-reported next run; absent while paused or not yet scheduled. */
+  nextRunAt: Schema.optional(IsoDateTime),
+});
+export type ProviderSessionHeartbeat = typeof SessionHeartbeatEntry.Type;
+
+export const PROVIDER_SESSION_HEARTBEAT_LIMIT = 8;
+const SessionGoalsUpdatedPayload = Schema.Struct({
+  goal: Schema.optional(SessionGoalEntry),
+  heartbeats: Schema.Array(SessionHeartbeatEntry).check(
+    Schema.isMaxLength(PROVIDER_SESSION_HEARTBEAT_LIMIT),
+  ),
+  /** Present only while owned schedules keep this session resident. */
+  resident: Schema.optional(
+    Schema.Struct({ owner: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)) }),
+  ),
+});
+export type SessionGoalsUpdatedPayload = typeof SessionGoalsUpdatedPayload.Type;
+
+export interface ProviderSessionGoalBoard {
+  readonly goal?: ProviderSessionGoal | undefined;
+  readonly heartbeats: ReadonlyArray<ProviderSessionHeartbeat>;
+  readonly resident?: { readonly owner: string } | undefined;
+}
+export const EMPTY_PROVIDER_SESSION_GOAL_BOARD: ProviderSessionGoalBoard = Object.freeze({
+  heartbeats: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so every
+ * attached client converges on the same board no matter which device acted, and
+ * a session that exits keeps no board: a control whose session is gone cannot
+ * be operated and must not be offered.
+ */
+export const reduceProviderSessionGoalBoard = (
+  current: ProviderSessionGoalBoard = EMPTY_PROVIDER_SESSION_GOAL_BOARD,
+  event: ProviderRuntimeEvent,
+): ProviderSessionGoalBoard => {
+  if (event.type === "session.goals.updated")
+    return {
+      ...(event.payload.goal ? { goal: event.payload.goal } : {}),
+      heartbeats: [...event.payload.heartbeats],
+      ...(event.payload.resident ? { resident: event.payload.resident } : {}),
+    };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_GOAL_BOARD : current;
+};
+
+/**
+ * Provider-neutral session identity: the name the runtime currently reports for
+ * this session, and the bounded page of points a fork may start from.
+ *
+ * Deliberately narrow, for the same reasons the other snapshots are:
+ *
+ * - **Labels, never transcript.** A fork point carries the runtime's own
+ *   identity and a short label. Message bodies are content and never cross this
+ *   boundary just so a chooser can be drawn.
+ * - **The page is bounded and says so.** A long conversation offers more fork
+ *   points than any client should render at once, so the runtime's most recent
+ *   points are published with a truncation flag rather than an unbounded list.
+ * - **Naming is not durable resume.** This card describes a live session; it
+ *   carries no cursor, and nothing here survives the session it belongs to.
+ */
+const SessionForkPointEntry = Schema.Struct({
+  /** Opaque runtime-owned identity of a message a fork may start from. */
+  forkPointId: RuntimeExtensionId,
+  label: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)),
+  role: Schema.Literals(["user", "assistant"]),
+  /** Position in the runtime's own ordering, so a dropped point never renumbers the rest. */
+  index: NonNegativeInt,
+});
+export type ProviderSessionForkPoint = typeof SessionForkPointEntry.Type;
+
+export const PROVIDER_SESSION_FORK_POINT_LIMIT = 20;
+const SessionIdentityUpdatedPayload = Schema.Struct({
+  name: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120))),
+  forkPoints: Schema.Array(SessionForkPointEntry).check(
+    Schema.isMaxLength(PROVIDER_SESSION_FORK_POINT_LIMIT),
+  ),
+  /** Present only when the runtime reported more fork points than this page holds. */
+  truncated: Schema.optional(Schema.Literal(true)),
+});
+export type SessionIdentityUpdatedPayload = typeof SessionIdentityUpdatedPayload.Type;
+
+export interface ProviderSessionIdentityCard {
+  readonly name?: string | undefined;
+  readonly forkPoints: ReadonlyArray<ProviderSessionForkPoint>;
+  readonly truncated?: true | undefined;
+}
+export const EMPTY_PROVIDER_SESSION_IDENTITY_CARD: ProviderSessionIdentityCard = Object.freeze({
+  forkPoints: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so every
+ * attached client converges on the same card, and a session that exits keeps
+ * none: renaming or forking a session that is gone is not an offer T3 can keep.
+ */
+export const reduceProviderSessionIdentityCard = (
+  current: ProviderSessionIdentityCard = EMPTY_PROVIDER_SESSION_IDENTITY_CARD,
+  event: ProviderRuntimeEvent,
+): ProviderSessionIdentityCard => {
+  if (event.type === "session.identity.updated")
+    return {
+      ...(event.payload.name ? { name: event.payload.name } : {}),
+      forkPoints: [...event.payload.forkPoints],
+      ...(event.payload.truncated ? { truncated: true as const } : {}),
+    };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_IDENTITY_CARD : current;
+};
 
 const ProviderRuntimeSessionStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
@@ -1136,6 +1616,84 @@ const ProviderRuntimeErrorEvent = Schema.Struct({
 });
 export type ProviderRuntimeErrorEvent = typeof ProviderRuntimeErrorEvent.Type;
 
+const ProviderRuntimeSessionActionsUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionActionsUpdatedType,
+  payload: SessionActionsUpdatedPayload,
+});
+export type ProviderRuntimeSessionActionsUpdatedEvent =
+  typeof ProviderRuntimeSessionActionsUpdatedEvent.Type;
+
+const ProviderRuntimeSessionContextUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionContextUpdatedType,
+  payload: SessionContextUpdatedPayload,
+});
+export type ProviderRuntimeSessionContextUpdatedEvent =
+  typeof ProviderRuntimeSessionContextUpdatedEvent.Type;
+
+const ProviderRuntimeSessionCommandsUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionCommandsUpdatedType,
+  payload: SessionCommandsUpdatedPayload,
+});
+export type ProviderRuntimeSessionCommandsUpdatedEvent =
+  typeof ProviderRuntimeSessionCommandsUpdatedEvent.Type;
+
+const ProviderRuntimeSessionNoticesUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionNoticesUpdatedType,
+  payload: SessionNoticesUpdatedPayload,
+});
+export type ProviderRuntimeSessionNoticesUpdatedEvent =
+  typeof ProviderRuntimeSessionNoticesUpdatedEvent.Type;
+
+const ProviderRuntimeSessionAgentsUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionAgentsUpdatedType,
+  payload: SessionAgentsUpdatedPayload,
+});
+export type ProviderRuntimeSessionAgentsUpdatedEvent =
+  typeof ProviderRuntimeSessionAgentsUpdatedEvent.Type;
+
+const ProviderRuntimeSessionGoalsUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionGoalsUpdatedType,
+  payload: SessionGoalsUpdatedPayload,
+});
+export type ProviderRuntimeSessionGoalsUpdatedEvent =
+  typeof ProviderRuntimeSessionGoalsUpdatedEvent.Type;
+
+/**
+ * PA-B04 — the coarse durable-resume outcome for this thread's session.
+ *
+ * The payload is the closed PA-B02 state, nothing more: a status and, for a
+ * refusal, a reason code. It carries no path, no owner, no native session id
+ * and no device, so publishing it to every attached client leaks nothing about
+ * the host. It exists so a client can *see* that an exact session refused to
+ * reopen instead of silently getting a new one.
+ */
+const SessionResumeUpdatedPayload = Schema.Struct({
+  resume: PrimeResumeState,
+});
+export type SessionResumeUpdatedPayload = typeof SessionResumeUpdatedPayload.Type;
+
+const ProviderRuntimeSessionResumeUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionResumeUpdatedType,
+  payload: SessionResumeUpdatedPayload,
+});
+export type ProviderRuntimeSessionResumeUpdatedEvent =
+  typeof ProviderRuntimeSessionResumeUpdatedEvent.Type;
+
+const ProviderRuntimeSessionIdentityUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionIdentityUpdatedType,
+  payload: SessionIdentityUpdatedPayload,
+});
+export type ProviderRuntimeSessionIdentityUpdatedEvent =
+  typeof ProviderRuntimeSessionIdentityUpdatedEvent.Type;
+
 export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
@@ -1186,6 +1744,14 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeToolDeniedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
+  ProviderRuntimeSessionActionsUpdatedEvent,
+  ProviderRuntimeSessionContextUpdatedEvent,
+  ProviderRuntimeSessionCommandsUpdatedEvent,
+  ProviderRuntimeSessionNoticesUpdatedEvent,
+  ProviderRuntimeSessionAgentsUpdatedEvent,
+  ProviderRuntimeSessionGoalsUpdatedEvent,
+  ProviderRuntimeSessionIdentityUpdatedEvent,
+  ProviderRuntimeSessionResumeUpdatedEvent,
 ]);
 export type ProviderRuntimeEventV2 = typeof ProviderRuntimeEventV2.Type;
 

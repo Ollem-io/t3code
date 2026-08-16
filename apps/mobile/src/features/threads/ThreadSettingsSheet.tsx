@@ -27,7 +27,11 @@ import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
-import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
+import {
+  modelAvailabilityLabel,
+  type ModelOption,
+  type ProviderGroup,
+} from "../../lib/modelOptions";
 import { applyProviderOptionSelection, providerOptionValueLabels } from "../../lib/providerOptions";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { RUNTIME_MODE_CHOICES, selectableChoices } from "./thread-settings-menu";
@@ -66,10 +70,13 @@ function ModelRow(props: {
   readonly onPress: () => void;
 }) {
   const primaryFg = useThemeColor("--color-primary-foreground");
+  const disabled =
+    props.option.availability === "unavailable" || props.option.availability === "stale";
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected: props.selected }}
+      accessibilityState={{ selected: props.selected, disabled }}
+      disabled={disabled}
       onPress={props.onPress}
       // Selected rows get the same primary treatment as the submenu rows.
       // Subtle backgrounds (bg-subtle-strong) get overridden by the OS
@@ -78,6 +85,7 @@ function ModelRow(props: {
       className={cn(
         "mx-2.5 flex-row items-center gap-2 rounded-xl px-3 py-3.5 active:opacity-70",
         props.selected ? "bg-primary" : "bg-transparent",
+        disabled ? "opacity-50" : null,
       )}
     >
       <Text
@@ -98,6 +106,21 @@ function ModelRow(props: {
         <View className="rounded-md bg-subtle px-1.5 py-0.5">
           <Text className="text-3xs font-t3-bold text-foreground-muted">Legacy</Text>
         </View>
+      ) : null}
+      {props.option.availability !== "available" && props.option.availability !== undefined ? (
+        <Text className="text-3xs font-t3-bold text-foreground-muted">
+          {modelAvailabilityLabel(props.option.availability)}
+        </Text>
+      ) : null}
+      {(props.option.capabilityLabels ?? []).map((label) => (
+        <Text key={label} className="text-3xs text-foreground-muted">
+          {label}
+        </Text>
+      ))}
+      {(props.option.thinkingOptions?.length ?? 0) > 0 ? (
+        <Text className="text-3xs text-foreground-muted">
+          Thinking: {props.option.thinkingOptions?.join(" / ")}
+        </Text>
       ) : null}
       <View className="flex-1" />
       {props.selected ? (
@@ -196,10 +219,12 @@ function ChoiceRow(props: {
   readonly onPress: () => void;
 }) {
   const primaryFg = useThemeColor("--color-primary-foreground");
+  const disabled = false;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected: props.selected }}
+      accessibilityState={{ selected: props.selected, disabled }}
+      disabled={disabled}
       onPress={props.onPress}
       className={cn(
         "mx-2.5 flex-row items-center rounded-xl px-3 py-3.5 active:opacity-70",

@@ -76,6 +76,14 @@ import {
   COMPOSER_EXPANDED_CHROME,
   ThreadComposer,
 } from "./ThreadComposer";
+import type { PrimeThreadForkOrigin } from "./primeFork";
+import { PrimeResumeBanner } from "./PrimeResumeBanner";
+import { usePrimeResumeModel } from "./usePrimeResumeModel";
+import {
+  primeResumeBlocksComposer,
+  primeResumeRecoveryRoute,
+  type PrimeResumeIntent,
+} from "@t3tools/client-runtime/prime-resume";
 import { ThreadFeed } from "./ThreadFeed";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 
@@ -114,7 +122,39 @@ export interface ThreadDetailScreenProps {
   readonly onPickDraftImages: () => Promise<void>;
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
+  readonly onInterruptThread: () => void;
   readonly onStopThread: () => void;
+  readonly onRuntimeAction?: (mode: "steer" | "followUp", text: string) => Promise<boolean>;
+  readonly onRequestCompaction?: () => Promise<boolean>;
+  readonly onRefreshUsage?: () => Promise<boolean>;
+  readonly onToggleAgentObservation?: (
+    agentId: string,
+    action: "task.observe" | "task.unobserve",
+  ) => Promise<boolean>;
+  readonly onCreateHeartbeat?: (draft: {
+    readonly title: string;
+    readonly intervalSeconds: number;
+  }) => Promise<boolean>;
+  readonly onHeartbeatAction?: (
+    heartbeatId: string,
+    action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
+  ) => Promise<boolean>;
+  readonly onRenameSession?: (name: string) => Promise<boolean>;
+  readonly onForkSession?: (forkPointId: string | undefined) => Promise<boolean>;
+  /**
+   * PA-B04 — dispatches a retry or a confirmed fresh start for a Prime Agent
+   * resume that refused. Forking is routed through `onForkSession`, which
+   * already exists and already keeps the refused session untouched.
+   */
+  readonly onRecoverPrimeResume?: (
+    intent:
+      | { readonly kind: "retry" }
+      | { readonly kind: "fresh"; readonly discardCursor: boolean },
+  ) => Promise<boolean>;
+  /** Thread ancestry and the way back to the thread this one was forked from. */
+  readonly forkOrigin?: PrimeThreadForkOrigin | null | undefined;
+  readonly onOpenSourceThread?: (threadId: string) => void;
+  readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
@@ -515,7 +555,48 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     selectedThreadKey,
   ]);
 
+  // PA-B04 — the durable resume outcome for this thread and the recovery it
+  // offers, derived from the same shared model the web banner uses.
+  const primeResume = usePrimeResumeModel({
+    threadId: props.selectedThread?.id,
+    state: props.selectedThread?.session?.resumeState,
+    sessionStatus: props.selectedThread?.session?.status,
+    connected: props.connectionStateLabel === "connected",
+  });
+  const primeResumeComposerBlocked = primeResumeBlocksComposer(
+    props.selectedThread?.session?.providerName,
+    primeResume.model,
+  );
+  const handlePrimeResumeRecover = useCallback(
+    (intent: PrimeResumeIntent) => {
+      primeResume.noteChoice(intent);
+      const route = primeResumeRecoveryRoute(intent);
+      if (route.kind === "fork") {
+        // A fork publishes no resume state for this thread, so its pending
+        // marker is cleared when the command settles: the buttons stay inert
+        // for the whole round trip (one tap cannot become two forked threads)
+        // and come back afterwards.
+        const forThreadId = props.selectedThread.id;
+        void Promise.resolve(props.onForkSession?.(undefined)).finally(() => {
+          primeResume.noteSettled(forThreadId);
+        });
+        return;
+      }
+      void props.onRecoverPrimeResume?.(
+        route.intent === "fresh"
+          ? { kind: "fresh", discardCursor: route.discardCursor }
+          : { kind: "retry" },
+      );
+    },
+    [primeResume, props.onForkSession, props.onRecoverPrimeResume, props.selectedThread.id],
+  );
+
   const handleSendMessage = useCallback(async () => {
+    // The composer gate, enforced on the send path rather than only drawn on
+    // it: a thread whose exact Prime Agent session refused to reopen must not
+    // accept a prompt, because that prompt is what would silently start a new
+    // session in its place.
+    if (primeResumeComposerBlocked) return null;
     const targetThreadKey = selectedThreadKey;
     const messageId = await props.onSendMessage();
     if (messageId === null || selectedThreadKeyRef.current !== targetThreadKey) {
@@ -525,7 +606,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     setAnchorMessageId(messageId);
     composerEditorRef.current?.blur();
     return messageId;
-  }, [props.onSendMessage, selectedThreadKey]);
+  }, [primeResumeComposerBlocked, props.onSendMessage, selectedThreadKey]);
 
   const collapseComposer = useCallback(() => {
     composerEditorRef.current?.blur();
@@ -712,6 +793,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
 
             {/* Hidden (not unmounted) while a user-input request owns the
                 composer slot, so composer drafts and editor state survive. */}
+            <PrimeResumeBanner
+              providerName={props.selectedThread?.session?.providerName}
+              model={primeResume.model}
+              onRecover={handlePrimeResumeRecover}
+            />
             <View style={activeUserInputRequestId !== null ? { display: "none" } : undefined}>
               <ThreadComposer
                 editorRef={composerEditorRef}
@@ -726,6 +812,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 selectedThread={props.selectedThread}
                 serverConfig={props.serverConfig}
                 queueCount={props.selectedThreadQueueCount}
+                pendingDialogCount={props.activePendingUserInput ? 1 : 0}
                 activeThreadBusy={props.activeThreadBusy}
                 environmentId={props.environmentId}
                 projectCwd={props.projectWorkspaceRoot}
@@ -734,7 +821,19 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onPickDraftImages={props.onPickDraftImages}
                 onNativePasteImages={props.onNativePasteImages}
                 onRemoveDraftImage={props.onRemoveDraftImage}
+                onInterruptThread={props.onInterruptThread}
                 onStopThread={props.onStopThread}
+                onRuntimeAction={props.onRuntimeAction}
+                onRequestCompaction={props.onRequestCompaction}
+                onRefreshUsage={props.onRefreshUsage}
+                onToggleAgentObservation={props.onToggleAgentObservation}
+                onCreateHeartbeat={props.onCreateHeartbeat}
+                onHeartbeatAction={props.onHeartbeatAction}
+                onRenameSession={props.onRenameSession}
+                onForkSession={props.onForkSession}
+                forkOrigin={props.forkOrigin}
+                onOpenSourceThread={props.onOpenSourceThread}
+                onRefreshCommands={props.onRefreshCommands}
                 onSendMessage={handleSendMessage}
                 onReconnectEnvironment={props.onReconnectEnvironment}
                 onUpdateModelSelection={props.onUpdateThreadModelSelection}

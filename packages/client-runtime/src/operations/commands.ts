@@ -47,6 +47,20 @@ export type SetThreadRuntimeModeInput = CommandInput<"thread.runtime-mode.set">;
 export type SetThreadInteractionModeInput = CommandInput<"thread.interaction-mode.set">;
 export type StartThreadTurnInput = CommandInput<"thread.turn.start">;
 export type InterruptThreadTurnInput = CommandInput<"thread.turn.interrupt">;
+export type SteerThreadInput = CommandInput<"thread.steer.add">;
+export type AddThreadFollowUpInput = CommandInput<"thread.follow-up.add">;
+export type RequestThreadCompactionInput = CommandInput<"thread.compaction.request">;
+export type RefreshThreadUsageInput = CommandInput<"thread.usage.refresh">;
+export type RefreshThreadCommandsInput = CommandInput<"thread.commands.refresh">;
+export type ObserveThreadAgentInput = CommandInput<"thread.agent.observe">;
+export type UnobserveThreadAgentInput = CommandInput<"thread.agent.unobserve">;
+export type CreateThreadHeartbeatInput = CommandInput<"thread.heartbeat.create">;
+export type PauseThreadHeartbeatInput = CommandInput<"thread.heartbeat.pause">;
+export type ResumeThreadHeartbeatInput = CommandInput<"thread.heartbeat.resume">;
+export type DeleteThreadHeartbeatInput = CommandInput<"thread.heartbeat.delete">;
+export type RenameThreadSessionInput = CommandInput<"thread.session.rename">;
+export type ForkThreadSessionInput = CommandInput<"thread.session.fork">;
+export type RecoverPrimeResumeInput = CommandInput<"thread.prime-resume.recover">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
@@ -270,6 +284,184 @@ export const startThreadTurn: (input: StartThreadTurnInput) => CommandEffect = E
   return yield* dispatch({
     ...input,
     type: "thread.turn.start",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const steerThread: (input: SteerThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.steerThread",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.steer.add",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+export const addThreadFollowUp: (input: AddThreadFollowUpInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.addThreadFollowUp",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.follow-up.add",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+/** Manual runtime compaction. Never a T3 checkpoint and never a revert. */
+export const requestThreadCompaction: (input: RequestThreadCompactionInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.requestThreadCompaction")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.compaction.request",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+/** On-demand re-read of the runtime's authoritative usage snapshot. */
+export const refreshThreadUsage: (input: RefreshThreadUsageInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.refreshThreadUsage",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.usage.refresh",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+/** Explicit, bounded re-read of the runtime command catalog. */
+export const refreshThreadCommands: (input: RefreshThreadCommandsInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.refreshThreadCommands")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.commands.refresh",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+
+/** Start watching one runtime-reported agent. Always paired with its reverse. */
+export const observeThreadAgent: (input: ObserveThreadAgentInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.observeThreadAgent",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.agent.observe",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+/** The exact reverse of `observeThreadAgent`. */
+export const unobserveThreadAgent: (input: UnobserveThreadAgentInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.unobserveThreadAgent",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.agent.unobserve",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+/**
+ * Create one T3-owned heartbeat. The client has already disclosed that this may
+ * keep the provider session resident; the host re-checks capability and bounds.
+ */
+export const createThreadHeartbeat: (input: CreateThreadHeartbeatInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.createThreadHeartbeat")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.heartbeat.create",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+/** Pause one owned heartbeat. */
+export const pauseThreadHeartbeat: (input: PauseThreadHeartbeatInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.pauseThreadHeartbeat",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.heartbeat.pause",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+/** The exact reverse of `pauseThreadHeartbeat`. */
+export const resumeThreadHeartbeat: (input: ResumeThreadHeartbeatInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.resumeThreadHeartbeat")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.heartbeat.resume",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+/** The exact reverse of `createThreadHeartbeat`, so creation is no one-way door. */
+export const deleteThreadHeartbeat: (input: DeleteThreadHeartbeatInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.deleteThreadHeartbeat")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.heartbeat.delete",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+
+/** Rename the provider session bound to this thread; the thread title follows. */
+export const renameThreadSession: (input: RenameThreadSessionInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.renameThreadSession",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.session.rename",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+/**
+ * Fork this thread's provider session into a new thread the caller names, so a
+ * retry resolves to the same thread instead of creating a second one.
+ */
+export const forkThreadSession: (input: ForkThreadSessionInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.forkThreadSession",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.session.fork",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+/**
+ * PA-B04 — answer a Prime Agent resume that refused. `retry` re-runs the same
+ * durable validation; `fresh` is the confirmed choice to stop pointing this
+ * thread at its earlier session, and only it may carry `discardCursor`.
+ */
+export const recoverPrimeResume: (input: RecoverPrimeResumeInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.recoverPrimeResume",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.prime-resume.recover",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

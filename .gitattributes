@@ -1,2 +1,10 @@
 # git autocrlf=true converts LF to CRLF on Windows, causing issues with oxfmt
 * text=auto eol=lf
+
+# Source is source: a stray control byte must never make git store a module as a
+# binary blob, which costs it its line diff, its blame and its three-way merge.
+*.ts diff
+*.tsx diff
+*.js diff
+*.jsx diff
+*.mjs diff

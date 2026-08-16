@@ -15,9 +15,22 @@ import {
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
+  type OrchestrationSessionActionState,
+  EMPTY_ORCHESTRATION_SESSION_COMMAND_CATALOG,
+  EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
+  EMPTY_ORCHESTRATION_SESSION_NOTICE_BOARD,
+  type OrchestrationSessionCommandCatalog,
+  type OrchestrationSessionContextState,
+  type OrchestrationSessionNoticeBoard,
+  EMPTY_ORCHESTRATION_SESSION_AGENT_ROSTER,
+  type OrchestrationSessionAgentRoster,
+  EMPTY_ORCHESTRATION_SESSION_GOAL_BOARD,
+  type OrchestrationSessionGoalBoard,
+  type OrchestrationSessionIdentityCard,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  type PrimeResumeState,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -127,6 +140,110 @@ function sameId(left: string | null | undefined, right: string | null | undefine
     return false;
   }
   return left === right;
+}
+
+/**
+ * Structural equality for authoritative context snapshots. Context state has no
+ * identifiers, so the canonical comparison is the serialized snapshot itself;
+ * this exists only to drop repeats that would write identical visible state.
+ */
+function sameContextState(
+  current: OrchestrationSessionContextState | undefined,
+  next: OrchestrationSessionContextState,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+/**
+ * Structural equality for authoritative command catalogs. The catalog has no
+ * identifiers, so the serialized snapshot is the canonical comparison; this
+ * exists only to drop repeats that would write identical visible state.
+ */
+function sameCommandCatalog(
+  current: OrchestrationSessionCommandCatalog | undefined,
+  next: OrchestrationSessionCommandCatalog,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+/**
+ * Structural equality for the transient status board. Extensions repeat the
+ * same status string constantly, so this drops writes that change nothing.
+ */
+function sameNoticeBoard(
+  current: OrchestrationSessionNoticeBoard | undefined,
+  next: OrchestrationSessionNoticeBoard,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+/**
+ * Structural equality for the agent roster. A task store re-reports the same
+ * rows constantly, so this drops writes that change nothing.
+ */
+/**
+ * Structural equality for the goal board. A heartbeat store re-reports the same
+ * schedules on every tick, so this drops writes that change nothing.
+ */
+function sameGoalBoard(
+  current: OrchestrationSessionGoalBoard | undefined,
+  next: OrchestrationSessionGoalBoard,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+function sameIdentityCard(
+  current: OrchestrationSessionIdentityCard | undefined,
+  next: OrchestrationSessionIdentityCard,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+function sameResumeState(current: PrimeResumeState | undefined, next: PrimeResumeState): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+function sameAgentRoster(
+  current: OrchestrationSessionAgentRoster | undefined,
+  next: OrchestrationSessionAgentRoster,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+/**
+ * Structural equality for authoritative action snapshots. Used only to drop
+ * repeats that would write the exact same visible state.
+ */
+function sameActionState(
+  current: OrchestrationSessionActionState | undefined,
+  next: OrchestrationSessionActionState,
+): boolean {
+  if (current === undefined) {
+    return false;
+  }
+  if (
+    current.queuedCount !== next.queuedCount ||
+    current.steering.length !== next.steering.length ||
+    current.followUps.length !== next.followUps.length
+  ) {
+    return false;
+  }
+  if (current.steering.some((text, index) => text !== next.steering[index])) {
+    return false;
+  }
+  if (current.followUps.some((text, index) => text !== next.followUps[index])) {
+    return false;
+  }
+  if ((current.active === undefined) !== (next.active === undefined)) {
+    return false;
+  }
+  return (
+    current.active === undefined ||
+    next.active === undefined ||
+    (current.active.kind === next.active.kind &&
+      current.active.phase === next.active.phase &&
+      current.active.label === next.active.label)
+  );
 }
 
 function hasAssistantMessageForTurn(
@@ -519,16 +636,27 @@ export function runtimeEventToActivities(
     }
 
     case "user-input.resolved": {
+      // A runtime-closed request (cancelled, superseded, timed out) carries no
+      // user answer. Saying "submitted" for it would credit the user with input
+      // they never gave, so the cancellation travels into the read model and
+      // the row states it plainly on every surface.
+      const cancelled = event.payload.cancelled === true;
+      const reason =
+        typeof event.payload.reason === "string" && event.payload.reason.trim().length > 0
+          ? truncateDetail(event.payload.reason)
+          : undefined;
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "user-input.resolved",
-          summary: "User input submitted",
+          summary: cancelled ? "User input cancelled" : "User input submitted",
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             answers: event.payload.answers,
+            ...(cancelled ? { cancelled: true } : {}),
+            ...(cancelled && reason ? { detail: reason } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -754,6 +882,46 @@ export function runtimeEventToActivities(
           payload: {
             state: event.payload.state,
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    // Runtime-side context compaction. This is explicitly not a T3 checkpoint:
+    // it shrinks the provider's context window and never reverts user work, so
+    // the activity is labelled as compaction and carries no revert affordance.
+    case "session.context.updated": {
+      const { compaction, retry, usage } = event.payload;
+      // A durable activity is a claim that compaction happened, so it requires a
+      // phase transition. Retry- and usage-only snapshots restate the last known
+      // compaction status; recording those would append "Context compacted" once
+      // per retry for a compaction that already ended.
+      if (compaction.status === "idle" || event.payload.compactionTransitioned !== true) {
+        return [];
+      }
+      const summary =
+        compaction.status === "running"
+          ? "Compacting context"
+          : compaction.status === "succeeded"
+            ? "Context compacted"
+            : compaction.status === "failed"
+              ? "Context compaction failed"
+              : "Context compaction cancelled";
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: compaction.status === "failed" ? "error" : "info",
+          kind: "context-compaction",
+          summary,
+          payload: {
+            status: compaction.status,
+            trigger: compaction.trigger,
+            ...(compaction.reason !== undefined ? { detail: compaction.reason } : {}),
+            ...(retry !== undefined ? { retry } : {}),
+            ...(usage !== undefined ? { usage } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1525,6 +1693,7 @@ const make = Effect.gen(function* () {
           case "turn.started":
             return !conflictsWithActiveTurn || conflictingTurnStartIsPendingTurnStart;
           case "turn.completed":
+          case "turn.aborted":
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
             }
@@ -1555,7 +1724,8 @@ const make = Effect.gen(function* () {
         event.type === "session.exited" ||
         event.type === "thread.started" ||
         event.type === "turn.started" ||
-        event.type === "turn.completed"
+        event.type === "turn.completed" ||
+        event.type === "turn.aborted"
       ) {
         const status = (() => {
           switch (event.type) {
@@ -1571,6 +1741,8 @@ const make = Effect.gen(function* () {
               return normalizeRuntimeTurnState(event.payload.state) === "failed"
                 ? "error"
                 : "ready";
+            case "turn.aborted":
+              return "ready";
             case "session.started":
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
@@ -1581,7 +1753,9 @@ const make = Effect.gen(function* () {
         const nextActiveTurnId =
           event.type === "turn.started"
             ? (eventTurnId ?? null)
-            : event.type === "turn.completed" || event.type === "session.exited"
+            : event.type === "turn.completed" ||
+                event.type === "turn.aborted" ||
+                event.type === "session.exited"
               ? null
               : event.type === "session.state.changed" &&
                   !sessionStatusAllowsActiveTurn(
@@ -1635,6 +1809,599 @@ const make = Effect.gen(function* () {
               activeTurnId: nextActiveTurnId,
               lastError,
               updatedAt: now,
+              ...(event.type === "turn.completed" ||
+              event.type === "turn.aborted" ||
+              event.type === "session.exited" ||
+              (event.type === "session.state.changed" &&
+                (event.payload.state === "ready" ||
+                  event.payload.state === "error" ||
+                  event.payload.state === "stopped"))
+                ? {
+                    actionState: { queuedCount: 0, steering: [], followUps: [] },
+                    // A terminated or idle session has no live context work.
+                    // Leaving the last snapshot would show a stale "Compacting".
+                    contextState: EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
+                    // The catalog belongs to the live runtime process, so an
+                    // exited session drops it rather than offering commands
+                    // nothing can run. A finished turn keeps it: the session
+                    // still owns the same command files.
+                    ...(event.type === "session.exited"
+                      ? { commandCatalog: EMPTY_ORCHESTRATION_SESSION_COMMAND_CATALOG }
+                      : thread.session?.commandCatalog
+                        ? { commandCatalog: thread.session.commandCatalog }
+                        : {}),
+                    // Transient status describes the live runtime, so an exited
+                    // session drops the board instead of leaving a dead
+                    // extension's status text on every attached client.
+                    ...(event.type === "session.exited"
+                      ? { noticeBoard: EMPTY_ORCHESTRATION_SESSION_NOTICE_BOARD }
+                      : thread.session?.noticeBoard
+                        ? { noticeBoard: thread.session.noticeBoard }
+                        : {}),
+                    // Agents and observations belong to the live runtime, so an
+                    // exited session shows no agents rather than a roster whose
+                    // rows nothing can act on.
+                    ...(event.type === "session.exited"
+                      ? { agentRoster: EMPTY_ORCHESTRATION_SESSION_AGENT_ROSTER }
+                      : thread.session?.agentRoster
+                        ? { agentRoster: thread.session.agentRoster }
+                        : {}),
+                    // Goals and heartbeat controls belong to the live runtime
+                    // too: an exited session shows no board rather than
+                    // schedules whose Pause could never reach anything.
+                    ...(event.type === "session.exited"
+                      ? { goalBoard: EMPTY_ORCHESTRATION_SESSION_GOAL_BOARD }
+                      : thread.session?.goalBoard
+                        ? { goalBoard: thread.session.goalBoard }
+                        : {}),
+                  }
+                : {
+                    ...(thread.session?.actionState
+                      ? { actionState: thread.session.actionState }
+                      : {}),
+                    // A starting turn inherits no *in-flight* context work: a
+                    // "Compacting" that outlived the turn which produced it would
+                    // otherwise persist forever with nothing able to clear it,
+                    // permanently disabling the compaction control. Usage and a
+                    // finished compaction result are still current facts, so they
+                    // survive the turn boundary untouched. Tradeoff, accepted
+                    // deliberately: a session-level compaction that genuinely
+                    // spans a turn start reads as idle until its next phase
+                    // change, which is strictly better than a "Compacting" that
+                    // no event can ever clear.
+                    ...(thread.session?.contextState
+                      ? {
+                          contextState:
+                            event.type === "turn.started" &&
+                            thread.session.contextState.compaction.status === "running"
+                              ? {
+                                  // The retry belonged to the attempt that just
+                                  // lost its turn, so it goes with it.
+                                  compaction: { status: "idle", trigger: "automatic" },
+                                  ...(thread.session.contextState.usage === undefined
+                                    ? {}
+                                    : { usage: thread.session.contextState.usage }),
+                                }
+                              : thread.session.contextState,
+                        }
+                      : {}),
+                    ...(thread.session?.commandCatalog
+                      ? { commandCatalog: thread.session.commandCatalog }
+                      : {}),
+                    ...(thread.session?.noticeBoard
+                      ? { noticeBoard: thread.session.noticeBoard }
+                      : {}),
+                    ...(thread.session?.agentRoster
+                      ? { agentRoster: thread.session.agentRoster }
+                      : {}),
+                    ...(thread.session?.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+                  }),
+              ...(thread.session?.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session?.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      if (
+        event.type === "session.actions.updated" &&
+        // Snapshots belong only to a currently running persisted turn. Late
+        // provider notifications must never resurrect controls after a turn
+        // has reached a terminal state.
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId !== null &&
+        eventTurnId !== undefined &&
+        sameId(thread.session.activeTurnId, eventTurnId) &&
+        // An action snapshot is authenticated to the persisted session binding.
+        // Optional instance ids agree only when both sides are absent or equal.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        // Replacement only: native event is the authoritative bounded snapshot.
+        // Preserve bound identity rather than accepting it from this event.
+        const nextActionState = {
+          queuedCount: event.payload.queuedCount,
+          steering: [...event.payload.steering],
+          followUps: [...event.payload.followUps],
+          ...(event.payload.active ? { active: event.payload.active } : {}),
+        };
+        // Prime re-emits the same snapshot for unrelated session activity. A
+        // byte-identical repeat carries no new authoritative state, so dropping
+        // it here avoids a durable event and a projection write per repeat.
+        // Coalescing is write-path only: replay of the retained events is
+        // unchanged, and any differing snapshot still replaces state.
+        if (!sameActionState(thread.session.actionState, nextActionState)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-actions-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              actionState: nextActionState,
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Runtime context management state. This is a current-status projection,
+      // not scrollback: the snapshot replaces, so every attached client converges
+      // on the same value. It is explicitly not a T3 checkpoint.
+      if (
+        event.type === "session.context.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Authenticated to the persisted session binding, exactly like action
+        // snapshots: optional instance ids agree only when both are absent or equal.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+        // Deliberately not fenced to a turn: compaction is session-level in
+        // Prime, so automatic compaction legitimately runs between turns and the
+        // user is entitled to see it. Staleness is handled at the turn boundary
+        // instead, where an in-flight status that outlived its turn is cleared.
+      ) {
+        const payload = event.payload;
+        const nextContextState: OrchestrationSessionContextState = {
+          compaction: {
+            status: payload.compaction.status,
+            trigger: payload.compaction.trigger,
+            ...(payload.compaction.reason === undefined
+              ? {}
+              : { reason: payload.compaction.reason }),
+          },
+          ...(payload.retry === undefined
+            ? {}
+            : {
+                retry: {
+                  attempt: payload.retry.attempt,
+                  ...(payload.retry.maxAttempts === undefined
+                    ? {}
+                    : { maxAttempts: payload.retry.maxAttempts }),
+                  ...(payload.retry.reason === undefined ? {} : { reason: payload.retry.reason }),
+                },
+              }),
+          ...(payload.usage === undefined
+            ? {}
+            : {
+                usage: {
+                  usedTokens: payload.usage.usedTokens,
+                  ...(payload.usage.maxTokens === undefined
+                    ? {}
+                    : { maxTokens: payload.usage.maxTokens }),
+                  ...(payload.usage.inputTokens === undefined
+                    ? {}
+                    : { inputTokens: payload.usage.inputTokens }),
+                  ...(payload.usage.outputTokens === undefined
+                    ? {}
+                    : { outputTokens: payload.usage.outputTokens }),
+                  ...(payload.usage.compactsAutomatically === undefined
+                    ? {}
+                    : { compactsAutomatically: payload.usage.compactsAutomatically }),
+                },
+              }),
+        };
+        // Bounded update frequency: an identical snapshot carries no new state,
+        // so it produces neither a durable event nor a projection write.
+        if (!sameContextState(thread.session.contextState, nextContextState)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-context-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              contextState: nextContextState,
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Runtime command/prompt/skill discovery. Like context status this is a
+      // current-state projection rather than scrollback, and it is deliberately
+      // not fenced to a turn: the catalog belongs to the session, and users pick
+      // commands between turns.
+      if (
+        event.type === "session.commands.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Authenticated to the persisted session binding exactly like the other
+        // authoritative snapshots: optional instance ids agree only when both
+        // are absent or equal.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextCommandCatalog: OrchestrationSessionCommandCatalog = {
+          commands: event.payload.commands.map((command) => ({
+            name: command.name,
+            kind: command.kind,
+            source: command.source,
+            ...(command.description === undefined ? {} : { description: command.description }),
+            ...(command.location === undefined ? {} : { location: command.location }),
+          })),
+        };
+        // Discovery is cached on the host and re-read only on request, but an
+        // identical catalog still costs nothing here: no durable event and no
+        // projection write.
+        if (!sameCommandCatalog(thread.session.commandCatalog, nextCommandCatalog)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-commands-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              commandCatalog: nextCommandCatalog,
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Transient extension status. Deliberately not scrollback: the board is a
+      // bounded current-state projection, so a chatty extension costs one
+      // replaced snapshot instead of a flood of timeline rows.
+      if (
+        event.type === "session.notices.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextNoticeBoard: OrchestrationSessionNoticeBoard = {
+          notices: event.payload.notices.map((notice) => ({
+            key: notice.key,
+            kind: notice.kind,
+            severity: notice.severity,
+            text: notice.text,
+            ...(notice.lines === undefined ? {} : { lines: [...notice.lines] }),
+          })),
+        };
+        // A byte-identical board costs no durable event and no projection write:
+        // extensions repeat the same status string constantly.
+        if (!sameNoticeBoard(thread.session.noticeBoard, nextNoticeBoard)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-notices-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              noticeBoard: nextNoticeBoard,
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Root and subagent work. Deliberately not scrollback: an observed
+      // subagent contributes one bounded line to its own roster row, so the
+      // main transcript is never flooded with a second agent's output.
+      if (
+        event.type === "session.agents.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextAgentRoster: OrchestrationSessionAgentRoster = {
+          agents: event.payload.agents.map((agent) => ({
+            agentId: String(agent.agentId),
+            role: agent.role,
+            status: agent.status,
+            title: agent.title,
+            observed: agent.observed,
+            ...(agent.detail === undefined ? {} : { detail: agent.detail }),
+          })),
+        };
+        if (!sameAgentRoster(thread.session.agentRoster, nextAgentRoster)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-agents-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              agentRoster: nextAgentRoster,
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Goal progress and the heartbeats this environment owns. Also not
+      // transcript: a schedule that fires every twenty minutes must not write
+      // twenty-minute noise into the conversation.
+      if (
+        event.type === "session.goals.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextGoalBoard: OrchestrationSessionGoalBoard = {
+          ...(event.payload.goal
+            ? {
+                goal: {
+                  goalId: String(event.payload.goal.goalId),
+                  title: event.payload.goal.title,
+                  status: event.payload.goal.status,
+                  ...(event.payload.goal.detail === undefined
+                    ? {}
+                    : { detail: event.payload.goal.detail }),
+                },
+              }
+            : {}),
+          heartbeats: event.payload.heartbeats.map((heartbeat) => ({
+            heartbeatId: String(heartbeat.heartbeatId),
+            title: heartbeat.title,
+            intervalSeconds: heartbeat.intervalSeconds,
+            status: heartbeat.status,
+            ...(heartbeat.nextRunAt === undefined ? {} : { nextRunAt: heartbeat.nextRunAt }),
+          })),
+          ...(event.payload.resident ? { resident: event.payload.resident } : {}),
+        };
+        if (!sameGoalBoard(thread.session.goalBoard, nextGoalBoard)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-goals-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              goalBoard: nextGoalBoard,
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // The session's name and the points a fork may start from. Identity, not
+      // transcript: a rename must not write a line into the conversation, and a
+      // fork-point page is a chooser, not history.
+      if (
+        event.type === "session.identity.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextIdentityCard: OrchestrationSessionIdentityCard = {
+          ...(event.payload.name === undefined ? {} : { name: event.payload.name }),
+          forkPoints: event.payload.forkPoints.map((point) => ({
+            forkPointId: String(point.forkPointId),
+            label: point.label,
+            role: point.role,
+            index: point.index,
+          })),
+          ...(event.payload.truncated ? { truncated: true as const } : {}),
+        };
+        if (!sameIdentityCard(thread.session.identityCard, nextIdentityCard)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-identity-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              identityCard: nextIdentityCard,
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Resume state is authoritative even when no provider session came up.
+      // In particular, a refusal on a stopped session must reach clients so
+      // they do not silently continue as a fresh conversation.
+      if (
+        event.type === "session.resume.updated" &&
+        thread.session &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextResumeState = event.payload.resume;
+        if (!sameResumeState(thread.session.resumeState, nextResumeState)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-resume-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              resumeState: nextResumeState,
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
             },
             createdAt: now,
           });
@@ -1885,6 +2652,23 @@ const make = Effect.gen(function* () {
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
               updatedAt: now,
+              actionState: { queuedCount: 0, steering: [], followUps: [] },
+              contextState: EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
+              // The process may still be alive behind a runtime error, so the
+              // catalog it reported is preserved rather than silently emptied.
+              ...(thread.session?.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session?.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session?.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session?.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session?.identityCard
+                ? { identityCard: thread.session.identityCard }
+                : {}),
+              ...(thread.session?.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session?.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
             },
             createdAt: now,
           });

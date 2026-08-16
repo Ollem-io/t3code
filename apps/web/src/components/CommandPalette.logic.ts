@@ -11,6 +11,15 @@ import { sortThreads } from "../lib/threadSort";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 
+import {
+  PRIME_COMMAND_ORIGIN,
+  hasPrimeCommandSurface,
+  primeCommandOriginLabel,
+  resolvePrimeCommandInvocation,
+  type PrimeCommandCapabilities,
+  type PrimeCommandEntry,
+} from "./chat/primeCommands";
+
 export const RECENT_THREAD_LIMIT = 12;
 export const ITEM_ICON_CLASS = "size-4 text-icon-muted";
 export const ADDON_ICON_CLASS = "size-4";
@@ -152,6 +161,60 @@ export function buildProjectActionItems(input: {
   }));
 }
 
+/**
+ * Prime-discovered commands, prompts, and skills as palette actions.
+ *
+ * Every item states its Prime origin, and selecting one only writes an ordinary
+ * prompt into the composer — the palette never sends a turn by itself, and a
+ * command that vanished from the catalog fails with a stated reason instead of
+ * a prompt the runtime would reject.
+ */
+export function buildPrimeCommandItems(input: {
+  providerName: string | null | undefined;
+  capabilities: PrimeCommandCapabilities | undefined;
+  commands: ReadonlyArray<PrimeCommandEntry> | undefined;
+  /**
+   * The newest catalog at click time. Resolving against the rendered array
+   * could never fail, so a command deleted on the host would be inserted as
+   * prose; this reads live session state instead.
+   */
+  getCommands?: () => ReadonlyArray<PrimeCommandEntry> | undefined;
+  icon: ReactNode;
+  insert: (prompt: string) => void;
+  onUnavailable?: (reason: string) => void;
+}): CommandPaletteActionItem[] {
+  if (!hasPrimeCommandSurface(input.providerName, input.capabilities)) return [];
+  return (input.commands ?? []).map((entry) => ({
+    kind: "action" as const,
+    value: `prime-command:${entry.name}`,
+    searchTerms: [
+      entry.name,
+      `/${entry.name}`,
+      PRIME_COMMAND_ORIGIN,
+      entry.kind,
+      entry.source,
+      ...(entry.description === undefined ? [] : [entry.description]),
+    ],
+    title: `/${entry.name}`,
+    description:
+      entry.description === undefined
+        ? primeCommandOriginLabel(entry)
+        : `${primeCommandOriginLabel(entry)} — ${entry.description}`,
+    icon: input.icon,
+    run: async () => {
+      const decision = resolvePrimeCommandInvocation(
+        input.getCommands === undefined ? input.commands : input.getCommands(),
+        entry.name,
+      );
+      if (!decision.ok) {
+        input.onUnavailable?.(decision.reason);
+        return;
+      }
+      input.insert(decision.prompt);
+    },
+  }));
+}
+
 export type BuildThreadActionItemsThread = Pick<
   SidebarThreadSummary,
   | "archivedAt"
@@ -283,19 +346,24 @@ export function filterCommandPaletteGroups(input: {
   threadSearchItems: ReadonlyArray<CommandPaletteActionItem>;
 }): CommandPaletteGroup[] {
   const isActionsFilter = input.query.startsWith(">");
+  // The ">" prefix means "actions only". Prime commands are actions too, just
+  // runtime-supplied ones, so they stay visible instead of vanishing for anyone
+  // who habitually prefixes their search.
+  const isActionsGroup = (group: CommandPaletteGroup) =>
+    group.value === "actions" || group.value === "prime-commands";
   const searchQuery = isActionsFilter ? input.query.slice(1) : input.query;
   const normalizedQuery = normalizeSearchText(searchQuery);
 
   if (normalizedQuery.length === 0) {
     if (isActionsFilter) {
-      return input.activeGroups.filter((group) => group.value === "actions");
+      return input.activeGroups.filter(isActionsGroup);
     }
     return [...input.activeGroups];
   }
 
   let baseGroups = [...input.activeGroups];
   if (isActionsFilter) {
-    baseGroups = baseGroups.filter((group) => group.value === "actions");
+    baseGroups = baseGroups.filter(isActionsGroup);
   } else if (!input.isInSubmenu) {
     baseGroups = baseGroups.filter((group) => group.value !== "recent-threads");
   }

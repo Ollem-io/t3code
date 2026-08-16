@@ -1,0 +1,2 @@
+{"id":"fixture-2","type":"response","command":"get_available_models","success":true,"data":{"models":[]},"futureField":"ignored"}
+{"type":"agent_start","futureField":"ignored"}

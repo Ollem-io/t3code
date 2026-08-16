@@ -28,6 +28,12 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { PrimeAgentsSection, type PrimeAgentsSectionProps } from "./agents/PrimeAgentsSection";
+import { primeAgentsView } from "./agents/primeAgents";
+import { PrimeHeartbeatPanel, type PrimeHeartbeatPanelProps } from "./chat/PrimeHeartbeatPanel";
+import { PrimeForkPanel, type PrimeForkPanelProps } from "./chat/PrimeForkPanel";
+import { primeIdentityView } from "./chat/primeFork";
+import { primeGoalBoardView } from "./chat/primeHeartbeat";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -522,12 +528,52 @@ export function AgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  prime,
+  primeGoals,
+  primeNaming,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  /** Runtime-reported root/subagent roster, for providers that have one. */
+  prime?: PrimeAgentsSectionProps | undefined;
+  /** Runtime-reported goal and owned-heartbeat board, for providers that have one. */
+  primeGoals?: PrimeHeartbeatPanelProps | undefined;
+  /** Runtime-reported session name and fork-point page, for providers that have one. */
+  primeNaming?: PrimeForkPanelProps | undefined;
 }) {
-  if (!model.hasAgents) {
+  // A runtime roster is agents too: the empty state must not claim there are
+  // none while Prime is reporting a root and two subagents.
+  const primeView = prime
+    ? primeAgentsView(prime.providerName, prime.capabilities, prime.roster, prime.session)
+    : ({ kind: "hidden" } as const);
+  // Goals and heartbeats live in the same surface, and are the same kind of
+  // claim: while either has something to say, this panel is not empty.
+  const primeGoalsView = primeGoals
+    ? primeGoalBoardView(
+        primeGoals.providerName,
+        primeGoals.capabilities,
+        primeGoals.board,
+        primeGoals.session,
+      )
+    : ({ kind: "hidden" } as const);
+  // The session's own identity belongs to the same surface, for the same
+  // reason: while it has a name or a fork point to offer, this panel is not
+  // empty.
+  const primeNamingView = primeNaming
+    ? primeIdentityView(
+        primeNaming.providerName,
+        primeNaming.capabilities,
+        primeNaming.card,
+        primeNaming.session,
+      )
+    : ({ kind: "hidden" } as const);
+  if (
+    !model.hasAgents &&
+    primeView.kind === "hidden" &&
+    primeGoalsView.kind === "hidden" &&
+    primeNamingView.kind === "hidden"
+  ) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
@@ -544,6 +590,9 @@ export function AgentsPanel({
     <div className="flex h-full min-h-0 flex-col">
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 p-2">
+          {prime ? <PrimeAgentsSection {...prime} /> : null}
+          {primeGoals ? <PrimeHeartbeatPanel {...primeGoals} /> : null}
+          {primeNaming ? <PrimeForkPanel {...primeNaming} /> : null}
           {model.workflows.map((group) => (
             <WorkflowSection
               key={group.workflow.id}

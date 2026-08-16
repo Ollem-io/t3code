@@ -27,6 +27,7 @@ import {
 } from "../../components/AndroidScreenHeader";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { uuidv4 } from "../../lib/uuid";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { connectionTone } from "../connection/connectionTone";
 
@@ -214,6 +215,39 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
+  const steerThread = useAtomCommand(threadEnvironment.steer, "thread steer");
+  const addThreadFollowUp = useAtomCommand(threadEnvironment.addFollowUp, "thread follow-up");
+  const requestThreadCompaction = useAtomCommand(
+    threadEnvironment.requestCompaction,
+    "thread compaction",
+  );
+  const refreshThreadUsage = useAtomCommand(threadEnvironment.refreshUsage, "thread usage refresh");
+  const observeThreadAgent = useAtomCommand(threadEnvironment.observeAgent, "agent observe");
+  const unobserveThreadAgent = useAtomCommand(threadEnvironment.unobserveAgent, "agent unobserve");
+  const createThreadHeartbeat = useAtomCommand(
+    threadEnvironment.createHeartbeat,
+    "heartbeat create",
+  );
+  const pauseThreadHeartbeat = useAtomCommand(threadEnvironment.pauseHeartbeat, "heartbeat pause");
+  const resumeThreadHeartbeat = useAtomCommand(
+    threadEnvironment.resumeHeartbeat,
+    "heartbeat resume",
+  );
+  const deleteThreadHeartbeat = useAtomCommand(
+    threadEnvironment.deleteHeartbeat,
+    "heartbeat delete",
+  );
+  const renameThreadSession = useAtomCommand(threadEnvironment.renameSession, "session rename");
+  const forkThreadSession = useAtomCommand(threadEnvironment.forkSession, "session fork");
+  const recoverPrimeResume = useAtomCommand(
+    threadEnvironment.recoverPrimeResume,
+    "prime resume recovery",
+  );
+  const refreshThreadCommands = useAtomCommand(
+    threadEnvironment.refreshCommands,
+    "thread command refresh",
+  );
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -478,7 +512,7 @@ function ThreadRouteContent(
   const handleOpenConnectionEditor = useCallback(() => {
     void navigation.navigate("Connections");
   }, [navigation]);
-  const handleStopThread = useCallback(() => {
+  const handleInterruptThread = useCallback(() => {
     if (
       !selectedThread ||
       (selectedThread.session?.status !== "running" &&
@@ -496,6 +530,197 @@ function ThreadRouteContent(
       },
     });
   }, [interruptThreadTurn, selectedThread]);
+  const handleRuntimeAction = useCallback(
+    async (mode: "steer" | "followUp", text: string): Promise<boolean> => {
+      if (!selectedThread || !text.trim()) return false;
+      const id = `${mode}-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+      const result =
+        mode === "steer"
+          ? await steerThread({
+              environmentId: selectedThread.environmentId,
+              input: { threadId: selectedThread.id, steerId: id, text: text.trim() },
+            })
+          : await addThreadFollowUp({
+              environmentId: selectedThread.environmentId,
+              input: { threadId: selectedThread.id, followUpId: id, text: text.trim() },
+            });
+      return result._tag !== "Failure";
+    },
+    [addThreadFollowUp, selectedThread, steerThread],
+  );
+
+  // Runtime context management. Compaction shortens the agent's context; it is
+  // not a checkpoint and never reverts user work.
+  const handleRequestCompaction = useCallback(async (): Promise<boolean> => {
+    if (!selectedThread) return false;
+    const result = await requestThreadCompaction({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        compactionId: `compaction-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+      },
+    });
+    return result._tag !== "Failure";
+  }, [requestThreadCompaction, selectedThread]);
+
+  const handleRefreshUsage = useCallback(async (): Promise<boolean> => {
+    if (!selectedThread) return false;
+    const result = await refreshThreadUsage({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        requestId: `usage-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+      },
+    });
+    return result._tag !== "Failure";
+  }, [refreshThreadUsage, selectedThread]);
+
+  // Watching a runtime agent, and its exact reverse. The host re-checks that
+  // this thread's session still reports the agent before anything happens.
+  const handleToggleAgentObservation = useCallback(
+    async (agentId: string, action: "task.observe" | "task.unobserve"): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const input = { threadId: selectedThread.id, agentId };
+      const result =
+        action === "task.observe"
+          ? await observeThreadAgent({ environmentId: selectedThread.environmentId, input })
+          : await unobserveThreadAgent({ environmentId: selectedThread.environmentId, input });
+      return result._tag !== "Failure";
+    },
+    [observeThreadAgent, selectedThread, unobserveThreadAgent],
+  );
+
+  // Renaming the provider session. Reversible by renaming again, so it commits
+  // without a confirmation; the host keeps the T3 thread title in step.
+  const handleRenameSession = useCallback(
+    async (name: string): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const result = await renameThreadSession({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, name },
+      });
+      return result._tag !== "Failure";
+    },
+    [renameThreadSession, selectedThread],
+  );
+
+  // Forking. The thread id is chosen here so a retried fork resolves to the
+  // same thread; the host creates that thread only after the runtime confirms
+  // the fork.
+  const handleForkSession = useCallback(
+    async (forkPointId: string | undefined): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const result = await forkThreadSession({
+        environmentId: selectedThread.environmentId,
+        input: {
+          threadId: selectedThread.id,
+          // A real v4 uuid, never a clock reading: two forks in the same
+          // millisecond must not collide onto one thread id.
+          forkThreadId: ThreadId.make(`fork-${uuidv4()}`),
+          ...(forkPointId === undefined ? {} : { forkPointId }),
+        },
+      });
+      return result._tag !== "Failure";
+    },
+    [forkThreadSession, selectedThread],
+  );
+
+  // PA-B04 — answer a refused Prime Agent resume. Only a confirmed fresh start
+  // may carry the cursor discard; the host re-checks that before honouring it.
+  const handleRecoverPrimeResume = useCallback(
+    async (
+      intent:
+        | { readonly kind: "retry" }
+        | { readonly kind: "fresh"; readonly discardCursor: boolean },
+    ): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const result = await recoverPrimeResume({
+        environmentId: selectedThread.environmentId,
+        input: {
+          threadId: selectedThread.id,
+          intent: intent.kind,
+          ...(intent.kind === "fresh" && intent.discardCursor ? { discardCursor: true } : {}),
+        },
+      });
+      return result._tag !== "Failure";
+    },
+    [recoverPrimeResume, selectedThread],
+  );
+
+  // Reverse navigation for a fork. Ancestry is a thread record, so this works
+  // with the Prime Agent session gone and the provider uninstalled.
+  const handleOpenSourceThread = useCallback(
+    (sourceThreadId: string) => {
+      if (!selectedThread) return;
+      navigation.navigate("Thread", {
+        environmentId: selectedThread.environmentId,
+        threadId: ThreadId.make(sourceThreadId),
+      });
+    },
+    [navigation, selectedThread],
+  );
+
+  // Creating owned scheduled work. The disclosure has already been shown and
+  // confirmed by the time this runs; the host still re-checks capability and
+  // ownership before anything reaches the runtime.
+  const handleCreateHeartbeat = useCallback(
+    async (draft: {
+      readonly title: string;
+      readonly intervalSeconds: number;
+    }): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const result = await createThreadHeartbeat({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, ...draft },
+      });
+      return result._tag !== "Failure";
+    },
+    [createThreadHeartbeat, selectedThread],
+  );
+
+  // Pause, its exact reverse, and delete. Each targets one owned heartbeat.
+  const handleHeartbeatAction = useCallback(
+    async (
+      heartbeatId: string,
+      action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
+    ): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const payload = {
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, heartbeatId },
+      };
+      const result =
+        action === "heartbeat.pause"
+          ? await pauseThreadHeartbeat(payload)
+          : action === "heartbeat.resume"
+            ? await resumeThreadHeartbeat(payload)
+            : await deleteThreadHeartbeat(payload);
+      return result._tag !== "Failure";
+    },
+    [deleteThreadHeartbeat, pauseThreadHeartbeat, resumeThreadHeartbeat, selectedThread],
+  );
+
+  // Opening the command list is the only moment it is read, so it is the only
+  // moment it is refreshed: bounded, explicit, and never polled.
+  const handleRefreshCommands = useCallback(async (): Promise<boolean> => {
+    if (!selectedThread) return false;
+    const result = await refreshThreadCommands({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        requestId: `commands-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+      },
+    });
+    return result._tag !== "Failure";
+  }, [refreshThreadCommands, selectedThread]);
+
+  const handleStopThread = useCallback(() => {
+    if (!selectedThread) return;
+    return stopThreadSession({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id },
+    });
+  }, [selectedThread, stopThreadSession]);
 
   const handleOpenTerminal = useCallback(
     (nextTerminalId?: string | null) => {
@@ -798,7 +1023,20 @@ function ThreadRouteContent(
           onNativePasteImages={composer.onNativePasteImages}
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
+          onInterruptThread={handleInterruptThread}
           onStopThread={handleStopThread}
+          onRuntimeAction={handleRuntimeAction}
+          onRequestCompaction={handleRequestCompaction}
+          onRefreshUsage={handleRefreshUsage}
+          onToggleAgentObservation={handleToggleAgentObservation}
+          onCreateHeartbeat={handleCreateHeartbeat}
+          onHeartbeatAction={handleHeartbeatAction}
+          onRenameSession={handleRenameSession}
+          onForkSession={handleForkSession}
+          onRecoverPrimeResume={handleRecoverPrimeResume}
+          forkOrigin={selectedThread.forkedFrom ?? null}
+          onOpenSourceThread={handleOpenSourceThread}
+          onRefreshCommands={handleRefreshCommands}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

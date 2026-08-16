@@ -13,7 +13,7 @@ import {
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
-  type ThreadId,
+  ThreadId,
   type TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
@@ -31,6 +31,11 @@ import {
   effectiveSnoozed,
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  primeResumeBlocksComposer,
+  primeResumeRecoveryRoute,
+  type PrimeResumeIntent,
+} from "@t3tools/client-runtime/prime-resume";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -176,7 +181,7 @@ import {
   nextProjectScriptId,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
-import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
+import { newDraftId, newMessageId, newThreadId, randomUUID } from "~/lib/utils";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
@@ -187,7 +192,10 @@ import {
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import {
+  resolveAppModelSelectionForInstance,
+  resolveBoundModelSelectionState,
+} from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { preventRepeatedTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
@@ -245,6 +253,12 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { PrimeContextStatus } from "./chat/PrimeContextStatus";
+import { PrimeResumeBanner } from "./chat/PrimeResumeBanner";
+import { usePrimeResumeModel } from "./chat/usePrimeResumeModel";
+import { resolveSendDisabledReason } from "./chat/sendDisabledReason";
+import { PrimeExtensionStatus } from "./chat/PrimeExtensionStatus";
+import { hasPrimeRunningTurn } from "./chat/primeContext";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -272,6 +286,7 @@ import {
   shouldShowThreadErrorBanner,
   ThreadErrorBanner,
 } from "./chat/ThreadErrorBanner";
+import { PrimeForkOriginBanner } from "./chat/PrimeForkOriginBanner";
 import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import { ThreadSyncStatusPill } from "./chat/ThreadSyncStatusPill";
@@ -1224,6 +1239,41 @@ function ChatViewContent(props: ChatViewProps) {
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
+    reportFailure: false,
+  });
+  const steerThread = useAtomCommand(threadEnvironment.steer, { reportFailure: false });
+  const addThreadFollowUp = useAtomCommand(threadEnvironment.addFollowUp, { reportFailure: false });
+  const requestThreadCompaction = useAtomCommand(threadEnvironment.requestCompaction, {
+    reportFailure: false,
+  });
+  const refreshThreadUsage = useAtomCommand(threadEnvironment.refreshUsage, {
+    reportFailure: false,
+  });
+  const observeThreadAgent = useAtomCommand(threadEnvironment.observeAgent, {
+    reportFailure: false,
+  });
+  const unobserveThreadAgent = useAtomCommand(threadEnvironment.unobserveAgent, {
+    reportFailure: false,
+  });
+  const createThreadHeartbeat = useAtomCommand(threadEnvironment.createHeartbeat, {
+    reportFailure: false,
+  });
+  const pauseThreadHeartbeat = useAtomCommand(threadEnvironment.pauseHeartbeat, {
+    reportFailure: false,
+  });
+  const resumeThreadHeartbeat = useAtomCommand(threadEnvironment.resumeHeartbeat, {
+    reportFailure: false,
+  });
+  const deleteThreadHeartbeat = useAtomCommand(threadEnvironment.deleteHeartbeat, {
+    reportFailure: false,
+  });
+  const renameThreadSession = useAtomCommand(threadEnvironment.renameSession, {
+    reportFailure: false,
+  });
+  const forkThreadSession = useAtomCommand(threadEnvironment.forkSession, {
+    reportFailure: false,
+  });
+  const recoverPrimeResumeCommand = useAtomCommand(threadEnvironment.recoverPrimeResume, {
     reportFailure: false,
   });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
@@ -4824,8 +4874,8 @@ function ChatViewContent(props: ChatViewProps) {
       }
       const confirmed = await localApi.dialogs.confirm(
         [
-          `Revert this thread to checkpoint ${turnCount}?`,
-          "This will discard newer messages and turn diffs in this thread.",
+          `Restore workspace checkpoint ${turnCount}?`,
+          "This restores T3-owned workspace files. Thread messages and provider conversation history are retained unless the provider explicitly supports rewind.",
           "This action cannot be undone.",
         ].join("\n"),
         { variant: "destructive" },
@@ -5334,6 +5384,262 @@ function ChatViewContent(props: ChatViewProps) {
     }
   };
 
+  const onRuntimeAction = useCallback(
+    async (mode: "steer" | "followUp", text: string): Promise<boolean> => {
+      if (!activeThread || !text.trim()) return false;
+      // Prefixed to satisfy the FollowUpId brand's leading-letter pattern.
+      const id = `${mode}-${randomUUID()}`;
+      const result =
+        mode === "steer"
+          ? await steerThread({
+              environmentId,
+              input: { threadId: activeThread.id, steerId: id, text: text.trim() },
+            })
+          : await addThreadFollowUp({
+              environmentId,
+              input: { threadId: activeThread.id, followUpId: id, text: text.trim() },
+            });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Runtime action failed.",
+        );
+        return false;
+      }
+      clearComposerDraftContent(composerDraftTarget);
+      return true;
+    },
+    [
+      activeThread,
+      addThreadFollowUp,
+      clearComposerDraftContent,
+      composerDraftTarget,
+      environmentId,
+      setThreadError,
+      steerThread,
+    ],
+  );
+
+  // Runtime context management. Compaction shortens the agent's context; it is
+  // not a T3 checkpoint and never reverts user work.
+  const onRequestCompaction = useCallback(async (): Promise<boolean> => {
+    if (!activeThread) return false;
+    // Prefixed to satisfy the runtime-extension id brand's leading-letter pattern.
+    const result = await requestThreadCompaction({
+      environmentId,
+      input: { threadId: activeThread.id, compactionId: `compaction-${randomUUID()}` },
+    });
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
+      setThreadError(
+        activeThread.id,
+        error instanceof Error ? error.message : "Compaction request failed.",
+      );
+      return false;
+    }
+    return true;
+  }, [activeThread, environmentId, requestThreadCompaction, setThreadError]);
+
+  const onRefreshUsage = useCallback(async (): Promise<boolean> => {
+    if (!activeThread) return false;
+    const result = await refreshThreadUsage({
+      environmentId,
+      input: { threadId: activeThread.id, requestId: `usage-${randomUUID()}` },
+    });
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
+      setThreadError(
+        activeThread.id,
+        error instanceof Error ? error.message : "Context usage refresh failed.",
+      );
+      return false;
+    }
+    return true;
+  }, [activeThread, environmentId, refreshThreadUsage, setThreadError]);
+
+  // Watching a runtime agent, and its exact reverse. Ownership is re-checked
+  // server-side against the roster this thread's session reports.
+  const onToggleAgentObservation = useCallback(
+    async (
+      agent: { readonly agentId: string },
+      action: "task.observe" | "task.unobserve",
+    ): Promise<boolean> => {
+      if (!activeThread) return false;
+      const input = { threadId: activeThread.id, agentId: agent.agentId };
+      const result =
+        action === "task.observe"
+          ? await observeThreadAgent({ environmentId, input })
+          : await unobserveThreadAgent({ environmentId, input });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Agent observation request failed.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [activeThread, environmentId, observeThreadAgent, setThreadError, unobserveThreadAgent],
+  );
+
+  // Creating owned scheduled work. The resident-daemon disclosure has already
+  // been shown and confirmed in the panel; the host re-checks capability and
+  // bounds before anything reaches the runtime.
+  const onCreateHeartbeat = useCallback(
+    async (draft: {
+      readonly title: string;
+      readonly intervalSeconds: number;
+    }): Promise<boolean> => {
+      if (!activeThread) return false;
+      const result = await createThreadHeartbeat({
+        environmentId,
+        input: { threadId: activeThread.id, ...draft },
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Heartbeat request failed.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [activeThread, createThreadHeartbeat, environmentId, setThreadError],
+  );
+
+  // Renaming the provider session. Reversible by renaming again, so it needs no
+  // confirmation; the host keeps the T3 thread title in step.
+  const onRenameSession = useCallback(
+    async (name: string): Promise<boolean> => {
+      if (!activeThread) return false;
+      const result = await renameThreadSession({
+        environmentId,
+        input: { threadId: activeThread.id, name },
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Session rename failed.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [activeThread, environmentId, renameThreadSession, setThreadError],
+  );
+
+  // Forking. The thread id is chosen here so a retried fork resolves to the
+  // same thread; the host creates that thread only after the runtime confirms
+  // the fork, so a refused fork leaves nothing behind.
+  const onForkSession = useCallback(
+    async (forkPointId: string | undefined): Promise<boolean> => {
+      if (!activeThread) return false;
+      const result = await forkThreadSession({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          forkThreadId: newThreadId(),
+          ...(forkPointId === undefined ? {} : { forkPointId }),
+        },
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(activeThread.id, error instanceof Error ? error.message : "Fork failed.");
+        return false;
+      }
+      return true;
+    },
+    [activeThread, environmentId, forkThreadSession, setThreadError],
+  );
+
+  // PA-B04 — the durable resume outcome this thread is showing, and the one
+  // place its recovery choices are dispatched from.
+  const primeResume = usePrimeResumeModel({
+    threadId: activeThread?.id,
+    state: activeThread?.session?.resumeState,
+    sessionStatus: activeThread?.session?.status,
+    connected: !activeEnvironmentUnavailable,
+  });
+  const primeResumeComposerBlocked = primeResumeBlocksComposer(
+    activeThread?.session?.providerName,
+    primeResume.model,
+  );
+  const onPrimeResumeRecover = useCallback(
+    (intent: PrimeResumeIntent) => {
+      if (!activeThread) return;
+      // Recorded before dispatch so the banner's buttons go inert immediately;
+      // the host's next published state clears it.
+      primeResume.noteChoice(intent);
+      // Forking is not a resume operation and already has an end-to-end
+      // command, so it is reused rather than duplicated: a fork keeps the
+      // refused session exactly where it is and continues from this thread's
+      // history in a new thread.
+      const route = primeResumeRecoveryRoute(intent);
+      if (route.kind === "fork") {
+        // A fork publishes no resume state for this thread, so its pending
+        // marker is cleared when the command settles: the buttons stay inert
+        // for the whole round trip (one click cannot become two forked
+        // threads) and come back afterwards.
+        const forThreadId = activeThread.id;
+        void Promise.resolve(onForkSession(undefined)).finally(() => {
+          primeResume.noteSettled(forThreadId);
+        });
+        return;
+      }
+      void recoverPrimeResumeCommand({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          intent: route.intent,
+          ...(route.discardCursor ? { discardCursor: true } : {}),
+        },
+      });
+    },
+    [activeThread, environmentId, onForkSession, primeResume, recoverPrimeResumeCommand],
+  );
+
+  // Pause, its exact reverse, and delete. Each targets one owned heartbeat, and
+  // ownership is re-checked server-side against the board this session reports.
+  const onHeartbeatAction = useCallback(
+    async (
+      heartbeat: { readonly heartbeatId: string },
+      action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
+    ): Promise<boolean> => {
+      if (!activeThread) return false;
+      const payload = {
+        environmentId,
+        input: { threadId: activeThread.id, heartbeatId: heartbeat.heartbeatId },
+      };
+      const result =
+        action === "heartbeat.pause"
+          ? await pauseThreadHeartbeat(payload)
+          : action === "heartbeat.resume"
+            ? await resumeThreadHeartbeat(payload)
+            : await deleteThreadHeartbeat(payload);
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Heartbeat request failed.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [
+      activeThread,
+      deleteThreadHeartbeat,
+      environmentId,
+      pauseThreadHeartbeat,
+      resumeThreadHeartbeat,
+      setThreadError,
+    ],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -5823,6 +6129,12 @@ function ChatViewContent(props: ChatViewProps) {
       if (!activeThread) {
         return null;
       }
+      const targetProvider = providerStatuses.find(
+        (snapshot) => snapshot.instanceId === instanceId,
+      );
+      if (!targetProvider) {
+        return "This provider is no longer available. Open the model picker and re-select an available provider/model.";
+      }
       const reason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
         hasStartedSession: activeThread.session !== null,
@@ -5842,7 +6154,16 @@ function ChatViewContent(props: ChatViewProps) {
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
       const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-      const resolvedDriverKind = entry?.driver ?? null;
+      if (!entry) {
+        toastManager.add({
+          type: "warning",
+          title: "Provider unavailable",
+          description: "Open the model picker and re-select an available provider/model.",
+        });
+        scheduleComposerFocus();
+        return;
+      }
+      const resolvedDriverKind = entry.driver;
       if (
         lockedProvider !== null &&
         resolvedDriverKind !== null &&
@@ -6111,6 +6432,39 @@ function ChatViewContent(props: ChatViewProps) {
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
+        prime={{
+          providerName: activeThread?.session?.providerName,
+          capabilities: activeThread?.session?.runtimeCapabilities,
+          roster: activeThread?.session?.agentRoster,
+          session: activeThread?.session,
+          onToggleObservation: (agent, action) => {
+            void onToggleAgentObservation(agent, action);
+          },
+        }}
+        primeNaming={{
+          providerName: activeThread?.session?.providerName,
+          capabilities: activeThread?.session?.runtimeCapabilities,
+          card: activeThread?.session?.identityCard,
+          session: activeThread?.session,
+          onRenameSession: (name) => {
+            void onRenameSession(name);
+          },
+          onForkSession: (forkPointId) => {
+            void onForkSession(forkPointId);
+          },
+        }}
+        primeGoals={{
+          providerName: activeThread?.session?.providerName,
+          capabilities: activeThread?.session?.runtimeCapabilities,
+          board: activeThread?.session?.goalBoard,
+          session: activeThread?.session,
+          onCreateHeartbeat: (draft) => {
+            void onCreateHeartbeat(draft);
+          },
+          onHeartbeatAction: (heartbeat, action) => {
+            void onHeartbeatAction(heartbeat, action);
+          },
+        }}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
@@ -6200,6 +6554,21 @@ function ChatViewContent(props: ChatViewProps) {
             setThreadError(activeThread.id, null);
             dismissThreadErrorBannerForSession(threadErrorBannerKey);
             setThreadErrorBannerDismissTick((tick) => tick + 1);
+          }}
+        />
+        {/* Ancestry sits with the thread, not with the provider panel: a fork
+            has to state where it came from and offer the way back even when the
+            Prime Agent session is gone. */}
+        <PrimeForkOriginBanner
+          origin={activeThread.forkedFrom ?? null}
+          onOpenSourceThread={(sourceThreadId) => {
+            void navigate({
+              to: "/$environmentId/$threadId",
+              params: {
+                environmentId: activeThread.environmentId,
+                threadId: ThreadId.make(sourceThreadId),
+              },
+            });
           }}
         />
         {/* Main content area with optional plan sidebar */}
@@ -6316,6 +6685,26 @@ function ChatViewContent(props: ChatViewProps) {
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
                   ) : null}
+                  <PrimeResumeBanner
+                    providerName={activeThread?.session?.providerName}
+                    model={primeResume.model}
+                    onRecover={onPrimeResumeRecover}
+                  />
+                  <PrimeContextStatus
+                    providerName={activeThread?.session?.providerName}
+                    capabilities={activeThread?.session?.runtimeCapabilities}
+                    state={activeThread?.session?.contextState}
+                    hasRunningTurn={hasPrimeRunningTurn(activeThread?.session)}
+                    onRequestCompaction={onRequestCompaction}
+                    onRefreshUsage={onRefreshUsage}
+                  />
+                  <PrimeExtensionStatus
+                    providerName={activeThread?.session?.providerName}
+                    capabilities={activeThread?.session?.runtimeCapabilities}
+                    board={activeThread?.session?.noticeBoard}
+                    session={activeThread?.session}
+                    pendingDialogCount={pendingUserInputs.length}
+                  />
                   <div
                     className="relative"
                     style={
@@ -6349,7 +6738,17 @@ function ChatViewContent(props: ChatViewProps) {
                             phase={phase}
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
-                            sendDisabledReason={threadDetailLoading ? "Messages loading" : null}
+                            sendDisabledReason={resolveSendDisabledReason({
+                              primeResumeBlocked: primeResumeComposerBlocked,
+                              threadDetailLoading,
+                              modelSelectionReason: activeThread?.modelSelection
+                                ? resolveBoundModelSelectionState(
+                                    settings,
+                                    providerStatuses as ServerProvider[],
+                                    activeThread.modelSelection,
+                                  ).sendDisabledReason
+                                : null,
+                            })}
                             isPreparingWorktree={isPreparingWorktree}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}
@@ -6383,6 +6782,7 @@ function ChatViewContent(props: ChatViewProps) {
                             composerElementContextsRef={composerElementContextsRef}
                             onSend={onSend}
                             onInterrupt={onInterrupt}
+                            onRuntimeAction={onRuntimeAction}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}
                             onSelectActivePendingUserInputOption={

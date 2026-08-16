@@ -226,6 +226,13 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
+import {
+  hasPrimeRuntimeActions,
+  primeCancellationCopy,
+  renderPrimeQueue,
+  resolvePrimeSend,
+  type PrimeActionMode,
+} from "../primeQueue";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -409,6 +416,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
+  /** Runtime actions are deliberately explicit: no default is inferred while a Prime session runs. */
+  onRuntimeAction?: (mode: Exclude<PrimeActionMode, null>, text: string) => Promise<boolean>;
   onImplementPlanInNewThread: () => void;
 }) {
   return (
@@ -568,6 +577,8 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
+  /** Runtime actions are deliberately explicit: no default is inferred while a Prime session runs. */
+  onRuntimeAction?: (mode: Exclude<PrimeActionMode, null>, text: string) => Promise<boolean>;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
@@ -650,6 +661,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerElementContextsRef,
     onSend,
     onInterrupt,
+    onRuntimeAction,
     onImplementPlanInNewThread,
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
@@ -667,6 +679,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onExpandImage,
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
+  const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
+  const primeRuntimeActive =
+    phase === "running" &&
+    hasPrimeRuntimeActions(
+      activeThread?.session?.providerName,
+      activeThread?.session?.runtimeCapabilities,
+    );
+  const primeQueue = renderPrimeQueue(activeThread?.session?.actionState);
 
   // ------------------------------------------------------------------
   // Store subscriptions (prompt / images / terminal contexts)
@@ -1783,7 +1803,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       isConnecting ||
       noProviderAvailable ||
       environmentUnavailable !== null ||
-      phase === "running"
+      (phase === "running" && !primeRuntimeActive)
     ) {
       return false;
     }
@@ -1802,13 +1822,52 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isSendDisabled,
     noProviderAvailable,
     phase,
+    primeRuntimeActive,
     showPlanFollowUpPrompt,
   ]);
+
+  // Keep the runtime-action decision visible before send is pressed: a disabled
+  // mode must explain how to proceed rather than only failing on submit.
+  const primeSendDecision = primeRuntimeActive
+    ? resolvePrimeSend(
+        activeThread?.session?.providerName,
+        primeActionMode,
+        activeThread?.session?.runtimeCapabilities,
+        composerImages.length +
+          composerTerminalContexts.length +
+          composerElementContexts.length +
+          composerPreviewAnnotations.length +
+          composerReviewComments.length,
+      )
+    : { ok: true as const };
 
   const submitComposer = useCallback(
     (event?: { preventDefault: () => void }) => {
       if (noProviderAvailable || isSendDisabled) {
         event?.preventDefault();
+        return;
+      }
+      if (primeRuntimeActive) {
+        event?.preventDefault();
+        const decision = resolvePrimeSend(
+          activeThread?.session?.providerName,
+          primeActionMode,
+          activeThread?.session?.runtimeCapabilities,
+          composerImages.length +
+            composerTerminalContexts.length +
+            composerElementContexts.length +
+            composerPreviewAnnotations.length +
+            composerReviewComments.length,
+        );
+        if (!decision.ok) {
+          toastManager.add({
+            type: "warning",
+            title: "Runtime action not sent",
+            description: decision.reason,
+          });
+          return;
+        }
+        void onRuntimeAction?.(primeActionMode as Exclude<PrimeActionMode, null>, prompt.trim());
         return;
       }
       // A send while a pasted image is still compressing would strand that
@@ -3085,6 +3144,73 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               ) : null}
             </div>
           </div>
+
+          {primeRuntimeActive ? (
+            <div
+              className="mx-3 mb-2 rounded-md border border-border p-2 text-xs"
+              data-prime-runtime-actions="true"
+            >
+              <div className="mb-1 font-medium">Running runtime action</div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  disabled={activeThread?.session?.runtimeCapabilities?.steer !== true}
+                  variant={primeActionMode === "steer" ? "default" : "outline"}
+                  onClick={() => setPrimeActionMode("steer")}
+                >
+                  Steer now
+                </Button>
+                <Button
+                  type="button"
+                  disabled={activeThread?.session?.runtimeCapabilities?.followUps !== true}
+                  variant={primeActionMode === "followUp" ? "default" : "outline"}
+                  onClick={() => setPrimeActionMode("followUp")}
+                >
+                  Queue next
+                </Button>
+              </div>
+              {activeThread?.session?.runtimeCapabilities?.steer !== true ? (
+                <p className="mt-1 text-muted-foreground">
+                  Steering is unavailable in this runtime.
+                </p>
+              ) : null}
+              {activeThread?.session?.runtimeCapabilities?.followUps !== true ? (
+                <p className="mt-1 text-muted-foreground">
+                  Queued follow-ups are unavailable in this runtime.
+                </p>
+              ) : null}
+              {primeQueue.length ? (
+                <ol className="mt-2 list-decimal pl-4">
+                  {primeQueue.map((item, index) => (
+                    <li key={`${index}:${item}`}>{item}</li>
+                  ))}
+                </ol>
+              ) : null}
+              <div className="mt-2 flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  data-prime-runtime-send="true"
+                  disabled={isSendBusy || isSendDisabled || prompt.trim().length === 0}
+                  onClick={() => submitComposer()}
+                >
+                  {primeActionMode === "followUp"
+                    ? "Queue follow-up"
+                    : primeActionMode === "steer"
+                      ? "Send steering"
+                      : "Send runtime action"}
+                </Button>
+              </div>
+              {!primeSendDecision.ok ? (
+                <p className="mt-1 text-destructive" data-prime-runtime-reason="true">
+                  {primeSendDecision.reason}
+                </p>
+              ) : null}
+              <p className="mt-1 text-muted-foreground">
+                {primeCancellationCopy(activeThread?.session?.runtimeCapabilities)}
+              </p>
+            </div>
+          ) : null}
 
           {/* Bottom toolbar */}
           {isComposerCollapsedMobile ? null : activePendingApproval ? (

@@ -611,6 +611,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
+            ...(event.payload.forkedFrom === undefined
+              ? {}
+              : { forkedFrom: event.payload.forkedFrom }),
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1142,6 +1145,31 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         activeTurnId: event.payload.session.activeTurnId,
         lastError: event.payload.session.lastError,
         updatedAt: event.payload.session.updatedAt,
+        ...(event.payload.session.actionState
+          ? { actionState: event.payload.session.actionState }
+          : {}),
+        ...(event.payload.session.commandCatalog
+          ? { commandCatalog: event.payload.session.commandCatalog }
+          : {}),
+        ...(event.payload.session.noticeBoard
+          ? { noticeBoard: event.payload.session.noticeBoard }
+          : {}),
+        ...(event.payload.session.agentRoster
+          ? { agentRoster: event.payload.session.agentRoster }
+          : {}),
+        ...(event.payload.session.goalBoard ? { goalBoard: event.payload.session.goalBoard } : {}),
+        ...(event.payload.session.identityCard
+          ? { identityCard: event.payload.session.identityCard }
+          : {}),
+        ...(event.payload.session.contextState
+          ? { contextState: event.payload.session.contextState }
+          : {}),
+        ...(event.payload.session.runtimeCapabilities
+          ? { runtimeCapabilities: event.payload.session.runtimeCapabilities }
+          : {}),
+        ...(event.payload.session.resumeState
+          ? { resumeState: event.payload.session.resumeState }
+          : {}),
       });
     });
 

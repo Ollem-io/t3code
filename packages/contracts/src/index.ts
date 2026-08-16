@@ -31,3 +31,7 @@ export * from "./previewAutomation.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
 export * from "./rpc.ts";
+
+export * from "./providerCapabilities.ts";
+export * from "./primeResume.ts";
+export * from "./sessionWriterLease.ts";

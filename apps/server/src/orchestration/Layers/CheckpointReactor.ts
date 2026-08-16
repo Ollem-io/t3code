@@ -776,10 +776,23 @@ const make = Effect.gen(function* () {
 
     const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
     if (rolledBackTurns > 0) {
-      yield* providerService.rollbackConversation({
+      // Filesystem checkpoints are provider-neutral. Some providers cannot
+      // rewind their conversation history; that is a partial success, not a
+      // failed filesystem revert. Keep the projection truthful by recording an
+      // explicit disclaimer and continuing. Other provider failures must still
+      // abort the operation rather than claiming the conversation was rewound.
+      const rollback = yield* providerService.rollbackConversation({
         threadId: sessionRuntime.value.threadId,
         numTurns: rolledBackTurns,
       });
+      if (!rollback.rewound) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: "Filesystem restored, but this provider does not support rewinding conversation history.",
+          createdAt: now,
+        }).pipe(Effect.asVoid);
+      }
     }
 
     const staleCheckpointRefs: Array<CheckpointRef> = [];

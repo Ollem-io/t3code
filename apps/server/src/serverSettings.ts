@@ -14,6 +14,7 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
+  bootstrapPrimeAgentServerSettings,
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
   type ProviderInstanceConfig,
@@ -556,7 +557,14 @@ const make = Effect.gen(function* () {
     const startup = Effect.gen(function* () {
       yield* startWatcher;
       yield* Cache.invalidate(settingsCache, cacheKey);
-      yield* getSettingsFromCache;
+      const loaded = yield* getSettingsFromCache;
+      const migrated = bootstrapPrimeAgentServerSettings(loaded);
+      // Persist only when the stable default was absent. The pure bootstrap
+      // preserves every legacy setting and is idempotent across restarts.
+      if (migrated !== loaded) {
+        yield* writeSettingsAtomically(migrated);
+        yield* Cache.set(settingsCache, cacheKey, migrated);
+      }
     });
 
     const startupExit = yield* Effect.exit(startup);

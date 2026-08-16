@@ -1,7 +1,13 @@
 import {
   type ChatAttachment,
   CommandId,
+  CompactionId,
   EventId,
+  FollowUpId,
+  RuntimeRequestId,
+  RuntimeTaskId,
+  HeartbeatId,
+  RuntimeExtensionId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -9,12 +15,14 @@ import {
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
+  type ProviderRuntimeOperation,
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -47,6 +55,38 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+const isFollowUpId = Schema.is(FollowUpId);
+const isCompactionId = Schema.is(CompactionId);
+const isRuntimeRequestId = Schema.is(RuntimeRequestId);
+const isRuntimeTaskId = Schema.is(RuntimeTaskId);
+const isHeartbeatId = Schema.is(HeartbeatId);
+const isRuntimeExtensionId = Schema.is(RuntimeExtensionId);
+/**
+ * Publishing `runtimeCapabilities` at all is gated on the provider advertising at
+ * least one runtime action. Every flag the session contract can carry is listed
+ * here, so a runtime that offers only context management is not silently stripped
+ * of its capabilities.
+ */
+const PUBLISHED_RUNTIME_CAPABILITY_KEYS = [
+  "steer",
+  "followUps",
+  "followUpCancel",
+  "compaction",
+  "compactionCancel",
+  "usageAndRetry",
+  "commandDiscovery",
+  "interactions",
+  "tasks",
+  "goals",
+  "namingAndForking",
+] as const;
+const hasRuntimeActionCapabilities = (
+  capabilities:
+    | Partial<Record<(typeof PUBLISHED_RUNTIME_CAPABILITY_KEYS)[number], boolean | undefined>>
+    | undefined,
+): boolean =>
+  capabilities !== undefined &&
+  PUBLISHED_RUNTIME_CAPABILITY_KEYS.some((key) => capabilities[key] === true);
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -56,6 +96,17 @@ type ProviderIntentEvent = Extract<
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
+      | "thread.steer-add-requested"
+      | "thread.follow-up-add-requested"
+      | "thread.compaction-requested"
+      | "thread.usage-refresh-requested"
+      | "thread.command-refresh-requested"
+      | "thread.agent-observation-requested"
+      | "thread.heartbeat-create-requested"
+      | "thread.heartbeat-action-requested"
+      | "thread.session-rename-requested"
+      | "thread.session-fork-requested"
+      | "thread.prime-resume-recover-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -337,6 +388,10 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  // A turn start remains authoritative until its provider send settles. This
+  // closes the gap between session startup and the provider request itself,
+  // where concurrent client commands could otherwise both pass preconditions.
+  const inFlightTurnStartThreads = new Set<string>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -345,7 +400,15 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
-      | "provider.session.stop.failed";
+      | "provider.session.stop.failed"
+      | "provider.runtime-action.failed"
+      | "provider.compaction.failed"
+      | "provider.usage-refresh.failed"
+      | "provider.command-refresh.failed"
+      | "provider.agent-observation.failed"
+      | "provider.heartbeat.failed"
+      | "provider.session-rename.failed"
+      | "provider.session-fork.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -570,6 +633,12 @@ const make = Effect.gen(function* () {
           activeTurnId: null,
           lastError: null,
           updatedAt: createdAt,
+          // thread.session.set replaces the session wholesale; a live reused
+          // session never passes through bindSessionToThread again, so the
+          // negotiated runtime capabilities must be carried forward here.
+          ...(thread.session?.runtimeCapabilities
+            ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+            : {}),
         },
         createdAt,
       });
@@ -640,6 +709,13 @@ const make = Effect.gen(function* () {
             detail: `Provider session '${session.threadId}' started without a provider instance id.`,
           });
         }
+        const capabilities = yield* providerService.getCapabilities(session.providerInstanceId);
+        // `thread` was read before the start ran, and the durable resume
+        // outcome is published *during* it. Re-reading is what keeps a
+        // "resumed" or a refusal from being erased by the wholesale session
+        // replacement below — the banner would otherwise vanish the instant the
+        // session it describes came up.
+        const bound = yield* resolveThread(threadId);
         yield* setThreadSession({
           threadId,
           session: {
@@ -655,6 +731,10 @@ const make = Effect.gen(function* () {
             activeTurnId: null,
             lastError: session.lastError ?? null,
             updatedAt: session.updatedAt,
+            ...(hasRuntimeActionCapabilities(capabilities.runtimeExtensions)
+              ? { runtimeCapabilities: capabilities.runtimeExtensions }
+              : {}),
+            ...(bound?.session?.resumeState ? { resumeState: bound.session.resumeState } : {}),
           },
           createdAt,
         });
@@ -965,6 +1045,67 @@ const make = Effect.gen(function* () {
       ...(input.title !== undefined ? { title: input.title } : {}),
     });
   });
+  /**
+   * Startup/recovery sweep: a persisted action snapshot only describes work
+   * held inside a live provider process. After a restart (or any recovery where
+   * the process is gone) that queue can never progress, so displaying it would
+   * promise work nobody owns. Healthy sessions with a live provider process are
+   * left untouched — their next authoritative snapshot still governs.
+   */
+  const clearStaleRuntimeActionState = Effect.fn("clearStaleRuntimeActionState")(function* () {
+    const readModel = yield* projectionSnapshotQuery.getCommandReadModel();
+    const stale = readModel.threads.filter((thread) => {
+      const actionState = thread.session?.actionState;
+      return (
+        actionState !== undefined &&
+        (actionState.queuedCount > 0 ||
+          actionState.steering.length > 0 ||
+          actionState.followUps.length > 0 ||
+          actionState.active !== undefined)
+      );
+    });
+    if (stale.length === 0) {
+      return;
+    }
+    const liveThreadIds = new Set(
+      (yield* providerService.listSessions()).map((session) => String(session.threadId)),
+    );
+    const now = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+    yield* Effect.forEach(
+      stale.filter((thread) => !liveThreadIds.has(String(thread.id))),
+      (thread) => {
+        const session = thread.session;
+        if (!session) {
+          return Effect.void;
+        }
+        return setThreadSession({
+          threadId: thread.id,
+          session: {
+            ...session,
+            actionState: { queuedCount: 0, steering: [], followUps: [] },
+            updatedAt: now,
+          },
+          createdAt: now,
+        }).pipe(
+          Effect.tap(() =>
+            Effect.logInfo("provider command reactor cleared stale runtime action state", {
+              threadId: thread.id,
+            }),
+          ),
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) {
+              return Effect.interrupt;
+            }
+            return Effect.logWarning(
+              "provider command reactor failed to clear stale runtime action state",
+              { threadId: thread.id, cause: Cause.pretty(cause) },
+            );
+          }),
+        );
+      },
+      { discard: true },
+    );
+  });
   const findInterruptedThreadTitleRegenerations = Effect.fn(
     "findInterruptedThreadTitleRegenerations",
   )(function* () {
@@ -1081,6 +1222,20 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    const inFlightKey = String(event.payload.threadId);
+    if (inFlightTurnStartThreads.has(inFlightKey)) {
+      yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.start.failed",
+        summary: "Provider turn start rejected",
+        detail: `Thread '${event.payload.threadId}' already has an authoritative turn start in flight.`,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+      return;
+    }
+    inFlightTurnStartThreads.add(inFlightKey);
+
     const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
     if (!message || message.role !== "user") {
       yield* appendProviderFailureActivity({
@@ -1091,6 +1246,7 @@ const make = Effect.gen(function* () {
         turnId: null,
         createdAt: event.payload.createdAt,
       });
+      inFlightTurnStartThreads.delete(inFlightKey);
       return;
     }
 
@@ -1130,6 +1286,7 @@ const make = Effect.gen(function* () {
         return Effect.void;
       }
       const detail = formatFailureDetail(cause);
+      inFlightTurnStartThreads.delete(String(event.payload.threadId));
       return setThreadSessionErrorOnTurnStartFailure({
         threadId: event.payload.threadId,
         detail,
@@ -1176,13 +1333,563 @@ const make = Effect.gen(function* () {
     );
 
     if (Option.isNone(sendTurnRequest)) {
+      inFlightTurnStartThreads.delete(inFlightKey);
       return;
     }
 
     yield* providerService
       .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+      .pipe(
+        Effect.catchCause(recoverTurnStartFailure),
+        Effect.ensuring(Effect.sync(() => inFlightTurnStartThreads.delete(inFlightKey))),
+        Effect.forkScoped,
+      );
   });
+
+  const processRuntimeActionRequested = Effect.fn("processRuntimeActionRequested")(function* (
+    event: Extract<
+      ProviderIntentEvent,
+      { type: "thread.steer-add-requested" | "thread.follow-up-add-requested" }
+    >,
+  ) {
+    // One-time consumption is deliberately before every provider or failure path.
+    // After restart the ephemeral value is absent, so the durable intent fails closed.
+    const commandId = event.commandId;
+    const text = commandId
+      ? yield* orchestrationEngine.takeRuntimeActionText(commandId)
+      : undefined;
+    if (text === undefined) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.runtime-action.failed",
+        summary: "Runtime action failed",
+        detail: "Runtime action expired before it could be delivered; please retry.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+    const thread = yield* resolveThread(event.payload.threadId);
+    // Do not optimistically project or log native text. Only the provider's next
+    // session_action_update snapshot may change the visible queue.
+    if (
+      !thread?.session ||
+      thread.session.status !== "running" ||
+      thread.session.activeTurnId === null
+    ) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.runtime-action.failed",
+        summary: "Runtime action failed",
+        detail: "No active running provider turn is bound to this thread.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+    const rawActionId =
+      event.type === "thread.steer-add-requested"
+        ? event.payload.steerId
+        : event.payload.followUpId;
+    if (!isFollowUpId(rawActionId)) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.runtime-action.failed",
+        summary: "Runtime action failed",
+        detail: "The runtime action identifier is invalid.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+    const operation: ProviderRuntimeOperation =
+      event.type === "thread.steer-add-requested"
+        ? {
+            type: "steer.add" as const,
+            commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`),
+            threadId: event.payload.threadId,
+            steerId: rawActionId,
+            text,
+          }
+        : {
+            type: "follow-up.add" as const,
+            commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`),
+            threadId: event.payload.threadId,
+            followUpId: rawActionId,
+            text,
+          };
+    yield* providerService.executeRuntimeOperation(operation).pipe(
+      Effect.catchCause(() =>
+        appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.runtime-action.failed",
+          summary: "Runtime action failed",
+          detail: "The provider did not accept this runtime action.",
+          turnId: null,
+          createdAt: event.payload.createdAt,
+        }),
+      ),
+    );
+  });
+
+  /**
+   * Manual compaction and on-demand usage refresh. Both are capability-gated
+   * against the live negotiated capabilities rather than a stored flag, and both
+   * fail closed with a user-visible activity that never carries native text.
+   */
+  const processContextActionRequested = Effect.fn("processContextActionRequested")(function* (
+    event: Extract<
+      ProviderIntentEvent,
+      { type: "thread.compaction-requested" | "thread.usage-refresh-requested" }
+    >,
+  ) {
+    const isCompaction = event.type === "thread.compaction-requested";
+    const summary = isCompaction ? "Compaction failed" : "Context usage refresh failed";
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: isCompaction ? "provider.compaction.failed" : "provider.usage-refresh.failed",
+        summary,
+        detail,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (
+      !thread?.session ||
+      thread.session.status !== "running" ||
+      thread.session.activeTurnId === null
+    ) {
+      return yield* fail("No active running provider turn is bound to this thread.");
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      return yield* fail("This provider session cannot accept context actions.");
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    const runtimeExtensions = capabilities?.runtimeExtensions;
+    if (
+      isCompaction
+        ? runtimeExtensions?.compaction !== true
+        : runtimeExtensions?.usageAndRetry !== true
+    ) {
+      return yield* fail(
+        isCompaction
+          ? "This runtime does not support manual compaction."
+          : "This runtime does not report context usage on demand.",
+      );
+    }
+    // Identifiers are client-supplied, so they are validated to the branded
+    // runtime-extension shape before any native call. Never invent one.
+    const rawId = isCompaction ? event.payload.compactionId : event.payload.requestId;
+    const commandId = event.commandId ?? CommandId.make(`provider-context-action:${event.eventId}`);
+    let operation: ProviderRuntimeOperation;
+    if (isCompaction) {
+      if (!isCompactionId(rawId)) {
+        return yield* fail("The compaction identifier is invalid.");
+      }
+      operation = {
+        type: "compaction.request" as const,
+        commandId,
+        threadId: event.payload.threadId,
+        compactionId: rawId,
+      };
+    } else {
+      if (!isRuntimeRequestId(rawId)) {
+        return yield* fail("The usage refresh identifier is invalid.");
+      }
+      operation = {
+        type: "usage.snapshot.retry" as const,
+        commandId,
+        threadId: event.payload.threadId,
+        requestId: rawId,
+      };
+    }
+    yield* providerService
+      .executeRuntimeOperation(operation)
+      .pipe(Effect.catchCause(() => fail("The provider did not accept this context action.")));
+  });
+
+  const processCommandRefreshRequested = Effect.fn("processCommandRefreshRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.command-refresh-requested" }>,
+  ) {
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.command-refresh.failed",
+        summary: "Command refresh failed",
+        detail,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread?.session) {
+      return yield* fail("No provider session is bound to this thread.");
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      return yield* fail("This provider session cannot refresh commands.");
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    if (capabilities?.runtimeExtensions?.commandDiscovery !== true) {
+      return yield* fail("This runtime does not support command discovery.");
+    }
+    if (!isRuntimeRequestId(event.payload.requestId)) {
+      return yield* fail("The command refresh identifier is invalid.");
+    }
+    yield* providerService
+      .executeRuntimeOperation({
+        type: "command.discover",
+        commandId: event.commandId ?? CommandId.make(`provider-command-refresh:${event.eventId}`),
+        threadId: event.payload.threadId,
+      })
+      .pipe(Effect.catchCause(() => fail("The provider did not accept this command refresh.")));
+  });
+
+  const processAgentObservationRequested = Effect.fn("processAgentObservationRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.agent-observation-requested" }>,
+  ) {
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.agent-observation.failed",
+        summary: "Agent observation failed",
+        detail,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread?.session) {
+      return yield* fail("No provider session is bound to this thread.");
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      return yield* fail("This provider session cannot watch agents.");
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    if (capabilities?.runtimeExtensions?.tasks !== true) {
+      return yield* fail("This runtime does not support watching agents.");
+    }
+    // The roster is the authorization list. Checking it here refuses an id
+    // this thread's session does not report before it can reach the host at
+    // all; the adapter re-checks against its own live roster regardless.
+    const owned = thread.session.agentRoster?.agents.some(
+      (agent) => agent.agentId === event.payload.agentId,
+    );
+    if (owned !== true) {
+      return yield* fail("This thread's session does not report that agent.");
+    }
+    if (!isRuntimeTaskId(event.payload.agentId)) {
+      return yield* fail("The agent identifier is invalid.");
+    }
+    yield* providerService
+      .executeRuntimeOperation({
+        type: event.payload.intent === "observe" ? "task.observe" : "task.unobserve",
+        commandId: event.commandId ?? CommandId.make(`provider-agent-observation:${event.eventId}`),
+        threadId: event.payload.threadId,
+        taskId: event.payload.agentId,
+      })
+      .pipe(Effect.catchCause(() => fail("The provider did not accept this agent action.")));
+  });
+
+  /**
+   * Shared preconditions for every heartbeat intent.
+   *
+   * Capability is negotiated, not assumed, and the failure text never repeats
+   * the heartbeat's title: an activity row is a durable record, and a schedule
+   * label is the user's words about their own work.
+   */
+  const resolveHeartbeatTarget = Effect.fn("resolveHeartbeatTarget")(function* (payload: {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+  }) {
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: payload.threadId,
+        kind: "provider.heartbeat.failed",
+        summary: "Heartbeat action failed",
+        detail,
+        turnId: null,
+        createdAt: payload.createdAt,
+      });
+    const thread = yield* resolveThread(payload.threadId);
+    if (!thread?.session) {
+      yield* fail("No provider session is bound to this thread.");
+      return undefined;
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      yield* fail("This provider session cannot own scheduled work.");
+      return undefined;
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    if (capabilities?.runtimeExtensions?.goals !== true) {
+      yield* fail("This runtime does not support scheduled heartbeats.");
+      return undefined;
+    }
+    return { thread, fail } as const;
+  });
+
+  const processHeartbeatCreateRequested = Effect.fn("processHeartbeatCreateRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.heartbeat-create-requested" }>,
+  ) {
+    const target = yield* resolveHeartbeatTarget(event.payload);
+    if (!target) return;
+    yield* providerService
+      .executeRuntimeOperation({
+        type: "heartbeat.create",
+        commandId: event.commandId ?? CommandId.make(`provider-heartbeat:${event.eventId}`),
+        threadId: event.payload.threadId,
+        // The runtime issues the real identity; this correlates the request and
+        // is never presented as a heartbeat T3 owns.
+        heartbeatId: HeartbeatId.make(`t3-heartbeat-request-${event.eventId}`),
+        title: event.payload.title,
+        intervalSeconds: event.payload.intervalSeconds,
+      })
+      .pipe(Effect.catchCause(() => target.fail("The provider did not accept this heartbeat.")));
+  });
+
+  const processHeartbeatActionRequested = Effect.fn("processHeartbeatActionRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.heartbeat-action-requested" }>,
+  ) {
+    const target = yield* resolveHeartbeatTarget(event.payload);
+    if (!target) return;
+    if (!isHeartbeatId(event.payload.heartbeatId)) {
+      return yield* target.fail("The heartbeat identifier is invalid.");
+    }
+    // Ownership authorization lives in the adapter's owned-handle set, which is
+    // the source the rendered board is derived from. The projected board must
+    // not gate here: an owned schedule whose row the runtime drifted out of
+    // the representable range is absent from the rendered board yet must stay
+    // pausable/resumable/deletable by its exact owned id. Unowned targets are
+    // refused by the adapter with a typed validation error either way.
+    yield* providerService
+      .executeRuntimeOperation({
+        type:
+          event.payload.intent === "pause"
+            ? "heartbeat.pause"
+            : event.payload.intent === "resume"
+              ? "heartbeat.resume"
+              : "heartbeat.delete",
+        commandId: event.commandId ?? CommandId.make(`provider-heartbeat:${event.eventId}`),
+        threadId: event.payload.threadId,
+        heartbeatId: event.payload.heartbeatId,
+      })
+      .pipe(
+        Effect.catchCause(() => target.fail("The provider did not accept this heartbeat action.")),
+      );
+  });
+
+  /**
+   * Shared preconditions for naming and forking.
+   *
+   * Capability is negotiated, not assumed. The failure text never repeats the
+   * name the user typed: an activity row is a durable record, and a session
+   * name is the user's words about their own work.
+   */
+  const resolveNamingTarget = Effect.fn("resolveNamingTarget")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+    readonly kind: "provider.session-rename.failed" | "provider.session-fork.failed";
+    readonly summary: string;
+  }) {
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: input.threadId,
+        kind: input.kind,
+        summary: input.summary,
+        detail,
+        turnId: null,
+        createdAt: input.createdAt,
+      });
+    const thread = yield* resolveThread(input.threadId);
+    if (!thread?.session) {
+      yield* fail("No provider session is bound to this thread.");
+      return undefined;
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      yield* fail("This provider session cannot be named or forked.");
+      return undefined;
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    if (capabilities?.runtimeExtensions?.namingAndForking !== true) {
+      yield* fail("This runtime does not support session naming or forking.");
+      return undefined;
+    }
+    return { thread, fail } as const;
+  });
+
+  const processSessionRenameRequested = Effect.fn("processSessionRenameRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.session-rename-requested" }>,
+  ) {
+    const target = yield* resolveNamingTarget({
+      threadId: event.payload.threadId,
+      createdAt: event.payload.createdAt,
+      kind: "provider.session-rename.failed",
+      summary: "Session rename failed",
+    });
+    if (!target) return;
+    const renamed = yield* providerService
+      .executeRuntimeOperation({
+        type: "thread.rename",
+        commandId: event.commandId ?? CommandId.make(`provider-session-rename:${event.eventId}`),
+        threadId: event.payload.threadId,
+        title: event.payload.name,
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause(() =>
+          target.fail("The provider did not accept this name.").pipe(Effect.as(false)),
+        ),
+      );
+    if (!renamed) return;
+    // One rename, one name. Leaving the T3 thread on its old title would give
+    // the same work two names on the same screen, so the thread title follows
+    // the session the user just renamed.
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.meta.update",
+        commandId: yield* serverCommandId("provider-session-rename"),
+        threadId: event.payload.threadId,
+        title: event.payload.name,
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
+  });
+
+  const processSessionForkRequested = Effect.fn("processSessionForkRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.session-fork-requested" }>,
+  ) {
+    const target = yield* resolveNamingTarget({
+      threadId: event.payload.threadId,
+      createdAt: event.payload.createdAt,
+      kind: "provider.session-fork.failed",
+      summary: "Fork failed",
+    });
+    if (!target) return;
+    const forkPointId = event.payload.forkPointId;
+    // Only the shape is checked here. Whether this session still offers the
+    // point is the adapter's call, against the page it is actually holding:
+    // gating on the rendered projection would make a point the runtime still
+    // has unreachable whenever a snapshot is a beat behind. An id the wire
+    // contract cannot brand is refused outright, because it could never be
+    // encoded as an operation at all.
+    if (forkPointId !== undefined && !isRuntimeExtensionId(forkPointId)) {
+      return yield* target.fail("The fork point identifier is invalid.");
+    }
+    const forked = yield* providerService
+      .executeRuntimeOperation({
+        type: "thread.fork",
+        commandId: event.commandId ?? CommandId.make(`provider-session-fork:${event.eventId}`),
+        threadId: event.payload.threadId,
+        forkThreadId: event.payload.forkThreadId,
+        ...(forkPointId === undefined ? {} : { forkPointId: RuntimeExtensionId.make(forkPointId) }),
+        ...(event.payload.title === undefined ? {} : { title: event.payload.title }),
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause(() =>
+          target.fail("The provider did not accept this fork.").pipe(Effect.as(false)),
+        ),
+      );
+    // A refused fork leaves no thread behind. The thread is created only on the
+    // provider's own confirmation, which is what makes a cancelled or failed
+    // fork a no-op rather than an empty half-created thread.
+    if (!forked) return;
+    const source = target.thread;
+    const forkPointLabel = source.session?.identityCard?.forkPoints.find(
+      (point) => point.forkPointId === forkPointId,
+    )?.label;
+    // The source thread's latest checkpoint is recorded as the point the fork
+    // was taken from, so the ancestry lines up with the checkpoint graph the
+    // user can already see. It is a record, not a cursor: nothing reattaches to
+    // the original provider session from it.
+    const checkpointRef = source.checkpoints.at(-1)?.checkpointRef;
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.create",
+        commandId: yield* serverCommandId("provider-session-fork"),
+        threadId: event.payload.forkThreadId,
+        projectId: source.projectId,
+        title: event.payload.title ?? `Fork of ${source.title}`,
+        modelSelection: source.modelSelection,
+        runtimeMode: source.runtimeMode,
+        interactionMode: source.interactionMode,
+        branch: source.branch,
+        worktreePath: source.worktreePath,
+        forkedFrom: {
+          threadId: source.id,
+          ...(forkPointLabel === undefined ? {} : { forkPointLabel }),
+          ...(checkpointRef === undefined ? {} : { checkpointId: String(checkpointRef) }),
+          forkedAt: event.payload.createdAt,
+        },
+        createdAt: event.payload.createdAt,
+      })
+      .pipe(
+        Effect.catchCause(() =>
+          target.fail("Prime Agent forked the session, but the new thread could not be created."),
+        ),
+      );
+  });
+
+  /**
+   * PA-B04 — carries out the user's answer to a durable resume that refused.
+   *
+   * `retry` re-runs the same validation; `fresh` additionally tells the runtime
+   * that this thread's own resume cursor may be discarded first, which is the
+   * only thing that can unstick a cursor whose refusal would otherwise repeat
+   * forever. Either way the work is a session start, so the outcome is
+   * published by the same coordinator that published the refusal: this handler
+   * never writes a resume state of its own and so can never claim a recovery
+   * that did not happen. A start that fails again leaves the refusal standing
+   * and the composer shut, which is the correct, non-destructive end state.
+   */
+  const processPrimeResumeRecoverRequested = Effect.fn("processPrimeResumeRecoverRequested")(
+    function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.prime-resume-recover-requested" }>,
+    ) {
+      const thread = yield* resolveThread(event.payload.threadId);
+      if (!thread) return;
+      const project = yield* resolveProject(thread.projectId);
+      const cwd = resolveThreadWorkspaceCwd({ thread, projects: project ? [project] : [] });
+      const instanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+      yield* providerService
+        .startSession(thread.id, {
+          threadId: thread.id,
+          providerInstanceId: instanceId,
+          ...(cwd ? { cwd } : {}),
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          // A discard the decider did not authorize never reaches the runtime.
+          resumeRecovery:
+            event.payload.intent === "fresh" && event.payload.discardCursor === true
+              ? "fresh"
+              : "retry",
+        })
+        .pipe(
+          Effect.catchCause(() =>
+            appendProviderFailureActivity({
+              threadId: event.payload.threadId,
+              kind: "provider.turn.start.failed",
+              summary: "Prime Agent session recovery failed",
+              // Reason codes travel on the published resume state, which is
+              // what the banner reads. This activity says only that the attempt
+              // was made and did not land, so no host detail rides along.
+              detail: "The Prime Agent session could not be recovered. Nothing was replaced.",
+              turnId: null,
+              createdAt: event.payload.createdAt,
+            }),
+          ),
+        );
+    },
+  );
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
@@ -1204,7 +1911,24 @@ const make = Effect.gen(function* () {
     }
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
+    // A failure intentionally preserves the current action snapshot.
     yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    yield* setThreadSession({
+      threadId: event.payload.threadId,
+      session: {
+        ...thread.session,
+        // Deliberate exception to "only an authoritative provider snapshot may
+        // change the visible queue": the interrupt has already been accepted by
+        // the provider, so every pending action is being discarded and showing
+        // them until the next snapshot arrives would be a lie. Any later
+        // authoritative snapshot for this still-running turn replaces this
+        // optimistic empty state, so the exception cannot mask real queue state.
+        // Remain running until the terminal runtime event arrives.
+        actionState: { queuedCount: 0, steering: [], followUps: [] },
+        updatedAt: event.payload.createdAt,
+      },
+      createdAt: event.payload.createdAt,
+    });
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
@@ -1321,6 +2045,10 @@ const make = Effect.gen(function* () {
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,
+        // Stopping is not deletion and not a resume outcome. Dropping the
+        // published resume state here would quietly retract a refusal the user
+        // still has to answer.
+        ...(thread.session?.resumeState ? { resumeState: thread.session.resumeState } : {}),
       },
       createdAt: now,
     });
@@ -1356,6 +2084,35 @@ const make = Effect.gen(function* () {
       }
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
+        return;
+      case "thread.steer-add-requested":
+      case "thread.follow-up-add-requested":
+        yield* processRuntimeActionRequested(event);
+        return;
+      case "thread.compaction-requested":
+      case "thread.usage-refresh-requested":
+        yield* processContextActionRequested(event);
+        return;
+      case "thread.command-refresh-requested":
+        yield* processCommandRefreshRequested(event);
+        return;
+      case "thread.agent-observation-requested":
+        yield* processAgentObservationRequested(event);
+        return;
+      case "thread.heartbeat-create-requested":
+        yield* processHeartbeatCreateRequested(event);
+        return;
+      case "thread.heartbeat-action-requested":
+        yield* processHeartbeatActionRequested(event);
+        return;
+      case "thread.session-rename-requested":
+        yield* processSessionRenameRequested(event);
+        return;
+      case "thread.session-fork-requested":
+        yield* processSessionForkRequested(event);
+        return;
+      case "thread.prime-resume-recover-requested":
+        yield* processPrimeResumeRecoverRequested(event);
         return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
@@ -1405,6 +2162,17 @@ const make = Effect.gen(function* () {
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
+        event.type === "thread.steer-add-requested" ||
+        event.type === "thread.follow-up-add-requested" ||
+        event.type === "thread.compaction-requested" ||
+        event.type === "thread.usage-refresh-requested" ||
+        event.type === "thread.command-refresh-requested" ||
+        event.type === "thread.agent-observation-requested" ||
+        event.type === "thread.heartbeat-create-requested" ||
+        event.type === "thread.heartbeat-action-requested" ||
+        event.type === "thread.session-rename-requested" ||
+        event.type === "thread.session-fork-requested" ||
+        event.type === "thread.prime-resume-recover-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"
@@ -1433,11 +2201,24 @@ const make = Effect.gen(function* () {
         );
       }),
     );
+    const clearStale = clearStaleRuntimeActionState().pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.interrupt;
+        }
+        return Effect.logWarning(
+          "provider command reactor failed to sweep stale runtime action state",
+          { cause: Cause.pretty(cause) },
+        );
+      }),
+    );
     const activation = yield* ServerActivation;
     if (activation === undefined) {
       yield* clearInterrupted;
+      yield* clearStale;
     } else {
       yield* forkParked(clearInterrupted);
+      yield* forkParked(clearStale);
     }
   });
 

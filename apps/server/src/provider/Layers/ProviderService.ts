@@ -11,6 +11,9 @@
  */
 import {
   ModelSelection,
+  ProviderRuntimeOperation,
+  supportsRuntimeOperation,
+  capabilityForRuntimeOperation,
   NonNegativeInt,
   ThreadId,
   ProviderInterruptTurnInput,
@@ -883,6 +886,41 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const executeRuntimeOperation: ProviderServiceMethod<"executeRuntimeOperation"> = Effect.fn(
+    "executeRuntimeOperation",
+  )(function* (operation) {
+    const parsed = yield* decodeInputOrValidationError({
+      operation: "ProviderService.executeRuntimeOperation",
+      schema: ProviderRuntimeOperation,
+      payload: operation,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: parsed.threadId,
+      operation: "ProviderService.executeRuntimeOperation",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.executeRuntimeOperation",
+        "Runtime actions require an active provider session.",
+      );
+    }
+    const capability = capabilityForRuntimeOperation(parsed);
+    if (!supportsRuntimeOperation(routed.adapter.capabilities.runtimeExtensions, parsed)) {
+      return yield* toValidationError(
+        "ProviderService.executeRuntimeOperation",
+        `Provider runtime capability '${capability}' is not supported.`,
+      );
+    }
+    if (!routed.adapter.executeRuntimeOperation) {
+      return yield* toValidationError(
+        "ProviderService.executeRuntimeOperation",
+        `Provider runtime capability '${capability}' has no native implementation.`,
+      );
+    }
+    yield* routed.adapter.executeRuntimeOperation(parsed);
+  });
+
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1033,7 +1071,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       payload: rawInput,
     });
     if (input.numTurns === 0) {
-      return;
+      return { rewound: false };
     }
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
@@ -1049,11 +1087,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.rollback_turns": input.numTurns,
       });
+      if (routed.adapter.capabilities.conversationRollback === "unsupported") {
+        return { rewound: false } as const;
+      }
       yield* routed.adapter.rollbackThread(routed.threadId, input.numTurns);
       yield* analytics.record("provider.conversation.rolled_back", {
         provider: routed.adapter.provider,
         turns: input.numTurns,
       });
+      return { rewound: true } as const;
     }).pipe(
       withMetrics({
         counter: providerTurnsTotal,
@@ -1129,6 +1171,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    executeRuntimeOperation,
     respondToRequest,
     respondToUserInput,
     stopSession,

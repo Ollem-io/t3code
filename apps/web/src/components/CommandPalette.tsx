@@ -65,6 +65,8 @@ import { filesystemEnvironment } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { sourceControlEnvironment } from "../state/sourceControl";
+import { threadEnvironment } from "../state/threads";
+import { hasPrimeCommandSurface } from "./chat/primeCommands";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
@@ -87,7 +89,7 @@ import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { getLatestThreadForProject, sortThreads } from "../lib/threadSort";
-import { cn, isMacPlatform, isWindowsPlatform, newProjectId } from "../lib/utils";
+import { cn, isMacPlatform, isWindowsPlatform, newProjectId, randomUUID } from "../lib/utils";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoutes";
 import {
@@ -99,6 +101,7 @@ import {
 import {
   ADDON_ICON_CLASS,
   buildBrowseGroups,
+  buildPrimeCommandItems,
   buildProjectActionItems,
   buildRootGroups,
   buildThreadActionItems,
@@ -559,6 +562,7 @@ function OpenCommandPaletteDialog(props: {
   readonly clearOpenIntent: () => void;
 }) {
   const navigate = useNavigate();
+  const composerHandleRef = useComposerHandleContext();
   const { clearOpenIntent, openIntent, openOverlayMode, setOpen } = props;
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -576,6 +580,9 @@ function OpenCommandPaletteDialog(props: {
     reportDefect: false,
   });
   const cloneRepository = useAtomCommand(sourceControlEnvironment.cloneRepository, {
+    reportFailure: false,
+  });
+  const refreshThreadCommands = useAtomCommand(threadEnvironment.refreshCommands, {
     reportFailure: false,
   });
   const { environments } = useEnvironments();
@@ -843,6 +850,33 @@ function OpenCommandPaletteDialog(props: {
   );
 
   const activeThreadId = activeThread?.id;
+
+  // Prime's catalog is discovered on the host, so it can go stale while a
+  // session is live. This dialog only mounts when the palette opens, so one
+  // bounded refresh per open converges the list without any polling, and the
+  // ref keeps click-time resolution honest against the newest snapshot.
+  const primeCommandCatalogRef = useRef(activeThread?.session?.commandCatalog?.commands);
+  primeCommandCatalogRef.current = activeThread?.session?.commandCatalog?.commands;
+  const primeCommandSurfaceReady = hasPrimeCommandSurface(
+    activeThread?.session?.providerName,
+    activeThread?.session?.runtimeCapabilities,
+  );
+  const primeCommandEnvironmentId = activeThread?.environmentId;
+  // One request per opened palette per thread. The guard is a ref rather than
+  // effect deps because the command handle is a fresh identity each render, and
+  // a refresh that re-fires on every render would be a poll in disguise.
+  const primeCommandRefreshedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!primeCommandSurfaceReady || !activeThreadId || !primeCommandEnvironmentId) return;
+    if (primeCommandRefreshedForRef.current === activeThreadId) return;
+    primeCommandRefreshedForRef.current = activeThreadId;
+    void refreshThreadCommands({
+      environmentId: primeCommandEnvironmentId,
+      // Prefixed to satisfy the runtime-extension id brand's leading-letter pattern.
+      input: { threadId: activeThreadId, requestId: `commands-${randomUUID()}` },
+    });
+  }, [activeThreadId, primeCommandEnvironmentId, primeCommandSurfaceReady, refreshThreadCommands]);
+
   const currentProjectEnvironmentId =
     activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null;
   const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
@@ -1580,7 +1614,37 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
+  // Runtime-supplied commands are a separate, explicitly labelled group: a
+  // Prime command must never be mistaken for a T3 action. Selecting one writes
+  // an ordinary prompt into the composer and leaves sending to the user.
+  const primeCommandItems = buildPrimeCommandItems({
+    providerName: activeThread?.session?.providerName,
+    capabilities: activeThread?.session?.runtimeCapabilities,
+    commands: activeThread?.session?.commandCatalog?.commands,
+    // Resolved at click time against live session state, so an entry the host
+    // deleted since this list was built fails with a stated reason instead of
+    // being written into the composer as prose.
+    getCommands: () => primeCommandCatalogRef.current,
+    icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+    insert: (prompt) => {
+      composerHandleRef?.current?.insertTextAtEnd(prompt, { ensureLeadingBoundary: true });
+    },
+    onUnavailable: (reason) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Command unavailable",
+          description: reason,
+        }),
+      );
+    },
+  });
+  const rootGroups = [
+    ...buildRootGroups({ actionItems, recentThreadItems }),
+    ...(primeCommandItems.length > 0
+      ? [{ value: "prime-commands", label: "Prime commands", items: primeCommandItems }]
+      : []),
+  ];
   const sourceSelectionViewValue =
     addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
   const activeGroups =
