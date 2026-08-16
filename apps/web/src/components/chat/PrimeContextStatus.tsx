@@ -15,6 +15,8 @@ export interface PrimeContextStatusProps {
   readonly providerName: string | null | undefined;
   readonly capabilities: PrimeContextCapabilities | undefined;
   readonly state: PrimeContextState | undefined;
+  /** Context actions are server-side rejected without a live running turn. */
+  readonly hasRunningTurn: boolean;
   readonly onRequestCompaction: () => Promise<boolean>;
   readonly onRefreshUsage: () => Promise<boolean>;
 }
@@ -33,8 +35,9 @@ export function PrimeContextStatus(props: PrimeContextStatusProps) {
     props.providerName,
     props.capabilities,
     props.state,
+    props.hasRunningTurn,
   );
-  const usageDecision = resolvePrimeUsageRefresh(props.capabilities);
+  const usageDecision = resolvePrimeUsageRefresh(props.capabilities, props.hasRunningTurn);
   const { onRequestCompaction, onRefreshUsage } = props;
 
   const runCompaction = useCallback(async () => {

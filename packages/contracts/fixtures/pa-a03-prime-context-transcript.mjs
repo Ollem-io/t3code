@@ -76,13 +76,16 @@ export const replaceReducer = (previous, event) => {
           usedTokens: event.usedTokens,
           ...(event.maxTokens === undefined ? {} : { maxTokens: event.maxTokens }),
         };
+  const status = PHASE_TO_STATUS[event.phase];
   return {
     compaction: {
-      status: PHASE_TO_STATUS[event.phase],
+      status,
       trigger: event.trigger,
       ...(event.reason === undefined ? {} : { reason: event.reason }),
     },
-    ...(previous?.retry === undefined ? {} : { retry: previous.retry }),
+    // Mirrors PrimeContextTracker: retry belongs to the attempt still in flight,
+    // so a terminal compaction phase drops it rather than displaying a lie.
+    ...(status === "running" && previous?.retry !== undefined ? { retry: previous.retry } : {}),
     ...(usage === undefined ? {} : { usage }),
   };
 };
@@ -146,11 +149,22 @@ export function verifyDerivedFromSource() {
     if (!new RegExp(`${phase}:\\s*"${status}"`).test(tracker))
       throw new Error(`phase mapping drifted: ${phase}`);
   }
+  // The fixture reducer only proves anything while it keeps the shipped
+  // retry-retention rule: retry survives a running phase and is dropped on a
+  // terminal one.
+  if (!tracker.includes('status === "running" && this.#state.retry !== undefined'))
+    throw new Error("retry retention rule drifted");
   const ingestion = read("apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts");
   for (const summary of Object.values(STATUS_TO_SUMMARY)) {
     if (!ingestion.includes(`"${summary}"`))
       throw new Error(`activity summary drifted: ${summary}`);
   }
+  // Compaction activities are gated on a real phase transition, so a retry- or
+  // usage-only snapshot cannot restate a compaction that already ended.
+  if (!tracker.includes("const transitioned = status !== this.#state.compaction.status;"))
+    throw new Error("compaction transition marker drifted");
+  if (!ingestion.includes("event.payload.compactionTransitioned !== true"))
+    throw new Error("compaction activity gate drifted");
   return true;
 }
 

@@ -249,6 +249,7 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { PrimeContextStatus } from "./chat/PrimeContextStatus";
+import { hasPrimeRunningTurn } from "./chat/primeContext";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -6421,6 +6422,7 @@ function ChatViewContent(props: ChatViewProps) {
                     providerName={activeThread?.session?.providerName}
                     capabilities={activeThread?.session?.runtimeCapabilities}
                     state={activeThread?.session?.contextState}
+                    hasRunningTurn={hasPrimeRunningTurn(activeThread?.session)}
                     onRequestCompaction={onRequestCompaction}
                     onRefreshUsage={onRefreshUsage}
                   />

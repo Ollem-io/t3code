@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   PRIME_COMPACTION_NOT_CHECKPOINT,
+  PRIME_CONTEXT_NEEDS_RUNNING_TURN,
   hasPrimeContextControls,
+  hasPrimeRunningTurn,
   primeCompactionCancelCopy,
   renderPrimeContext,
   resolvePrimeCompactionCancel,
@@ -28,16 +30,17 @@ describe("prime context controls", () => {
   });
 
   it("gates manual compaction on capability and current status", () => {
-    expect(resolvePrimeCompactionRequest("prime-agent", {}, undefined).ok).toBe(false);
-    expect(resolvePrimeCompactionRequest("prime-agent", { compaction: true }, undefined).ok).toBe(
-      true,
-    );
+    expect(resolvePrimeCompactionRequest("prime-agent", {}, undefined, true).ok).toBe(false);
+    expect(
+      resolvePrimeCompactionRequest("prime-agent", { compaction: true }, undefined, true).ok,
+    ).toBe(true);
     const running = resolvePrimeCompactionRequest(
       "prime-agent",
       { compaction: true },
       {
         compaction: { status: "running", trigger: "manual" },
       },
+      true,
     );
     expect(running).toEqual({ ok: false, reason: "Compaction is already running." });
   });
@@ -70,8 +73,36 @@ describe("prime context controls", () => {
   });
 
   it("gates on-demand usage refresh", () => {
-    expect(resolvePrimeUsageRefresh({}).ok).toBe(false);
-    expect(resolvePrimeUsageRefresh({ usageAndRetry: true }).ok).toBe(true);
+    expect(resolvePrimeUsageRefresh({}, true).ok).toBe(false);
+    expect(resolvePrimeUsageRefresh({ usageAndRetry: true }, true).ok).toBe(true);
+  });
+
+  // Review regression: the server rejects context actions without a live running
+  // turn, so an idle thread must disable the controls with that reason instead of
+  // letting the press turn into a thread error.
+  it("disables both controls with a stated reason when no turn is running", () => {
+    expect(hasPrimeRunningTurn({ status: "running", activeTurnId: "turn-1" })).toBe(true);
+    expect(hasPrimeRunningTurn({ status: "running", activeTurnId: null })).toBe(false);
+    expect(hasPrimeRunningTurn({ status: "ready", activeTurnId: "turn-1" })).toBe(false);
+    expect(hasPrimeRunningTurn(undefined)).toBe(false);
+    expect(
+      resolvePrimeCompactionRequest("prime-agent", { compaction: true }, undefined, false),
+    ).toEqual({ ok: false, reason: PRIME_CONTEXT_NEEDS_RUNNING_TURN });
+    expect(resolvePrimeUsageRefresh({ usageAndRetry: true }, false)).toEqual({
+      ok: false,
+      reason: PRIME_CONTEXT_NEEDS_RUNNING_TURN,
+    });
+    // A thread that is idle while a session-level compaction is still shown gets
+    // the truthful reason, not "already running" — that wording was the
+    // permanent-lockout copy in the stranded-state blocker.
+    expect(
+      resolvePrimeCompactionRequest(
+        "prime-agent",
+        { compaction: true },
+        { compaction: { status: "running", trigger: "automatic" } },
+        false,
+      ),
+    ).toEqual({ ok: false, reason: PRIME_CONTEXT_NEEDS_RUNNING_TURN });
   });
 
   it("renders a static snapshot of usage, compaction, and retry", () => {
@@ -125,6 +156,7 @@ describe("PrimeContextStatus", () => {
           retry: { attempt: 1, maxAttempts: 3 },
           usage: { usedTokens: 100, maxTokens: 200_000 },
         }}
+        hasRunningTurn
         onRequestCompaction={noop}
         onRefreshUsage={noop}
       />,
@@ -142,6 +174,22 @@ describe("PrimeContextStatus", () => {
     expect(markup).not.toMatch(/>\s*(Revert|Restore|Roll back)/i);
   });
 
+  it("disables the controls and states why when no turn is running", () => {
+    const markup = renderToStaticMarkup(
+      <PrimeContextStatus
+        providerName="prime-agent"
+        capabilities={{ compaction: true, usageAndRetry: true }}
+        state={{ compaction: { status: "idle", trigger: "automatic" } }}
+        hasRunningTurn={false}
+        onRequestCompaction={noop}
+        onRefreshUsage={noop}
+      />,
+    );
+
+    expect(markup).toContain(PRIME_CONTEXT_NEEDS_RUNNING_TURN);
+    expect(markup.match(/<button[^>]*disabled/g)?.length).toBe(2);
+  });
+
   it("renders nothing for a runtime that advertises no context capability", () => {
     expect(
       renderToStaticMarkup(
@@ -149,6 +197,7 @@ describe("PrimeContextStatus", () => {
           providerName="codex"
           capabilities={undefined}
           state={undefined}
+          hasRunningTurn={false}
           onRequestCompaction={noop}
           onRefreshUsage={noop}
         />,

@@ -870,6 +870,14 @@ const SessionContextUpdatedPayload = Schema.Struct({
   ),
   /** Post-compaction usage is legitimately absent until the runtime reports it. */
   usage: Schema.optional(ThreadTokenUsageSnapshot),
+  /**
+   * True only when this snapshot carries a compaction phase transition. A
+   * snapshot published for retry or usage alone still repeats the last known
+   * compaction status, so consumers that report compaction *events* (durable
+   * activities) must require this marker rather than reading `compaction.status`
+   * — otherwise every retry restates a compaction that did not happen.
+   */
+  compactionTransitioned: Schema.optional(Schema.Boolean),
 });
 export type SessionContextUpdatedPayload = typeof SessionContextUpdatedPayload.Type;
 

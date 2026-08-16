@@ -117,6 +117,7 @@ export class PrimeContextTracker {
               ...(maxTokens === undefined ? {} : { maxTokens }),
             };
       const status = COMPACTION_STATUS[event.phase];
+      const transitioned = status !== this.#state.compaction.status;
       this.#state = {
         compaction: {
           status,
@@ -131,7 +132,14 @@ export class PrimeContextTracker {
           : {}),
         ...(usage === undefined ? {} : { usage }),
       };
-      return this.#publish();
+      // Only a real change of phase may be reported as a compaction event. A
+      // repeated phase carrying fresh usage is new numbers, not a second
+      // compaction. The marker rides the published snapshot instead of the
+      // retained state so it can never survive into a later publication.
+      const published = this.#publish();
+      return published === undefined || !transitioned
+        ? published
+        : { ...published, compactionTransitioned: true };
     }
     if (event.type === "retry_update") {
       const reason = cleanReason(event.reason);

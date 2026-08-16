@@ -87,6 +87,7 @@ import {
 import {
   PRIME_COMPACTION_NOT_CHECKPOINT,
   hasPrimeContextControls,
+  hasPrimeRunningTurn,
   primeCompactionCancelCopy,
   renderPrimeContext,
   resolvePrimeCompactionRequest,
@@ -320,13 +321,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     );
   const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
   const primeContextLines = renderPrimeContext(props.selectedThread.session?.contextState);
+  const primeHasRunningTurn = hasPrimeRunningTurn(props.selectedThread.session);
   const primeCompactionDecision = resolvePrimeCompactionRequest(
     props.selectedThread.session?.providerName,
     props.selectedThread.session?.runtimeCapabilities,
     props.selectedThread.session?.contextState,
+    primeHasRunningTurn,
   );
   const primeUsageDecision = resolvePrimeUsageRefresh(
     props.selectedThread.session?.runtimeCapabilities,
+    primeHasRunningTurn,
   );
   // Keep the runtime-action decision visible before send is pressed: a disabled
   // mode must explain how to proceed rather than silently dropping the draft.

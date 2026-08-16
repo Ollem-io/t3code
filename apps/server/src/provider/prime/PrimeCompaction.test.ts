@@ -52,6 +52,7 @@ describe("prime context tracker", () => {
     const { tracker } = trackerWithClock();
     expect(tracker.apply(compaction({ phase: "started", trigger: "manual" }) as never)).toEqual({
       compaction: { status: "running", trigger: "manual" },
+      compactionTransitioned: true,
     });
     expect(
       tracker.apply(
@@ -65,6 +66,7 @@ describe("prime context tracker", () => {
     ).toEqual({
       compaction: { status: "succeeded", trigger: "manual" },
       usage: { usedTokens: 50, maxTokens: 900 },
+      compactionTransitioned: true,
     });
   });
 
@@ -83,9 +85,13 @@ describe("prime context tracker", () => {
       tracker.apply(
         compaction({ phase: "failed", trigger: "manual", reason: "provider busy" }) as never,
       ),
-    ).toEqual({ compaction: { status: "failed", trigger: "manual", reason: "provider busy" } });
+    ).toEqual({
+      compaction: { status: "failed", trigger: "manual", reason: "provider busy" },
+      compactionTransitioned: true,
+    });
     expect(tracker.apply(compaction({ phase: "cancelled", trigger: "manual" }) as never)).toEqual({
       compaction: { status: "cancelled", trigger: "manual" },
+      compactionTransitioned: true,
     });
   });
 
@@ -147,6 +153,44 @@ describe("prime context tracker", () => {
       maxTokens: 200_000,
       compactsAutomatically: true,
     });
+  });
+
+  // Review regression: the transition marker is what stops a retry- or
+  // usage-only publication from being recorded as a compaction that happened.
+  it("marks only phase transitions as compaction transitions", () => {
+    const { tracker } = trackerWithClock();
+    const started = tracker.apply({
+      type: "compaction_update",
+      phase: "started",
+      trigger: "automatic",
+    } as never);
+    const completed = tracker.apply({
+      type: "compaction_update",
+      phase: "completed",
+      trigger: "automatic",
+      usedTokens: 10,
+    } as never);
+    const retried = tracker.apply({ type: "retry_update", attempt: 2, maxAttempts: 3 } as never);
+    const refreshed = tracker.applyUsage({ usedTokens: 11 });
+
+    // A second `completed` carrying fresh usage is new numbers, not a second
+    // compaction, so it publishes without claiming a transition.
+    const repeated = tracker.apply({
+      type: "compaction_update",
+      phase: "completed",
+      trigger: "automatic",
+      usedTokens: 12,
+    } as never);
+
+    expect(started?.compactionTransitioned).toBe(true);
+    expect(completed?.compactionTransitioned).toBe(true);
+    expect(repeated?.usage).toEqual({ usedTokens: 12 });
+    expect(repeated).not.toHaveProperty("compactionTransitioned");
+    expect(retried).not.toHaveProperty("compactionTransitioned");
+    expect(refreshed).not.toHaveProperty("compactionTransitioned");
+    // The marker never sticks to retained state: a later transition still marks
+    // itself, and the retained snapshot stays clean.
+    expect(tracker.state).not.toHaveProperty("compactionTransitioned");
   });
 
   it("tracks retry attempts", () => {

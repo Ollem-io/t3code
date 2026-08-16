@@ -817,7 +817,11 @@ export function runtimeEventToActivities(
     // the activity is labelled as compaction and carries no revert affordance.
     case "session.context.updated": {
       const { compaction, retry, usage } = event.payload;
-      if (compaction.status === "idle") {
+      // A durable activity is a claim that compaction happened, so it requires a
+      // phase transition. Retry- and usage-only snapshots restate the last known
+      // compaction status; recording those would append "Context compacted" once
+      // per retry for a compaction that already ended.
+      if (compaction.status === "idle" || event.payload.compactionTransitioned !== true) {
         return [];
       }
       const summary =
@@ -1745,8 +1749,31 @@ const make = Effect.gen(function* () {
                     ...(thread.session?.actionState
                       ? { actionState: thread.session.actionState }
                       : {}),
+                    // A starting turn inherits no *in-flight* context work: a
+                    // "Compacting" that outlived the turn which produced it would
+                    // otherwise persist forever with nothing able to clear it,
+                    // permanently disabling the compaction control. Usage and a
+                    // finished compaction result are still current facts, so they
+                    // survive the turn boundary untouched. Tradeoff, accepted
+                    // deliberately: a session-level compaction that genuinely
+                    // spans a turn start reads as idle until its next phase
+                    // change, which is strictly better than a "Compacting" that
+                    // no event can ever clear.
                     ...(thread.session?.contextState
-                      ? { contextState: thread.session.contextState }
+                      ? {
+                          contextState:
+                            event.type === "turn.started" &&
+                            thread.session.contextState.compaction.status === "running"
+                              ? {
+                                  // The retry belonged to the attempt that just
+                                  // lost its turn, so it goes with it.
+                                  compaction: { status: "idle", trigger: "automatic" },
+                                  ...(thread.session.contextState.usage === undefined
+                                    ? {}
+                                    : { usage: thread.session.contextState.usage }),
+                                }
+                              : thread.session.contextState,
+                        }
                       : {}),
                   }),
               ...(thread.session?.runtimeCapabilities
@@ -1825,6 +1852,10 @@ const make = Effect.gen(function* () {
         thread.session.providerName !== null &&
         thread.session.providerName === event.provider &&
         thread.session.providerInstanceId === event.providerInstanceId
+        // Deliberately not fenced to a turn: compaction is session-level in
+        // Prime, so automatic compaction legitimately runs between turns and the
+        // user is entitled to see it. Staleness is handled at the turn boundary
+        // instead, where an in-flight status that outlived its turn is cleared.
       ) {
         const payload = event.payload;
         const nextContextState: OrchestrationSessionContextState = {

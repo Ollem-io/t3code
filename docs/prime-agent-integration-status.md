@@ -189,6 +189,31 @@ Round-2 review repairs (both reviews rejected the first round):
   `apps/web/src/components/chat/prime-context.test.tsx` and
   `apps/mobile/src/features/threads/prime-context.test.tsx`.
 
+Round-3 review repairs (both reviews rejected round 2):
+
+- **A retry no longer restates a compaction that already ended.** A `retry_update` (or an
+  on-demand usage refresh) republishes the snapshot with the last known compaction status, which
+  the activity projection was reading as a fresh compaction event — appending a durable
+  "Context compacted" once per retry, unbounded. The published snapshot now carries
+  `compactionTransitioned`, set only when the compaction status actually changes, and a durable
+  compaction activity requires it. Retry and usage snapshots still show the last compaction
+  result in the status panel; they just no longer claim it happened again.
+- **An in-flight "Compacting" cannot outlive its turn.** A late `session.context.updated` arriving
+  after the turn terminal used to persist forever with nothing in the session able to clear it,
+  permanently disabling the Compact context control. `turn.started` now clears an in-flight
+  compaction and its retry while preserving usage and any finished compaction result. Compaction
+  is session level in Prime, so between-turn automatic compaction is deliberately still accepted
+  and visible; the turn boundary is what drops a status that outlived its turn. Known tradeoff:
+  a compaction genuinely spanning a turn start reads as idle until its next phase change.
+- **Controls state the real precondition.** The server accepts context actions only during a live
+  running turn, so both clients now gate on turn liveness before capability status and say
+  "Context actions are available while a turn is running." instead of leaving an enabled button
+  that fails, or reporting the misleading "Compaction is already running." on an idle thread.
+- **The review artifact stopped overstating itself.** Its reducer now mirrors the shipped
+  retry-retention rule, and it checks the shipped transition-marker and activity-gate sources.
+- The two client `primeContext.ts` copies are asserted byte-identical by the mobile suite, so the
+  comment claiming they cannot drift is now enforced.
+
 Visual evidence is truthfully **not captured**: UI-launch permission was not granted. Exact steps
 once granted — web: `vp run dev` in a worktree, open the printed `pairingUrl:`, start a Prime
 Agent thread, run a turn, press **Compact context** in the status row above the composer, and

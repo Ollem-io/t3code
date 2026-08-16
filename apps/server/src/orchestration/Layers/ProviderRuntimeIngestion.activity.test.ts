@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { PrimeContextTracker } from "../../provider/prime/PrimeCompaction.ts";
 import { runtimeEventToActivities } from "./ProviderRuntimeIngestion.ts";
 
 const base = {
@@ -97,6 +98,7 @@ describe("runtimeEventToActivities prime context", () => {
     const [activity] = runtimeEventToActivities(
       contextEvent("evt-compacted", {
         compaction: { status: "succeeded", trigger: "manual" },
+        compactionTransitioned: true,
         usage: { usedTokens: 120, maxTokens: 8_000 },
       }),
     );
@@ -110,12 +112,16 @@ describe("runtimeEventToActivities prime context", () => {
   it("surfaces running, failed, and cancelled compaction distinctly", () => {
     expect(
       runtimeEventToActivities(
-        contextEvent("evt-running", { compaction: { status: "running", trigger: "manual" } }),
+        contextEvent("evt-running", {
+          compaction: { status: "running", trigger: "manual" },
+          compactionTransitioned: true,
+        }),
       )[0]?.summary,
     ).toBe("Compacting context");
     const [failed] = runtimeEventToActivities(
       contextEvent("evt-failed", {
         compaction: { status: "failed", trigger: "automatic", reason: "provider busy" },
+        compactionTransitioned: true,
         retry: { attempt: 2, maxAttempts: 3 },
       }),
     );
@@ -129,9 +135,48 @@ describe("runtimeEventToActivities prime context", () => {
     });
     expect(
       runtimeEventToActivities(
-        contextEvent("evt-cancelled", { compaction: { status: "cancelled", trigger: "manual" } }),
+        contextEvent("evt-cancelled", {
+          compaction: { status: "cancelled", trigger: "manual" },
+          compactionTransitioned: true,
+        }),
       )[0]?.summary,
     ).toBe("Context compaction cancelled");
+  });
+
+  // Regression: a retry after a finished compaction used to republish the last
+  // terminal status, appending a durable "Context compacted" per retry for a
+  // compaction that never happened.
+  it("records no compaction activity for a retry that follows a finished compaction", () => {
+    const tracker = new PrimeContextTracker();
+    tracker.apply({ type: "compaction_update", phase: "started", trigger: "automatic" });
+    const completed = tracker.apply({
+      type: "compaction_update",
+      phase: "completed",
+      trigger: "automatic",
+      usedTokens: 10,
+    });
+    const afterRetry = tracker.apply({ type: "retry_update", attempt: 2, maxAttempts: 3 });
+
+    expect(completed?.compactionTransitioned).toBe(true);
+    expect(
+      runtimeEventToActivities(contextEvent("evt-completed", { ...completed })).map(
+        (activity) => activity.summary,
+      ),
+    ).toEqual(["Context compacted"]);
+    // The retry snapshot still carries the last compaction status honestly for
+    // the status panel, but it is not a compaction event.
+    expect(afterRetry?.compaction.status).toBe("succeeded");
+    expect(afterRetry).not.toHaveProperty("compactionTransitioned");
+    expect(runtimeEventToActivities(contextEvent("evt-retry", { ...afterRetry }))).toEqual([]);
+  });
+
+  it("records no compaction activity for an on-demand usage refresh", () => {
+    const tracker = new PrimeContextTracker();
+    tracker.apply({ type: "compaction_update", phase: "failed", trigger: "manual" });
+    const usage = tracker.applyUsage({ usedTokens: 42 });
+
+    expect(usage?.compaction.status).toBe("failed");
+    expect(runtimeEventToActivities(contextEvent("evt-usage-refresh", { ...usage }))).toEqual([]);
   });
 
   it("emits nothing while the runtime reports an idle context", () => {

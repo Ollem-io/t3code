@@ -19,8 +19,9 @@ export type PrimeContextState = {
 
 /**
  * Compaction is the runtime's own context management. It is never a checkpoint
- * and never reverts work, and this sentence is the single source of that copy
- * on both clients so the two surfaces cannot drift apart.
+ * and never reverts work. This module is kept byte-identical with its mobile
+ * twin (`apps/mobile/src/features/threads/primeContext.ts`), and each surface's
+ * test asserts that equality so the two cannot drift apart.
  */
 export const PRIME_COMPACTION_NOT_CHECKPOINT =
   "Compacting shortens the agent's context. It is not a checkpoint and does not revert your work.";
@@ -49,13 +50,35 @@ export function primeCompactionCancelCopy(
     : "Compaction cannot be cancelled by this runtime once it starts.";
 }
 
+/**
+ * The server accepts context actions only while a provider turn is running, so
+ * the control says that up front instead of letting the press fail. Callers pass
+ * the live turn fact rather than a capability guess.
+ */
+export const PRIME_CONTEXT_NEEDS_RUNNING_TURN =
+  "Context actions are available while a turn is running.";
+
+export function hasPrimeRunningTurn(
+  session:
+    | { readonly status?: string | undefined; readonly activeTurnId?: string | null }
+    | null
+    | undefined,
+): boolean {
+  return session?.status === "running" && (session.activeTurnId ?? null) !== null;
+}
+
 export function resolvePrimeCompactionRequest(
   providerName: string | null | undefined,
   capabilities: PrimeContextCapabilities | undefined,
   state: PrimeContextState | undefined,
+  hasRunningTurn: boolean,
 ): { ok: boolean; reason?: string } {
   if (providerName !== "prime-agent" || capabilities?.compaction !== true)
     return { ok: false, reason: "This runtime does not support manual compaction." };
+  // Turn liveness is checked before compaction status: an idle thread may still
+  // be showing a session-level compaction that started under an earlier turn, and
+  // "already running" would be the wrong reason to hand the user there.
+  if (!hasRunningTurn) return { ok: false, reason: PRIME_CONTEXT_NEEDS_RUNNING_TURN };
   if (state?.compaction.status === "running")
     return { ok: false, reason: "Compaction is already running." };
   return { ok: true };
@@ -72,13 +95,17 @@ export function resolvePrimeCompactionCancel(
   return { ok: true };
 }
 
-export function resolvePrimeUsageRefresh(capabilities: PrimeContextCapabilities | undefined): {
+export function resolvePrimeUsageRefresh(
+  capabilities: PrimeContextCapabilities | undefined,
+  hasRunningTurn: boolean,
+): {
   ok: boolean;
   reason?: string;
 } {
-  return capabilities?.usageAndRetry === true
-    ? { ok: true }
-    : { ok: false, reason: "This runtime does not report context usage on demand." };
+  if (capabilities?.usageAndRetry !== true)
+    return { ok: false, reason: "This runtime does not report context usage on demand." };
+  if (!hasRunningTurn) return { ok: false, reason: PRIME_CONTEXT_NEEDS_RUNNING_TURN };
+  return { ok: true };
 }
 
 /**
