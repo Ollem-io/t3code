@@ -60,9 +60,11 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-B03    | Server-side single-writer arbitration and conflict receipts        | Done — `a58bbafd` |
 | PA-B02    | Exact adoption/resume state machine and compatibility validation   | Done — `5da5d397` |
 | PA-B04    | Web/desktop/mobile resume and recovery-choice UI                   | Done — `f6f3b1b5` |
-| PA-B05    | Durable cleanup, retention, migrations, rollback safety            | Done — `31dafaa9` |
+| PA-B05    | Durable cleanup, retention, migrations, rollback safety            | Done — `4f9f94a9` |
 
-Completed total: **29 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; Beta is underway.
+Completed total: **30 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; only `PA-B06` remains before the closing audit.
+
+**PA-B05 (merged).** Dual-approved on exact SHA `87003e19` (two workflow rounds: round 1 rejected for host paths and base64 scope identifiers leaking through cleanup warning details into the durable journal and the "redacted" report — repaired with closed reason codes; final round dual APPROVE, Luna-verified watches) and merged at `4f9f94a9` on 2026-08-16. Delivered: journaled, crash-resumable, at-most-once durable cleanup (migration 050) with retention refusals, scope-fenced destructive runs proven against sentinels and a second home, prime-agent-scoped rollback preserving version-keyed sidecars, redacted opaque-digest reporting, and a 79-assertion deterministic artifact. No user-visible surface ships in this milestone, so no visual evidence applies.
 
 **PA-B04 (merged).** Dual-approved on exact tagged SHA `83f203c4` (`pa-b04-review`) after five review rounds and merged at `f6f3b1b5` on 2026-08-16. Rounds 1–2 (workflow) rejected the feature as unreachable — banners unmounted, no transport — and drove the end-to-end wiring: `session.resume.updated` events, migration 049 projection, composer gating, decider-fenced cursor-discard recovery. Rounds 3–5 closed: terminal-less `reconnecting` on failed relaunch (new additive `launchFailed` reason with an end-to-end integration test), per-thread client model reset, fork double-dispatch (fork holds a pending marker for the whole round trip; the dispatching client settles it, thread-tagged so a stale completion cannot re-arm another thread), and a stale wiring assertion. PA-B02's obligations are closed: `capabilityMismatch` recovers via scope-fenced cursor deletion, and `reconnecting` always terminalizes. Recorded for graduation: a post-acquire lease-leak window (≤30s TTL) surfaces a misleading `conflict` on retry; resume state is dropped if no session row exists; the PA-B04 contract's focused-verification path is wrong (exits "No test files found"); `usePrimeResumeModel` has no effect-executing test (no jsdom in the repo — highest-value follow-up, two PA-B04 defects lived in that blind spot); a render-body ref assignment has a theoretical concurrent-render window; visual evidence (per-state screenshots ×3 clients + reconnect/conflict video) still pending UI-launch permission.
 
@@ -357,9 +359,9 @@ callback until PA-B04 renders them.
 
 ## Pending milestones
 
-| Milestone | Planned scope                                                    | State   |
-| --------- | ---------------------------------------------------------------- | ------- |
-| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Pending |
+| Milestone | Planned scope                                                    | State |
+| --------- | ---------------------------------------------------------------- | ----- |
+| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Next  |
 
 ## Immediate next steps
 
