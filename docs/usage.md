@@ -390,11 +390,11 @@ The server is the single writer for one durable Prime session. Two clients canno
 
 ## 20. Durable cleanup and retention
 
-**Shipped.** Beta durable Prime sessions live beneath **T3 home**, scoped by T3 environment and Prime Agent provider instance. Archiving a thread retains its durable Prime session, and so does stopping it. Removing or reconfiguring a provider instance retains it too: T3 tells you the durable data was left untouched instead of clearing it. A future-version cursor read by an older T3 build remains preserved as unavailable instead of being discarded. Nothing in the shipped product deletes a durable Prime session.
+**Shipped.** Beta durable Prime sessions live beneath **T3 home**, scoped by T3 environment and Prime Agent provider instance. Archiving a thread retains its durable Prime session, and so does stopping it. Removing or reconfiguring a provider instance retains it too — but silently: no client surface yet reports that the durable data was left behind, so today the retention is a guarantee, not a disclosure. A future-version cursor read by an older T3 build remains preserved as unavailable instead of being discarded. Nothing in the shipped product deletes a durable Prime session.
 
 **Example 1 — archive:** archive a durable thread. Its Prime session remains beneath the environment/instance scope in T3 home and is available when the thread is restored or unarchived.
 
-**Example 2 — remove an instance:** remove `Prime Test`. T3 removes the configuration and reports that the durable Prime data was retained; the session directory is still there if you reconfigure the instance later.
+**Example 2 — remove an instance:** remove `Prime Test`. T3 removes the configuration and leaves the durable Prime data untouched; the session directory is still there if you reconfigure the instance later. No notice of the retention is shown today — a retained-data disclosure is part of the proposed deletion controls below.
 
 ### Permanent deletion — proposed, not yet shipped
 

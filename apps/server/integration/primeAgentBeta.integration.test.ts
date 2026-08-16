@@ -18,6 +18,8 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 
 import {
   PRIME_RESUME_CURSOR_VERSION,
@@ -100,7 +102,7 @@ const realBinaryLane =
 const fakeBinary = `#!/usr/bin/env node
 import { appendFileSync } from "node:fs"; import { createInterface } from "node:readline";
 const dir = process.argv[process.argv.indexOf("--session-dir") + 1];
-appendFileSync(process.env.MARKER, JSON.stringify({ type: "BOOT", dir }) + "\\n");
+appendFileSync(process.env.MARKER, JSON.stringify({ type: "BOOT", dir, pid: process.pid }) + "\\n");
 createInterface({input:process.stdin}).on("line",line=>{const c=JSON.parse(line);const data=c.type==="get_available_models"?{models:[]}:{state:"idle"};process.stdout.write(JSON.stringify({type:"response",id:c.id,command:c.type,success:true,data})+"\\n")});`;
 
 type Fixture = {
@@ -205,6 +207,17 @@ const layoutFor = (input: Fixture, threadId = THREAD) =>
     threadId,
   });
 
+const lastBootPid = async (input: Fixture): Promise<number> => {
+  const boots = (await readFile(input.marker, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { readonly type: string; readonly pid?: number })
+    .filter((line) => line.type === "BOOT");
+  const pid = boots.at(-1)?.pid;
+  if (typeof pid !== "number") throw new Error("no booted child pid recorded");
+  return pid;
+};
+
 const bootCount = async (input: Fixture) =>
   (await readFile(input.marker, "utf8").catch(() => ""))
     .trim()
@@ -281,18 +294,37 @@ describe("PA-B06 Beta gate: durable continuity matrix", () => {
         assert.deepStrictEqual(yield* Effect.promise(() => cursorIdentity(input)), seeded);
         assert.deepStrictEqual(lastState(input), { status: "resumed", mode: "relaunched" });
 
-        // Abrupt: that server never released; only the lease lapse frees it.
+        // Abrupt: this server owns the session and then dies without any
+        // teardown — its scope is never closed, so nothing releases the lease
+        // or stops the child; the native process is SIGKILLed directly. Only
+        // the lease lapse frees the session for the next writer.
+        const abandoned = yield* Scope.make();
+        const owner = yield* adapterFor(input, "process-three").pipe(Scope.provide(abandoned));
+        yield* owner.startSession(startInput(input));
+        const killedPid = yield* Effect.promise(() => lastBootPid(input));
+        process.kill(killedPid, "SIGKILL");
+        // The crashed writer released nothing: a takeover inside the TTL must
+        // still be refused, which is what proves this was not a graceful stop.
+        const early = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const adapter = yield* adapterFor(input, "process-four");
+            return yield* Effect.exit(adapter.startSession(startInput(input)));
+          }),
+        );
+        assert.equal(early._tag, "Failure", "a live lease must fence the next writer");
         input.clock.now += PRIME_SESSION_LEASE_TTL_MS + 1;
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const adapter = yield* adapterFor(input, "process-three");
+            const adapter = yield* adapterFor(input, "process-five");
             yield* adapter.startSession(startInput(input));
           }),
         );
         assert.deepStrictEqual(yield* Effect.promise(() => cursorIdentity(input)), seeded);
         assert.deepStrictEqual(lastState(input), { status: "resumed", mode: "relaunched" });
-        // One durable session directory, reopened — never a second one.
-        assert.equal(yield* Effect.promise(() => bootCount(input)), 3);
+        // One durable session directory, reopened — never a second one. Four
+        // boots: seed, graceful restart, the crashed owner, and the recovery.
+        assert.equal(yield* Effect.promise(() => bootCount(input)), 4);
+        yield* Scope.close(abandoned, Exit.void);
       }),
     ),
   );
