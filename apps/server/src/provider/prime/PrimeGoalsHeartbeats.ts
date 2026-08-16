@@ -71,10 +71,17 @@ export const EMPTY_PRIME_GOAL_BOARD: PrimeGoalBoard = Object.freeze({
   heartbeats: Object.freeze([]),
 });
 
-/** Ids T3 cannot reproduce exactly are dropped rather than renamed. */
+/**
+ * Ids T3 cannot reproduce exactly are dropped rather than renamed. The wire
+ * contract brands these ids (`RuntimeExtensionId`: leading letter, then
+ * letters/digits/_/-), so an id outside that shape can never be listed or
+ * targeted through the contract — admitting it here would only make the
+ * publish step throw inside the event pump.
+ */
+const CONTRACT_ID = /^[A-Za-z][A-Za-z0-9_-]*$/;
 const exactId = (value: string): string | undefined => {
   const bounded = boundedPrimeNoticeText(value, MAX_PRIME_GOAL_ID);
-  return bounded && bounded === value ? bounded : undefined;
+  return bounded && bounded === value && CONTRACT_ID.test(bounded) ? bounded : undefined;
 };
 
 /**

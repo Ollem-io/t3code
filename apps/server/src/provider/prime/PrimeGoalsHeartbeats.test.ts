@@ -109,6 +109,16 @@ describe("Prime goal and heartbeat mapping", () => {
         [],
       );
     }
+    // Ids the wire contract cannot brand (leading digit, dots, colons) are
+    // dropped at the boundary; otherwise publishing the board would throw
+    // inside the event pump and kill the session's event stream.
+    for (const heartbeatId of ["1hb", "hb.1", "hb:1", "0f2a-uuid-like"]) {
+      assert.deepStrictEqual(
+        primeOwnedHeartbeats([heartbeat({ heartbeatId })], owned(heartbeatId)),
+        [],
+      );
+      assert.equal(primeGoal({ goalId: heartbeatId, title: "t", status: "active" }), undefined);
+    }
   });
 
   it("never advertises a next run for a paused heartbeat", () => {
