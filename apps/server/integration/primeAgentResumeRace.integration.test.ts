@@ -3,7 +3,7 @@
 // @effect-diagnostics instanceOfSchema:off
 // @effect-diagnostics preferSchemaOverJson:off
 import { assert, describe, it } from "@effect/vitest";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
@@ -33,9 +33,27 @@ import {
   type PrimeSessionLeaseStore,
 } from "../src/provider/prime/PrimeSessionLease.ts";
 import { makePrimeSessionLeaseSqlStore } from "../src/provider/prime/PrimeSessionLeaseSql.ts";
+import {
+  executePrimeCleanup,
+  planPrimeCleanup,
+  resumePrimeCleanup,
+  type PrimeCleanupGuard,
+  type PrimeCleanupJournalEntry,
+} from "../src/provider/prime/PrimeDurableCleanup.ts";
+import { makePrimeCleanupJournalSqlStore } from "../src/provider/prime/PrimeDurableCleanupSql.ts";
+import { writePrimeOwnership } from "../src/provider/prime/PrimeOwnership.ts";
+import {
+  makePrimeResumeCursor,
+  primeSessionPathToken,
+  readPrimeResumeCursor,
+  writePrimeResumeCursor,
+} from "../src/provider/prime/PrimeResumeCursor.ts";
 import { ProviderAdapterValidationError } from "../src/provider/Errors.ts";
 import { PrimeDriver } from "../src/provider/Drivers/PrimeDriver.ts";
-import { primeHomeFingerprint } from "../src/provider/prime/PrimeResourceLayout.ts";
+import {
+  primeHomeFingerprint,
+  primeResourceLayout,
+} from "../src/provider/prime/PrimeResourceLayout.ts";
 import * as ServerConfig from "../src/config.ts";
 import * as ServerEnvironment from "../src/environment/ServerEnvironment.ts";
 
@@ -574,6 +592,221 @@ describe("PA-B03 Prime durable session arbitration race", () => {
         ),
       ),
       Effect.orDie,
+    ),
+  );
+});
+
+/**
+ * PA-B05 — destructive cleanup contending with activation and a crash, over
+ * one durable database file.
+ *
+ * The two-connection setup above is reused, because "cleanup lost the race to
+ * an activation" has to be decided by committed state, not by a shared object.
+ * Every interleaving is explicit; the only clock is a counter.
+ */
+describe("PA-B05 Prime durable cleanup race", () => {
+  const nowIso = () => "2026-08-16T00:00:00.000Z";
+
+  /** One connection = one process: its own lease store and cleanup journal. */
+  const openProcess = (filename: string, migrate: boolean) =>
+    Effect.gen(function* () {
+      const context = yield* Layer.build(NodeSqliteClient.layer({ filename }));
+      return yield* Effect.gen(function* () {
+        if (migrate) yield* runMigrations();
+        return {
+          lease: yield* makePrimeSessionLeaseSqlStore({ scope, nowIso }),
+          journal: yield* makePrimeCleanupJournalSqlStore(),
+        };
+      }).pipe(Effect.provide(context));
+    }).pipe(Effect.orDie);
+
+  const seedThread = async (
+    home: string,
+    threadId: string,
+    threadScope: PrimeResumeCursorScope,
+  ) => {
+    const layout = primeResourceLayout({
+      home,
+      environmentId: threadScope.environmentId,
+      instanceId: threadScope.providerInstanceId,
+      threadId,
+    });
+    await mkdir(layout.session, { recursive: true });
+    await writeFile(join(layout.session, "owned"), "session");
+    await writeFile(layout.config, "{}");
+    await writePrimeOwnership(layout.ownership, {
+      version: 1,
+      environmentId: threadScope.environmentId,
+      instanceId: threadScope.providerInstanceId,
+      threadId,
+      process: { pid: 4242, startToken: "captured-start" },
+    });
+    await writePrimeResumeCursor(
+      layout.resumeCursor,
+      makePrimeResumeCursor({
+        scope: threadScope,
+        sessionPathToken: primeSessionPathToken(home, layout.session),
+        ownershipGeneration: 1,
+        compatibility: { agentVersion: "0.7.2", band: "compatible" },
+        capabilityDigest: "sha256:cap",
+        recordedAt: "2026-08-16T00:00:00.000Z",
+      }),
+    );
+    return layout;
+  };
+
+  const proof = { processMatches: async () => true };
+  const remover = (stopped: string[]) => ({
+    stopProcess: async (handle: { pid: number }) => {
+      stopped.push(`stop:${handle.pid}`);
+    },
+    removeOwnedResource: async (resource: {
+      readonly path: string;
+      readonly identity: { readonly dev: string; readonly ino: string };
+    }) => {
+      const current = await stat(resource.path, { bigint: true }).catch(() => undefined);
+      if (
+        !current ||
+        String(current.dev) !== resource.identity.dev ||
+        String(current.ino) !== resource.identity.ino
+      ) {
+        return "retained" as const;
+      }
+      await rm(resource.path, { recursive: true, force: true });
+      return "removed" as const;
+    },
+  });
+
+  const present = async (path: string) =>
+    await stat(path).then(
+      () => true,
+      () => false,
+    );
+
+  it.effect("defers to an active writer, then deletes one thread and resumes a crash", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() =>
+          mkdtemp(join(tmpdir(), "pa-b05-")).then((made) => realpath(made)),
+        );
+        const filename = join(root, "state.sqlite");
+        const writerProcess = yield* openProcess(filename, true);
+        const cleanupProcess = yield* openProcess(filename, false);
+
+        const siblingScope = { ...scope, threadId: "thread-keep" } as PrimeResumeCursorScope;
+        const target = yield* Effect.promise(() => seedThread(root, THREAD, scope));
+        const sibling = yield* Effect.promise(() => seedThread(root, "thread-keep", siblingScope));
+
+        let time = 1_000;
+        const writer = makePrimeSessionLeaseService({
+          store: writerProcess.lease,
+          now: () => time,
+          authorize: () => true,
+        });
+        const observer = makePrimeSessionLeaseService({
+          store: cleanupProcess.lease,
+          now: () => time,
+          authorize: () => true,
+        });
+        // The cleanup process derives its guard from committed arbitration
+        // state, which is the only thing it can honestly know about the writer.
+        const guard = async (): Promise<PrimeCleanupGuard> => {
+          const seen = await observer.inspect(scope);
+          return seen.status === "held" ? { status: "leaseHeld" } : { status: "clear" };
+        };
+        const plan = () =>
+          planPrimeCleanup({
+            home: root,
+            scope,
+            lifecycleEvent: "threadDelete",
+            guard: { status: "clear" },
+          });
+        const stopped: Array<string> = [];
+        const run = (journal: typeof cleanupProcess.journal) =>
+          executePrimeCleanup({
+            plan: plan(),
+            confirmation: { scopeDigest: plan().scopeDigest, acknowledged: true },
+            journal,
+            guard,
+            proof,
+            cleanup: remover(stopped),
+            now: nowIso,
+          });
+
+        // 1. Another process is actively writing: cleanup defers and touches
+        //    nothing, not even the journal.
+        const granted = yield* Effect.promise(() =>
+          writer.acquire({ scope, writer: clientA, operation: "activate" }),
+        );
+        assert.equal(granted.status, "granted");
+        const deferred = yield* Effect.promise(() => run(cleanupProcess.journal));
+        assert.equal(deferred.outcome, "deferred");
+        assert.equal(deferred.reasonCode, "leaseHeld");
+        assert.equal(yield* Effect.promise(() => present(target.thread)), true);
+        assert.deepStrictEqual(
+          yield* Effect.promise(() => cleanupProcess.journal.listUnfinished()),
+          [],
+        );
+
+        // 2. The writer is gone (its lease lapsed). Cleanup crashes right after
+        //    a journal write — the same state a killed process leaves.
+        time += PRIME_SESSION_LEASE_TTL_MS + 1;
+        let writes = 0;
+        const crashing = {
+          ...cleanupProcess.journal,
+          write: async (entry: PrimeCleanupJournalEntry) => {
+            writes += 1;
+            await cleanupProcess.journal.write(entry);
+            if (writes === 2) throw new Error("simulated crash");
+          },
+        };
+        const crashed = yield* Effect.promise(() =>
+          run(crashing).then(
+            () => "did not crash",
+            (error: Error) => error.message,
+          ),
+        );
+        assert.equal(crashed, "simulated crash");
+        const unfinished = yield* Effect.promise(() => cleanupProcess.journal.listUnfinished());
+        assert.equal(unfinished.length, 1, "the crash left a durable, resumable journal row");
+        assert.equal(unfinished[0]!.scopeKey, primeResumeScopeKey(scope));
+        assert.equal(unfinished[0]!.scopeDigest.includes(THREAD), false);
+
+        // 3. A restarted process reads the journal and finishes idempotently.
+        const restarted = yield* openProcess(filename, false);
+        const resumed = yield* Effect.promise(() =>
+          resumePrimeCleanup({
+            home: root,
+            scope,
+            journal: restarted.journal,
+            guard,
+            proof,
+            cleanup: remover(stopped),
+            now: nowIso,
+          }),
+        );
+        assert.equal(resumed?.outcome, "completed");
+        assert.equal(stopped.filter((event) => event === "stop:4242").length, 1);
+        assert.equal(yield* Effect.promise(() => present(target.thread)), false);
+        assert.equal(yield* Effect.promise(() => present(target.resumeCursor)), false);
+        assert.deepStrictEqual(yield* Effect.promise(() => restarted.journal.listUnfinished()), []);
+
+        // 4. Nothing else in this home moved, and the deleted thread reads as
+        //    "no cursor" rather than as a silently fresh session.
+        assert.equal(yield* Effect.promise(() => present(sibling.thread)), true);
+        assert.equal(yield* Effect.promise(() => present(sibling.resumeCursor)), true);
+        const after = yield* Effect.promise(() =>
+          readPrimeResumeCursor(target.resumeCursor, scope),
+        );
+        assert.deepStrictEqual(after.state, { status: "unavailable", reason: "missing" });
+
+        // 5. Re-running the whole cleanup is a no-op, never a second deletion.
+        const again = yield* Effect.promise(() => run(restarted.journal));
+        assert.equal(again.outcome, "completed");
+        assert.equal(stopped.filter((event) => event === "stop:4242").length, 1);
+
+        yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
+      }),
     ),
   );
 });

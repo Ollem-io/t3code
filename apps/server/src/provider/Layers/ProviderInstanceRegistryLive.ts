@@ -205,6 +205,21 @@ const buildEntry = <R>(input: {
   });
 
 /**
+ * Notified after a live instance's scope is closed by `reconcile`, because its
+ * settings entry disappeared (`"removed"`) or changed (`"replaced"`).
+ *
+ * PA-B05: this is a *notice*, not a cleanup. Removing a provider instance from
+ * settings is reversible and must stay reversible, so durable resources are
+ * untouched here; anything destructive goes through the confirmed, journaled
+ * cleanup path in `provider/prime/PrimeDurableCleanup.ts`.
+ */
+export type ProviderInstanceRemovalListener = (input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly reason: "removed" | "replaced";
+}) => Effect.Effect<void>;
+
+/**
  * Reconcile-only implementation of the mutator. Exposed to the hydration
  * layer; never called directly by the rest of the server.
  */
@@ -212,6 +227,7 @@ const makeReconcile = <R>(input: {
   readonly state: RegistryState;
   readonly driversById: ReadonlyMap<ProviderDriverKind, AnyProviderDriver<R>>;
   readonly parentScope: Scope.Scope;
+  readonly onInstanceRemoved?: ProviderInstanceRemovalListener | undefined;
 }): ((configMap: ProviderInstanceConfigMap) => Effect.Effect<void, never, R>) => {
   const { state, driversById, parentScope } = input;
   return (configMap: ProviderInstanceConfigMap) =>
@@ -242,6 +258,20 @@ const makeReconcile = <R>(input: {
         const live = previousEntries.get(id);
         if (live) {
           yield* Scope.close(live.scope, Exit.void).pipe(Effect.ignore);
+          // Removal tears the instance down; it never deletes durable data.
+          // The notice exists so a provider that owns durable resources (Prime)
+          // can *offer* a confirmed cleanup, and so that offer is auditable.
+          // A failing listener may not break reconcile: settings must still
+          // converge even if nothing is listening.
+          if (input.onInstanceRemoved) {
+            yield* input
+              .onInstanceRemoved({
+                instanceId: id,
+                driver: live.entry.driver,
+                reason: removedIds.includes(id) ? "removed" : "replaced",
+              })
+              .pipe(Effect.catchCause(() => Effect.void));
+          }
         }
       }
 
@@ -330,6 +360,8 @@ const makeReconcile = <R>(input: {
 export const makeProviderInstanceRegistry = <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
   readonly configMap: ProviderInstanceConfigMap;
+  /** Non-destructive removal notice; see `ProviderInstanceRemovalListener`. */
+  readonly onInstanceRemoved?: ProviderInstanceRemovalListener;
 }): Effect.Effect<
   {
     readonly registry: ProviderInstanceRegistryShape;
@@ -361,7 +393,12 @@ export const makeProviderInstanceRegistry = <R>(input: {
     yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
 
     const state: RegistryState = { entries, unavailable, changes };
-    const reconcileWithR = makeReconcile({ state, driversById, parentScope });
+    const reconcileWithR = makeReconcile({
+      state,
+      driversById,
+      parentScope,
+      onInstanceRemoved: input.onInstanceRemoved,
+    });
     const reconcile: ProviderInstanceRegistryMutatorShape["reconcile"] = (configMap) =>
       reconcileWithR(configMap).pipe(Effect.provideContext(driverContext));
 

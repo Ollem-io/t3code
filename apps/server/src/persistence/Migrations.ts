@@ -62,6 +62,7 @@ import Migration0046 from "./Migrations/046_ProjectionThreadSessionGoalBoard.ts"
 import Migration0047 from "./Migrations/047_ThreadForkAncestry.ts";
 import Migration0048 from "./Migrations/048_PrimeResumeCursors.ts";
 import Migration0049 from "./Migrations/049_ProjectionThreadSessionResumeState.ts";
+import Migration0050 from "./Migrations/050_PrimeCleanupJournal.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -123,6 +124,7 @@ export const migrationEntries = [
   [47, "ThreadForkAncestry", Migration0047],
   [48, "PrimeResumeCursors", Migration0048],
   [49, "ProjectionThreadSessionResumeState", Migration0049],
+  [50, "PrimeCleanupJournal", Migration0050],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

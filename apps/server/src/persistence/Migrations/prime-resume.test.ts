@@ -5,6 +5,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { primeResumeScopeKey } from "@t3tools/contracts";
 
+import { PRIME_CLEANUP_JOURNAL_VERSION } from "../../provider/prime/PrimeDurableCleanup.ts";
+import { makePrimeCleanupJournalSqlStore } from "../../provider/prime/PrimeDurableCleanupSql.ts";
 import {
   decodePrimeResumeCursor,
   encodePrimeResumeCursor,
@@ -248,6 +250,154 @@ layer("048_PrimeResumeCursors", (it) => {
         version: 2,
       }).pipe(Effect.result);
       assert.equal(duplicate._tag, "Failure", "the identity index rejects a duplicate scope");
+    }),
+  );
+});
+
+/**
+ * PA-B05 cleanup-journal schema: additive, versioned, and safe to roll back
+ * over. A journal row is a *plan*, so a row this build cannot interpret must
+ * read as "no resumable cleanup" rather than authorize a deletion.
+ */
+layer("050_PrimeCleanupJournal", (it) => {
+  const journalScope = (environmentId: string) =>
+    primeResumeScopeKey(scope({ environmentId }) as never);
+
+  const writeJournal = (input: {
+    readonly environmentId: string;
+    readonly version: number;
+    readonly status?: string;
+    readonly steps?: string;
+  }) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO prime_cleanup_journal (
+          scope_key, journal_version, scope_digest, reason, status, steps_json,
+          started_at, updated_at
+        ) VALUES (
+          ${journalScope(input.environmentId)}, ${input.version}, 'digest-abc', 'explicitDelete',
+          ${input.status ?? "running"},
+          ${input.steps ?? '[{"kind":"resumeCursor","status":"done"}]'},
+          '2026-08-16T00:00:00.000Z', '2026-08-16T00:00:01.000Z'
+        )
+      `;
+    });
+
+  it.effect("is additive over cursor data and idempotent when interrupted", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 49 });
+      yield* insertCursor({
+        scopeInput: scope({ environmentId: "env-journal-additive" }),
+        value: cursor(),
+        version: 2,
+      });
+      const before = yield* rows("env-journal-additive");
+
+      // Interrupted then repeated: the migration only creates missing objects.
+      yield* runMigrations({ toMigrationInclusive: 50 });
+      yield* runMigrations({ toMigrationInclusive: 50 });
+
+      assert.deepEqual(yield* rows("env-journal-additive"), before);
+      const empty = yield* sql<{
+        readonly count: number;
+      }>`SELECT COUNT(*) AS count FROM prime_cleanup_journal`;
+      assert.equal(Number(empty[0]?.count), 0, "no cleanup is invented for existing rows");
+
+      const indexes = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'prime_cleanup_journal'
+      `;
+      assert.include(
+        indexes.map((index) => index.name),
+        "prime_cleanup_journal_status",
+      );
+    }),
+  );
+
+  it.effect("round-trips a journal entry and refuses a version it cannot interpret", () =>
+    Effect.gen(function* () {
+      yield* runMigrations({ toMigrationInclusive: 50 });
+      const store = yield* makePrimeCleanupJournalSqlStore();
+
+      const entry = {
+        version: PRIME_CLEANUP_JOURNAL_VERSION,
+        scopeKey: journalScope("env-journal-roundtrip"),
+        scopeDigest: "digest-abc",
+        reason: "explicitDelete",
+        status: "running",
+        steps: [
+          { kind: "resumeCursor", status: "done" },
+          { kind: "ownedResources", status: "pending" },
+        ],
+        startedAt: "2026-08-16T00:00:00.000Z",
+        updatedAt: "2026-08-16T00:00:01.000Z",
+      } as const;
+      yield* Effect.promise(() => store.write(entry));
+      assert.deepEqual(yield* Effect.promise(() => store.read(entry.scopeKey)), entry);
+      assert.deepEqual(yield* Effect.promise(() => store.listUnfinished()), [entry]);
+
+      // Repeating the write is an upsert, not a second cleanup.
+      yield* Effect.promise(() => store.write({ ...entry, status: "incomplete" }));
+      assert.equal((yield* Effect.promise(() => store.listUnfinished())).length, 1);
+
+      // A row written by a future build, and a row whose steps this build
+      // cannot decode, are both "no resumable cleanup" — never an action.
+      yield* writeJournal({ environmentId: "env-journal-future", version: 99 });
+      yield* writeJournal({
+        environmentId: "env-journal-corrupt",
+        version: PRIME_CLEANUP_JOURNAL_VERSION,
+        steps: "{not json",
+      });
+      assert.equal(
+        yield* Effect.promise(() => store.read(journalScope("env-journal-future"))),
+        undefined,
+      );
+      assert.equal(
+        yield* Effect.promise(() => store.read(journalScope("env-journal-corrupt"))),
+        undefined,
+      );
+      assert.deepEqual(
+        (yield* Effect.promise(() => store.listUnfinished())).map((row) => row.scopeKey),
+        [entry.scopeKey],
+      );
+
+      yield* Effect.promise(() => store.clear(entry.scopeKey));
+      assert.deepEqual(yield* Effect.promise(() => store.listUnfinished()), []);
+    }),
+  );
+
+  it.effect("survives a rollback to the previous schema without losing anything", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 50 });
+      yield* insertCursor({
+        scopeInput: scope({ environmentId: "env-journal-rollback" }),
+        value: cursor(),
+        version: 2,
+      });
+      yield* writeJournal({
+        environmentId: "env-journal-rollback",
+        version: PRIME_CLEANUP_JOURNAL_VERSION,
+        status: "incomplete",
+      });
+
+      // An older build stops at 49; its loader never drops the newer table.
+      yield* runMigrations({ toMigrationInclusive: 49 });
+      yield* runMigrations({ toMigrationInclusive: 50 });
+
+      const stored = yield* sql<{
+        readonly status: string;
+        readonly journal_version: number;
+      }>`SELECT status, journal_version FROM prime_cleanup_journal WHERE scope_key = ${journalScope("env-journal-rollback")}`;
+      assert.deepEqual(stored, [{ status: "incomplete", journal_version: 1 }]);
+      assert.equal((yield* rows("env-journal-rollback")).length, 1);
+
+      const applied = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+        SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
+      `;
+      assert.equal(applied.at(-1)?.name, "PrimeCleanupJournal");
+      assert.equal(applied.filter((row) => row.migration_id === 50).length, 1);
     }),
   );
 });
