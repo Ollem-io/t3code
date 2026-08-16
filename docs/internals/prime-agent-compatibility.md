@@ -88,3 +88,42 @@ for that session, and publishes it as the provider-neutral `session.commands.upd
 extension/prompt/skill tree and runs it through the shipped `normalizePrimeCommands` and the shipped
 client resolver — it imports them rather than re-implementing them, so a regression in either fails
 the transcript. `PrimeCommandsTranscript.test.ts` keeps that wiring honest in CI.
+
+## PA-A05 rich extension UI and transient status
+
+Prime 0.7.2 sends nine `extension_ui_request` methods. Four are blocking dialogs; the rest are
+fire-and-forget presentation. T3 treats the two groups as different things.
+
+- **Dialogs are answered exactly.** `select`, `confirm`, `input`, and `editor` keep the MVP mapping
+  onto canonical `request.opened` / `user-input.requested`, and the native response carries the
+  exact value or `cancelled: true` — never an invented one.
+- **Cancellation closes the dialog.** A cancelled, superseded, or timed-out request now emits a
+  resolution as well as the warning. A warning alone left the dialog pending forever on every
+  attached client. The resolution says `cancelled` with a reason, so a cancelled dialog is never
+  described as answered.
+- **Timeouts resolve truthfully.** A native `timeout` is read as milliseconds and clamped to
+  1s–10min: an absurd value cannot produce a dialog nobody can answer or one that never closes. On
+  expiry T3 answers the runtime `cancelled: true` and states the elapsed time.
+- **Pending dialogs cancel on stop.** Session stop, adapter stop, and a child that dies all cancel
+  every pending dialog before the terminal events, without pretending to answer a dead channel.
+- **A method this build cannot decode never hangs.** The strict transport fails the session closed
+  rather than parking a request T3 could not validate; no response is invented for it.
+- **Status is not transcript.** `notify`, `setStatus`, `setWidget`, `setTitle`, and
+  `set_editor_text` become one bounded `session.notices.updated` snapshot — at most eight entries,
+  256-character text, four 160-character widget lines. Entries are keyed, so a repeat replaces;
+  notifications are keyed by severity so a chatty info stream cannot bury an error; an operation
+  that clears its own content removes the entry. Byte-identical boards produce neither a durable
+  event nor a projection write.
+- **Nothing is answered that was not asked.** Fire-and-forget operations are displayed and never
+  responded to.
+- **`set_editor_text` is a suggestion.** T3 shows the proposed composer text rather than silently
+  overwriting what every attached client is typing.
+- **Transient means transient.** The board is cleared when the session exits, and clients render it
+  only for a live session — a crashed session never keeps showing a dead extension's status.
+  Dismissal is per viewer and per exact message, so a replacement is not swallowed by an earlier
+  dismissal and one client cannot blank another's view.
+
+`packages/contracts/fixtures/pa-a05-prime-extension-ui-transcript.mjs` runs a fixture extension
+through the shipped mapper (`PrimeExtensionUi.ts`), the shipped canonical contract, and the shipped
+client projection — it imports them rather than re-implementing them.
+`PrimeExtensionUiTranscript.test.ts` keeps that wiring honest in CI.

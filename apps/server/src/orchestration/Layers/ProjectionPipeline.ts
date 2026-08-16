@@ -1148,6 +1148,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ...(event.payload.session.commandCatalog
           ? { commandCatalog: event.payload.session.commandCatalog }
           : {}),
+        ...(event.payload.session.noticeBoard
+          ? { noticeBoard: event.payload.session.noticeBoard }
+          : {}),
         ...(event.payload.session.contextState
           ? { contextState: event.payload.session.contextState }
           : {}),

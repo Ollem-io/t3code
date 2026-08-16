@@ -15,6 +15,7 @@ import {
   TurnId,
   OrchestrationSessionActionState,
   OrchestrationSessionCommandCatalog,
+  OrchestrationSessionNoticeBoard,
   OrchestrationSessionContextState,
   ProviderRuntimeCapabilities,
 } from "@t3tools/contracts";
@@ -36,6 +37,7 @@ export const ProjectionThreadSession = Schema.Struct({
   updatedAt: IsoDateTime,
   actionState: Schema.optional(OrchestrationSessionActionState),
   commandCatalog: Schema.optional(OrchestrationSessionCommandCatalog),
+  noticeBoard: Schema.optional(OrchestrationSessionNoticeBoard),
   contextState: Schema.optional(OrchestrationSessionContextState),
   runtimeCapabilities: Schema.optional(ProviderRuntimeCapabilities),
 });

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { classifyTaskAgentKind, ProviderRuntimeEvent, reduceProviderSessionActionState } from "./providerRuntime.ts";
+import {
+  classifyTaskAgentKind,
+  PROVIDER_SESSION_NOTICE_LIMIT,
+  ProviderRuntimeEvent,
+  reduceProviderSessionActionState,
+  reduceProviderSessionNoticeBoard,
+} from "./providerRuntime.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
@@ -202,20 +208,113 @@ describe("classifyTaskAgentKind", () => {
   });
 });
 
-
 describe("session action snapshot projection", () => {
-  const event = (queuedCount: number, steering: string[], followUps: string[]) => decodeRuntimeEvent({
-    type: "session.actions.updated", eventId: `event-${queuedCount}`, provider: "prime-agent", providerInstanceId: "prime-agent", createdAt: "2026-01-01T00:00:00.000Z", threadId: "thread-1",
-    payload: { queuedCount, steering, followUps },
-  });
+  const event = (queuedCount: number, steering: string[], followUps: string[]) =>
+    decodeRuntimeEvent({
+      type: "session.actions.updated",
+      eventId: `event-${queuedCount}`,
+      provider: "prime-agent",
+      providerInstanceId: "prime-agent",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: "thread-1",
+      payload: { queuedCount, steering, followUps },
+    });
   it("replaces from authoritative snapshots identically for attached clients and clears at terminal", () => {
     const snapshots = [event(1, ["steer"], []), event(2, ["steer"], ["later"])];
     const apply = () => snapshots.reduce(reduceProviderSessionActionState, undefined);
     expect(apply()).toEqual(apply());
-    const cleared = reduceProviderSessionActionState(apply(), decodeRuntimeEvent({ type: "session.exited", eventId: "exit", provider: "prime-agent", providerInstanceId: "prime-agent", createdAt: "2026-01-01T00:00:01.000Z", threadId: "thread-1", payload: { exitKind: "graceful" } }));
+    const cleared = reduceProviderSessionActionState(
+      apply(),
+      decodeRuntimeEvent({
+        type: "session.exited",
+        eventId: "exit",
+        provider: "prime-agent",
+        providerInstanceId: "prime-agent",
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId: "thread-1",
+        payload: { exitKind: "graceful" },
+      }),
+    );
     expect(cleared).toEqual({ queuedCount: 0, steering: [], followUps: [] });
   });
   it("rejects unbounded action snapshots", () => {
-    expect(() => decodeRuntimeEvent({ type: "session.actions.updated", eventId: "bad", provider: "prime-agent", providerInstanceId: "prime-agent", createdAt: "2026-01-01T00:00:00.000Z", threadId: "thread-1", payload: { queuedCount: 33, steering: [], followUps: [] } })).toThrow();
+    expect(() =>
+      decodeRuntimeEvent({
+        type: "session.actions.updated",
+        eventId: "bad",
+        provider: "prime-agent",
+        providerInstanceId: "prime-agent",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: "thread-1",
+        payload: { queuedCount: 33, steering: [], followUps: [] },
+      }),
+    ).toThrow();
+  });
+});
+
+// PA-A05: transient extension status. Snapshots replace, the board is bounded,
+// and a terminated session shows nothing rather than a dead runtime's status.
+describe("session notice board projection", () => {
+  const notice = (text: string) => ({
+    key: "status:index",
+    kind: "status" as const,
+    severity: "info" as const,
+    text,
+  });
+  const event = (texts: string[]) =>
+    decodeRuntimeEvent({
+      type: "session.notices.updated",
+      eventId: `event-${texts.join("-")}`,
+      provider: "prime-agent",
+      providerInstanceId: "prime-agent",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: "thread-1",
+      payload: { notices: texts.map(notice) },
+    });
+  it("replaces from authoritative snapshots and clears at terminal", () => {
+    const applied = [event(["Indexing 40%"]), event(["Indexing 90%"])].reduce(
+      reduceProviderSessionNoticeBoard,
+      undefined,
+    );
+    expect(applied).toEqual({ notices: [notice("Indexing 90%")] });
+    const cleared = reduceProviderSessionNoticeBoard(
+      applied,
+      decodeRuntimeEvent({
+        type: "session.exited",
+        eventId: "exit-notices",
+        provider: "prime-agent",
+        providerInstanceId: "prime-agent",
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId: "thread-1",
+        payload: { exitKind: "graceful" },
+      }),
+    );
+    expect(cleared).toEqual({ notices: [] });
+  });
+  it("rejects an unbounded board and oversized widget lines", () => {
+    expect(() =>
+      event(Array.from({ length: PROVIDER_SESSION_NOTICE_LIMIT + 1 }, (_, i) => `line ${i}`)),
+    ).toThrow();
+    expect(() =>
+      decodeRuntimeEvent({
+        type: "session.notices.updated",
+        eventId: "bad-widget",
+        provider: "prime-agent",
+        providerInstanceId: "prime-agent",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: "thread-1",
+        payload: {
+          notices: [
+            {
+              key: "widget:tips",
+              kind: "widget",
+              severity: "info",
+              text: "one",
+              lines: ["a", "b", "c", "d", "e"],
+            },
+          ],
+        },
+      }),
+    ).toThrow();
   });
 });

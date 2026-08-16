@@ -378,6 +378,30 @@ export type OrchestrationSessionCommandCatalog = typeof OrchestrationSessionComm
 export const EMPTY_ORCHESTRATION_SESSION_COMMAND_CATALOG: OrchestrationSessionCommandCatalog =
   Object.freeze({ commands: Object.freeze([]) });
 
+/**
+ * Runtime-supplied transient status board. Mirrors the canonical
+ * `session.notices.updated` snapshot: entries are replaced by key, the board is
+ * bounded, and nothing here is transcript history.
+ */
+export const OrchestrationSessionNoticeBoard = Schema.Struct({
+  notices: Schema.Array(
+    Schema.Struct({
+      key: TrimmedNonEmptyString.check(Schema.isMaxLength(96)),
+      kind: Schema.Literals(["notification", "status", "widget", "title", "editor-text"]),
+      severity: Schema.Literals(["info", "warning", "error"]),
+      text: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+      lines: Schema.optional(
+        Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(160))).check(
+          Schema.isMaxLength(4),
+        ),
+      ),
+    }),
+  ).check(Schema.isMaxLength(8)),
+});
+export type OrchestrationSessionNoticeBoard = typeof OrchestrationSessionNoticeBoard.Type;
+export const EMPTY_ORCHESTRATION_SESSION_NOTICE_BOARD: OrchestrationSessionNoticeBoard =
+  Object.freeze({ notices: Object.freeze([]) });
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -404,6 +428,8 @@ export const OrchestrationSession = Schema.Struct({
   contextState: Schema.optional(OrchestrationSessionContextState),
   /** Native authoritative command/prompt/skill catalog; absent means none supplied. */
   commandCatalog: Schema.optional(OrchestrationSessionCommandCatalog),
+  /** Native transient status board; absent means this runtime supplied none. */
+  noticeBoard: Schema.optional(OrchestrationSessionNoticeBoard),
   runtimeCapabilities: Schema.optional(
     Schema.Struct({
       steer: Schema.optional(Schema.Boolean),
@@ -413,6 +439,8 @@ export const OrchestrationSession = Schema.Struct({
       compactionCancel: Schema.optional(Schema.Boolean),
       usageAndRetry: Schema.optional(Schema.Boolean),
       commandDiscovery: Schema.optional(Schema.Boolean),
+      /** Typed dialogs and transient status from runtime extension UI. */
+      interactions: Schema.optional(Schema.Boolean),
     }),
   ),
 });
