@@ -489,6 +489,90 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  // PA-A05: transient extension status is current state, never scrollback. It
+  // reaches the read model as one replaced snapshot, writes nothing when it is
+  // unchanged, and is cleared when the session exits.
+  it("projects the transient notice board, coalesces repeats, and clears it on exit", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-notices-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-notices"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "running");
+
+    const board = {
+      notices: [{ key: "status:index", kind: "status", severity: "info", text: "Indexing 40%" }],
+    } as const;
+    harness.emit({
+      type: "session.notices.updated",
+      eventId: asEventId("evt-notices-first"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-notices"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: board,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => (thread.session?.noticeBoard?.notices.length ?? 0) === 1,
+    );
+    const projected = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(projected?.session?.noticeBoard).toEqual(board);
+    const updatedAt = projected?.session?.updatedAt;
+
+    // Byte-identical repeat: no projection write, so the session row does not
+    // even change its updatedAt. Extensions repeat status constantly.
+    harness.emit({
+      type: "session.notices.updated",
+      eventId: asEventId("evt-notices-repeat"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-notices"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: board,
+    });
+    harness.emit({
+      type: "session.notices.updated",
+      eventId: asEventId("evt-notices-replaced"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-notices"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {
+        notices: [{ key: "status:index", kind: "status", severity: "info", text: "Indexing 90%" }],
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.noticeBoard?.notices[0]?.text === "Indexing 90%",
+    );
+    // Replacement, not accumulation.
+    const replaced = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(replaced?.session?.noticeBoard?.notices.length).toBe(1);
+    expect(replaced?.session?.updatedAt).not.toBe(updatedAt);
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-notices-session-exited"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      payload: { reason: "exited" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => (thread.session?.noticeBoard?.notices.length ?? 0) === 0,
+    );
+  });
+
   // PA-A03 blocker regression: a late "Compacting" arriving after the turn
   // terminal used to persist forever, permanently disabling the compact control
   // on an idle thread with no event able to clear it. Compaction is session
@@ -3160,6 +3244,63 @@ describe("ProviderRuntimeIngestion", () => {
         : undefined;
     expect(resolvedPayload?.requestKind).toBe("command");
     expect(resolvedPayload?.requestType).toBe("command_execution_approval");
+  });
+
+  // PA-A05 blocker regression: a dialog the runtime closed without an answer
+  // (timeout, cancellation, supersede) used to reach every client as
+  // "User input submitted", crediting the user with input they never gave. The
+  // cancellation now travels into the read model and the row says so.
+  it("says a cancelled user-input request was cancelled, not submitted", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-user-input-answered"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      requestId: ApprovalRequestId.make("req-answered"),
+      payload: { answers: { "req-answered": "Alice" } },
+    });
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-user-input-cancelled"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      requestId: ApprovalRequestId.make("req-cancelled"),
+      payload: {
+        answers: {},
+        cancelled: true,
+        reason: "Prime Agent interactive request timed out after 1000ms.",
+      },
+    });
+
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-cancelled",
+      ),
+    );
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const answered = thread?.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-answered",
+    );
+    const cancelled = thread?.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-cancelled",
+    );
+
+    expect(answered?.summary).toBe("User input submitted");
+    expect((answered?.payload as Record<string, unknown> | undefined)?.cancelled).toBeUndefined();
+
+    expect(cancelled?.summary).toBe("User input cancelled");
+    const cancelledPayload = cancelled?.payload as Record<string, unknown> | undefined;
+    expect(cancelledPayload?.cancelled).toBe(true);
+    expect(cancelledPayload?.detail).toBe(
+      "Prime Agent interactive request timed out after 1000ms.",
+    );
   });
 
   it("maps runtime.error into errored session state", async () => {

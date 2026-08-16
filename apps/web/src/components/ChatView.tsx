@@ -249,6 +249,7 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { PrimeContextStatus } from "./chat/PrimeContextStatus";
+import { PrimeExtensionStatus } from "./chat/PrimeExtensionStatus";
 import { hasPrimeRunningTurn } from "./chat/primeContext";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
@@ -6425,6 +6426,13 @@ function ChatViewContent(props: ChatViewProps) {
                     hasRunningTurn={hasPrimeRunningTurn(activeThread?.session)}
                     onRequestCompaction={onRequestCompaction}
                     onRefreshUsage={onRefreshUsage}
+                  />
+                  <PrimeExtensionStatus
+                    providerName={activeThread?.session?.providerName}
+                    capabilities={activeThread?.session?.runtimeCapabilities}
+                    board={activeThread?.session?.noticeBoard}
+                    session={activeThread?.session}
+                    pendingDialogCount={pendingUserInputs.length}
                   />
                   <div
                     className="relative"

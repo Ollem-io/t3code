@@ -18,8 +18,10 @@ import {
   type OrchestrationSessionActionState,
   EMPTY_ORCHESTRATION_SESSION_COMMAND_CATALOG,
   EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
+  EMPTY_ORCHESTRATION_SESSION_NOTICE_BOARD,
   type OrchestrationSessionCommandCatalog,
   type OrchestrationSessionContextState,
+  type OrchestrationSessionNoticeBoard,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -154,6 +156,17 @@ function sameContextState(
 function sameCommandCatalog(
   current: OrchestrationSessionCommandCatalog | undefined,
   next: OrchestrationSessionCommandCatalog,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+/**
+ * Structural equality for the transient status board. Extensions repeat the
+ * same status string constantly, so this drops writes that change nothing.
+ */
+function sameNoticeBoard(
+  current: OrchestrationSessionNoticeBoard | undefined,
+  next: OrchestrationSessionNoticeBoard,
 ): boolean {
   return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
 }
@@ -584,16 +597,27 @@ export function runtimeEventToActivities(
     }
 
     case "user-input.resolved": {
+      // A runtime-closed request (cancelled, superseded, timed out) carries no
+      // user answer. Saying "submitted" for it would credit the user with input
+      // they never gave, so the cancellation travels into the read model and
+      // the row states it plainly on every surface.
+      const cancelled = event.payload.cancelled === true;
+      const reason =
+        typeof event.payload.reason === "string" && event.payload.reason.trim().length > 0
+          ? truncateDetail(event.payload.reason)
+          : undefined;
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "user-input.resolved",
-          summary: "User input submitted",
+          summary: cancelled ? "User input cancelled" : "User input submitted",
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             answers: event.payload.answers,
+            ...(cancelled ? { cancelled: true } : {}),
+            ...(cancelled && reason ? { detail: reason } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1767,6 +1791,14 @@ const make = Effect.gen(function* () {
                       : thread.session?.commandCatalog
                         ? { commandCatalog: thread.session.commandCatalog }
                         : {}),
+                    // Transient status describes the live runtime, so an exited
+                    // session drops the board instead of leaving a dead
+                    // extension's status text on every attached client.
+                    ...(event.type === "session.exited"
+                      ? { noticeBoard: EMPTY_ORCHESTRATION_SESSION_NOTICE_BOARD }
+                      : thread.session?.noticeBoard
+                        ? { noticeBoard: thread.session.noticeBoard }
+                        : {}),
                   }
                 : {
                     ...(thread.session?.actionState
@@ -1800,6 +1832,9 @@ const make = Effect.gen(function* () {
                       : {}),
                     ...(thread.session?.commandCatalog
                       ? { commandCatalog: thread.session.commandCatalog }
+                      : {}),
+                    ...(thread.session?.noticeBoard
+                      ? { noticeBoard: thread.session.noticeBoard }
                       : {}),
                   }),
               ...(thread.session?.runtimeCapabilities
@@ -1860,6 +1895,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.commandCatalog
                 ? { commandCatalog: thread.session.commandCatalog }
                 : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -1949,6 +1985,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.commandCatalog
                 ? { commandCatalog: thread.session.commandCatalog }
                 : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2004,6 +2041,61 @@ const make = Effect.gen(function* () {
               ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
               ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
               commandCatalog: nextCommandCatalog,
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Transient extension status. Deliberately not scrollback: the board is a
+      // bounded current-state projection, so a chatty extension costs one
+      // replaced snapshot instead of a flood of timeline rows.
+      if (
+        event.type === "session.notices.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextNoticeBoard: OrchestrationSessionNoticeBoard = {
+          notices: event.payload.notices.map((notice) => ({
+            key: notice.key,
+            kind: notice.kind,
+            severity: notice.severity,
+            text: notice.text,
+            ...(notice.lines === undefined ? {} : { lines: [...notice.lines] }),
+          })),
+        };
+        // A byte-identical board costs no durable event and no projection write:
+        // extensions repeat the same status string constantly.
+        if (!sameNoticeBoard(thread.session.noticeBoard, nextNoticeBoard)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-notices-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              noticeBoard: nextNoticeBoard,
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2264,6 +2356,7 @@ const make = Effect.gen(function* () {
               ...(thread.session?.commandCatalog
                 ? { commandCatalog: thread.session.commandCatalog }
                 : {}),
+              ...(thread.session?.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),

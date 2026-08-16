@@ -1,4 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// Native request timeouts live on the same promise-based drain as the RPC
+// client, which is why the wall-clock timer is a plain `setTimeout` here.
+// @effect-diagnostics globalTimers:off
 import * as NodeFSP from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -45,6 +48,14 @@ import {
   normalizePrimeSessionStats,
 } from "../prime/PrimeCompaction.ts";
 import { PRIME_GET_COMMANDS_COMMAND, PrimeCommandCache } from "../prime/PrimeCommands.ts";
+import {
+  applyPrimeNotice,
+  isBlockingPrimeUiRequest,
+  primeRequestTimeoutMs,
+  primeRequestTimeoutReason,
+  type PrimeExtensionUiRequest,
+  type PrimeNotice,
+} from "../prime/PrimeExtensionUi.ts";
 
 const PROVIDER = ProviderDriverKind.make("prime-agent");
 const HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -74,10 +85,25 @@ type SessionContext = {
     string,
     {
       readonly method: "select" | "confirm" | "input" | "editor";
+      /** Canonical dialog this request was projected as, so cancellation can close it. */
+      readonly kind: "request" | "user-input";
       readonly title: string;
       readonly options: ReadonlyArray<string>;
+      readonly timeout: ReturnType<typeof setTimeout> | undefined;
+      /**
+       * A native response for this id is in flight. The request timeout can
+       * fire during that round trip; answering it then would put a second
+       * `extension_ui_response` on the wire for one correlation id and emit a
+       * contradicting resolution, so the timeout only records itself here and
+       * the responder applies it if its own attempt failed.
+       */
+      responding: boolean;
+      timedOutReason: string | undefined;
     }
   >;
+  /** Bounded transient status, insertion-ordered and replaced by key. */
+  readonly notices: Map<string, PrimeNotice>;
+  noticesFingerprint: string;
 };
 type PendingStart = { readonly key: string; readonly promise: Promise<ProviderSession> };
 
@@ -143,6 +169,74 @@ export const makePrimeAdapter = (
     const pending = new Map<ThreadId, PendingStart>();
     const runtimeEvents = yield* Queue.bounded<ProviderRuntimeEvent>(1_024);
     let closed = false;
+    const offerEvents = async (events: ReadonlyArray<ProviderRuntimeEvent>) => {
+      for (const event of events) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+    };
+    /**
+     * Publishes the board only when it actually changed. Extensions repeat the
+     * same status string constantly; a byte-identical board must not cost a
+     * canonical event, a projection write, or a client repaint.
+     */
+    const publishNotices = async (context: SessionContext) => {
+      const notices = Array.from(context.notices.values());
+      const fingerprint = JSON.stringify(notices);
+      if (fingerprint === context.noticesFingerprint) return;
+      context.noticesFingerprint = fingerprint;
+      await offerEvents(context.normalizer.noticesSnapshot({ notices }));
+    };
+    /**
+     * Resolves one pending dialog as cancelled. `answerNative` is false during
+     * teardown, where the child is already gone and a response would be a lie
+     * about a channel that no longer exists.
+     */
+    const dropPendingRequest = (context: SessionContext, id: string) => {
+      const pending = context.pendingRequests.get(id);
+      if (!pending) return undefined;
+      context.pendingRequests.delete(id);
+      if (pending.timeout !== undefined) clearTimeout(pending.timeout);
+      return pending;
+    };
+    const cancelPendingRequest = async (
+      context: SessionContext,
+      id: string,
+      reason: string,
+      answerNative = true,
+    ) => {
+      const inFlight = context.pendingRequests.get(id);
+      if (inFlight?.responding) {
+        // A response is already on the wire for this id. Record the reason and
+        // let the responder apply it only if its own attempt failed, so one
+        // correlation id never receives two answers or two resolutions.
+        inFlight.timedOutReason = reason;
+        return;
+      }
+      const pending = dropPendingRequest(context, id);
+      if (!pending) return;
+      if (answerNative)
+        await context.client
+          .command({ type: "extension_ui_response", cancelled: true }, { requestId: id })
+          .catch(() => undefined);
+      await offerEvents(context.normalizer.cancelled(id, reason, pending.kind));
+    };
+    const cancelPendingDialogs = async (context: SessionContext, reason: string) => {
+      for (const id of Array.from(context.pendingRequests.keys()))
+        await cancelPendingRequest(context, id, reason, false);
+    };
+    /**
+     * Honours a native request timeout, clamped by the shipped mapper so an
+     * absurd value cannot produce a dialog nobody can answer or one that never
+     * closes.
+     */
+    const armRequestTimeout = (context: SessionContext, id: string, timeout: unknown) => {
+      const ms = primeRequestTimeoutMs(timeout);
+      if (ms === undefined) return undefined;
+      const handle = setTimeout(() => {
+        void cancelPendingRequest(context, id, primeRequestTimeoutReason(ms));
+      }, ms);
+      // A pending dialog must never hold the process open on its own.
+      handle.unref?.();
+      return handle;
+    };
     // Startup recovery is proof-before-action. The adapter has no authority to
     // guess identities; only transports that expose an exact identity may be
     // used for destructive cleanup below.
@@ -269,6 +363,8 @@ export const makePrimeAdapter = (
           commands: new PrimeCommandCache(),
           eventDrain: undefined,
           pendingRequests: new Map(),
+          notices: new Map(),
+          noticesFingerprint: "[]",
           ownershipPath: layout.ownership,
           processIdentity,
         };
@@ -276,14 +372,20 @@ export const makePrimeAdapter = (
         context.eventDrain = (async () => {
           for await (const envelope of client.events()) {
             let canonicalEnvelope = true;
+            // An extension UI record this build cannot decode never reaches
+            // here: the strict transport fails the session closed, which is the
+            // one behaviour that cannot leave a client waiting on a dialog it
+            // will never be able to answer.
             if (envelope._tag === "known-event" && envelope.value.type === "extension_ui_request") {
-              const request = envelope.value;
-              const supported =
-                request.method === "select" ||
-                request.method === "confirm" ||
-                request.method === "input" ||
-                request.method === "editor";
-              if (context.pendingRequests.has(request.id)) {
+              const request: PrimeExtensionUiRequest = envelope.value;
+              if (!isBlockingPrimeUiRequest(request)) {
+                // Fire-and-forget UI operations. They describe *now*, so they go
+                // to the bounded transient board instead of the transcript, and
+                // they are never answered: there is nothing to answer.
+                canonicalEnvelope = false;
+                applyPrimeNotice(context.notices, request);
+                await publishNotices(context);
+              } else if (context.pendingRequests.has(request.id)) {
                 // A duplicate native correlation id is malformed protocol state: cancelling it could
                 // accidentally resolve the original request. Fail this exact session closed instead.
                 canonicalEnvelope = false;
@@ -294,7 +396,7 @@ export const makePrimeAdapter = (
                   "Prime Agent interactive request reused an active correlation id; the session was closed.",
                 ))
                   await Effect.runPromise(Queue.offer(runtimeEvents, event));
-              } else if (!supported || context.pendingRequests.size >= MAX_PENDING_REQUESTS) {
+              } else if (context.pendingRequests.size >= MAX_PENDING_REQUESTS) {
                 canonicalEnvelope = false;
                 await client
                   .command(
@@ -304,14 +406,14 @@ export const makePrimeAdapter = (
                   .catch(() => undefined);
                 for (const event of normalizer.cancelled(
                   request.id,
-                  !supported
-                    ? "Prime Agent interactive request was cancelled because this method is unsupported."
-                    : "Prime Agent interactive request was cancelled because the request limit was reached.",
+                  "Prime Agent interactive request was cancelled because the request limit was reached.",
                 ))
                   await Effect.runPromise(Queue.offer(runtimeEvents, event));
               } else {
+                const nativeTimeout = "timeout" in request ? request.timeout : undefined;
                 context.pendingRequests.set(request.id, {
                   method: request.method,
+                  kind: request.method === "confirm" ? "request" : "user-input",
                   title: cleanNative(request.title, "Prime Agent request"),
                   options:
                     request.method === "select"
@@ -319,6 +421,9 @@ export const makePrimeAdapter = (
                           .slice(0, MAX_SELECT_OPTIONS)
                           .map((x) => cleanNative(x, "Option"))
                       : [],
+                  timeout: armRequestTimeout(context, request.id, nativeTimeout),
+                  responding: false,
+                  timedOutReason: undefined,
                 });
               }
             }
@@ -332,7 +437,12 @@ export const makePrimeAdapter = (
           await context.eventDrain;
           if (sessions.get(input.threadId) !== context) return;
           sessions.delete(input.threadId);
-          context.pendingRequests.clear();
+          // A dialog whose runtime just died is cancelled, not left pending: an
+          // unanswerable modal on every attached client is the worst outcome.
+          await cancelPendingDialogs(
+            context,
+            "Prime Agent interactive request was cancelled because the session ended.",
+          );
           if (context.processIdentity)
             await writePrimeOwnership(context.ownershipPath, {
               version: 1,
@@ -477,7 +587,10 @@ export const makePrimeAdapter = (
           sessions.delete(threadId);
           await closeContext(context);
           await context.eventDrain;
-          context.pendingRequests.clear();
+          await cancelPendingDialogs(
+            context,
+            "Prime Agent interactive request was cancelled because the session was stopped.",
+          );
           for (const event of context.normalizer.stop("Prime Agent session was stopped.")) {
             await Effect.runPromise(Queue.offer(runtimeEvents, event));
           }
@@ -790,15 +903,29 @@ export const makePrimeAdapter = (
           const pending = context.pendingRequests.get(id);
           if (!pending || pending.method !== "confirm")
             throw new Error("Interactive request is not a confirmation.");
+          // Two clients can answer the same dialog. The first answer owns the
+          // correlation id; a second would be a second native response.
+          if (pending.responding) throw new Error("Interactive request is already being answered.");
           const value = decision === "accept" || decision === "acceptForSession";
-          await expectSuccess(
-            context,
-            value
-              ? { type: "extension_ui_response", confirmed: true }
-              : { type: "extension_ui_response", cancelled: true },
-            { requestId: id },
-          );
-          context.pendingRequests.delete(id);
+          pending.responding = true;
+          try {
+            await expectSuccess(
+              context,
+              value
+                ? { type: "extension_ui_response", confirmed: true }
+                : { type: "extension_ui_response", cancelled: true },
+              { requestId: id },
+            );
+          } catch (cause) {
+            pending.responding = false;
+            // The dialog stays pending so the user can retry — unless the
+            // timeout fired meanwhile, in which case it is closed truthfully.
+            const timedOut = pending.timedOutReason;
+            pending.timedOutReason = undefined;
+            if (timedOut !== undefined) await cancelPendingRequest(context, id, timedOut);
+            throw cause;
+          }
+          dropPendingRequest(context, id);
           for (const event of context.normalizer.resolved(id, "request", {
             decision: value ? decision : "cancel",
           }))
@@ -825,6 +952,7 @@ export const makePrimeAdapter = (
           const pending = context.pendingRequests.get(id);
           if (!pending || pending.method === "confirm")
             throw new Error("Interactive request is not user input.");
+          if (pending.responding) throw new Error("Interactive request is already being answered.");
           if (!Object.prototype.hasOwnProperty.call(answers, id))
             throw new Error("Prime Agent input response must name the request id.");
           const raw = answers[id];
@@ -834,12 +962,21 @@ export const makePrimeAdapter = (
           const clean = cleanNative(value);
           if (pending.method === "select" && !pending.options.includes(clean))
             throw new Error("Prime Agent select answer is invalid.");
-          await expectSuccess(
-            context,
-            { type: "extension_ui_response", value: clean },
-            { requestId: id },
-          );
-          context.pendingRequests.delete(id);
+          pending.responding = true;
+          try {
+            await expectSuccess(
+              context,
+              { type: "extension_ui_response", value: clean },
+              { requestId: id },
+            );
+          } catch (cause) {
+            pending.responding = false;
+            const timedOut = pending.timedOutReason;
+            pending.timedOutReason = undefined;
+            if (timedOut !== undefined) await cancelPendingRequest(context, id, timedOut);
+            throw cause;
+          }
+          dropPendingRequest(context, id);
           for (const event of context.normalizer.resolved(id, "user-input", {
             answers: { [id]: clean },
           }))
@@ -875,6 +1012,10 @@ export const makePrimeAdapter = (
           await Promise.all(contexts.map(closeContext));
           await Promise.all(contexts.map((context) => context.eventDrain));
           for (const context of contexts) {
+            await cancelPendingDialogs(
+              context,
+              "Prime Agent interactive request was cancelled because the adapter was stopped.",
+            );
             for (const event of context.normalizer.stop("Prime Agent adapter was stopped.")) {
               await Effect.runPromise(Queue.offer(runtimeEvents, event));
             }
@@ -912,6 +1053,10 @@ export const makePrimeAdapter = (
           // is sent as an ordinary prompt, so `command.invoke` stays refused
           // rather than mapped onto a command that does not exist.
           commandDiscovery: true,
+          // Typed extension dialogs plus the bounded transient status board.
+          // Blocking methods are answered exactly; fire-and-forget methods are
+          // displayed and never answered; anything else is safe-cancelled.
+          interactions: true,
         },
       },
       startSession,

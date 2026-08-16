@@ -24,6 +24,9 @@ const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(
     commandCatalog: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.commandCatalog)),
     ),
+    noticeBoard: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.noticeBoard)),
+    ),
     contextState: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.contextState)),
     ),
@@ -51,6 +54,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           updated_at,
           action_state_json,
           command_catalog_json,
+          notice_board_json,
           context_state_json,
           runtime_capabilities_json
         )
@@ -65,6 +69,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.updatedAt},
           ${row.actionState === undefined ? null : JSON.stringify(row.actionState)},
           ${row.commandCatalog === undefined ? null : JSON.stringify(row.commandCatalog)},
+          ${row.noticeBoard === undefined ? null : JSON.stringify(row.noticeBoard)},
           ${row.contextState === undefined ? null : JSON.stringify(row.contextState)},
           ${row.runtimeCapabilities === undefined ? null : JSON.stringify(row.runtimeCapabilities)}
         )
@@ -79,6 +84,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           updated_at = excluded.updated_at,
           action_state_json = excluded.action_state_json,
           command_catalog_json = excluded.command_catalog_json,
+          notice_board_json = excluded.notice_board_json,
           context_state_json = excluded.context_state_json,
           runtime_capabilities_json = excluded.runtime_capabilities_json
       `,
@@ -100,6 +106,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           updated_at AS "updatedAt",
           action_state_json AS "actionState",
           command_catalog_json AS "commandCatalog",
+          notice_board_json AS "noticeBoard",
           context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
@@ -127,10 +134,18 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
       // an omitted optional field.
       Effect.map(
         Option.map(
-          ({ actionState, commandCatalog, contextState, runtimeCapabilities, ...rest }) => ({
+          ({
+            actionState,
+            commandCatalog,
+            noticeBoard,
+            contextState,
+            runtimeCapabilities,
+            ...rest
+          }) => ({
             ...rest,
             ...(actionState != null ? { actionState } : {}),
             ...(commandCatalog != null ? { commandCatalog } : {}),
+            ...(noticeBoard != null ? { noticeBoard } : {}),
             ...(contextState != null ? { contextState } : {}),
             ...(runtimeCapabilities != null ? { runtimeCapabilities } : {}),
           }),

@@ -99,6 +99,16 @@ import {
   primeCommandOriginLabel,
   resolvePrimeCommandInvocation,
 } from "./primeCommands";
+import {
+  PRIME_DIALOG_CANCELLED_NOTE,
+  PRIME_EDITOR_TEXT_IS_A_SUGGESTION,
+  PRIME_NOTICES_ARE_TRANSIENT,
+  hasPrimeExtensionUi,
+  primeNoticeFingerprint,
+  renderPrimeDialogStatus,
+  renderPrimeNotice,
+  visiblePrimeNotices,
+} from "./primeExtensionUi";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -130,6 +140,8 @@ export interface ThreadComposerProps {
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
+  /** Typed Prime dialogs still waiting on this viewer; 0 hides the dialog copy. */
+  readonly pendingDialogCount?: number;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -329,6 +341,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     );
   const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
   const primeContextLines = renderPrimeContext(props.selectedThread.session?.contextState);
+  // Dismissal is per viewer and per exact message: the host owns replacement.
+  const [dismissedPrimeNotices, setDismissedPrimeNotices] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const primeNotices = visiblePrimeNotices(
+    props.selectedThread.session?.noticeBoard,
+    props.selectedThread.session,
+    dismissedPrimeNotices,
+  );
+  const primeDialogStatus = renderPrimeDialogStatus(props.pendingDialogCount ?? 0);
   const primeCommands = props.selectedThread.session?.commandCatalog?.commands;
   const primeCommandCatalogRef = useRef(primeCommands);
   primeCommandCatalogRef.current = primeCommands;
@@ -1216,6 +1238,53 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 {!primeUsageDecision.ok ? (
                   <Text className="mt-1 text-xs text-foreground-muted">
                     {primeUsageDecision.reason}
+                  </Text>
+                ) : null}
+              </>
+            ) : null}
+            {/* Transient extension status: bounded, dismissible, never transcript. */}
+            {hasPrimeExtensionUi(
+              props.selectedThread.session?.providerName,
+              props.selectedThread.session?.runtimeCapabilities,
+            ) ? (
+              <>
+                {primeNotices.map((notice) => {
+                  const fingerprint = primeNoticeFingerprint(notice);
+                  return (
+                    <View key={fingerprint} className="mt-1 flex-row items-center gap-2">
+                      <Text className="text-xs text-foreground-muted">
+                        {renderPrimeNotice(notice)}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Dismiss status"
+                        onPress={() => {
+                          setDismissedPrimeNotices((current) => new Set(current).add(fingerprint));
+                        }}
+                        className="rounded-md border border-border px-2 py-1"
+                      >
+                        <Text className="text-xs text-foreground">Dismiss</Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+                {primeNotices.length > 0 ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {PRIME_NOTICES_ARE_TRANSIENT}
+                  </Text>
+                ) : null}
+                {primeNotices.some((notice) => notice.kind === "editor-text") ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {PRIME_EDITOR_TEXT_IS_A_SUGGESTION}
+                  </Text>
+                ) : null}
+                {/* The pending dialog itself is the questionnaire card above;
+                    these lines name how many are waiting and what cancellation
+                    means there. With nothing pending they would be clutter, so
+                    they render only alongside a live dialog — same rule as web. */}
+                {primeDialogStatus ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeDialogStatus} {PRIME_DIALOG_CANCELLED_NOTE}
                   </Text>
                 ) : null}
               </>

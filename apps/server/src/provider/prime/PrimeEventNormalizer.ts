@@ -10,6 +10,7 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   type SessionCommandsUpdatedPayload,
+  type SessionNoticesUpdatedPayload,
   type ThreadTokenUsageSnapshot,
 } from "@t3tools/contracts";
 import type { PrimeRpcKnownEvent, PrimeRpcEnvelope } from "./PrimeRpcProtocol.ts";
@@ -317,16 +318,46 @@ export class PrimeEventNormalizer {
     return [this.base("session.commands.updated", catalog, { turnId: this.#turn })];
   }
 
+  /**
+   * Publishes a transient status board. The caller owns the bounded board and
+   * drops byte-identical repeats, so nothing here needs to de-duplicate; a
+   * stopped session publishes nothing rather than resurrecting dead status.
+   */
+  noticesSnapshot(board: SessionNoticesUpdatedPayload | undefined): ProviderRuntimeEvent[] {
+    if (this.#stopped || !board) return [];
+    return [this.base("session.notices.updated", board, { turnId: this.#turn })];
+  }
+
+  /**
+   * Cancellation of an interactive request.
+   *
+   * `projected` names the canonical dialog this id was already published as. A
+   * warning alone would leave that dialog pending forever on every client, so a
+   * projected request is also resolved — truthfully, as cancelled rather than
+   * answered. Requests that were never projected (unsupported method, bound
+   * overflow) emit the warning only: there is no dialog to close.
+   */
   cancelled(
     id: string,
     reason = "Prime Agent interactive request was cancelled.",
+    projected?: "request" | "user-input",
   ): ProviderRuntimeEvent[] {
+    const message = reason.slice(0, MAX_NATIVE_STRING);
+    const warning = this.base(
+      "runtime.warning",
+      { message },
+      { providerRefs: { providerRequestId: id } },
+    );
+    if (!projected) return [warning];
     return [
-      this.base(
-        "runtime.warning",
-        { message: reason.slice(0, MAX_NATIVE_STRING) },
-        { providerRefs: { providerRequestId: id } },
+      ...this.resolved(
+        id,
+        projected,
+        projected === "request"
+          ? { decision: "cancel", resolution: { cancelled: true, reason: message } }
+          : { answers: {}, cancelled: true, reason: message },
       ),
+      warning,
     ];
   }
 

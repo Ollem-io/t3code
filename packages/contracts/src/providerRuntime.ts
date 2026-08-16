@@ -198,6 +198,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "session.actions.updated",
   "session.context.updated",
   "session.commands.updated",
+  "session.notices.updated",
 ]);
 export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 
@@ -253,6 +254,7 @@ const RuntimeErrorType = Schema.Literal("runtime.error");
 const SessionActionsUpdatedType = Schema.Literal("session.actions.updated");
 const SessionContextUpdatedType = Schema.Literal("session.context.updated");
 const SessionCommandsUpdatedType = Schema.Literal("session.commands.updated");
+const SessionNoticesUpdatedType = Schema.Literal("session.notices.updated");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
@@ -472,6 +474,14 @@ export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
 const UserInputResolvedPayload = Schema.Struct({
   answers: UnknownRecordSchema,
+  /**
+   * Set only when the runtime closed the request without a user answer
+   * (cancelled, superseded, or timed out). Clients drop the pending dialog
+   * either way; the flag is what lets them say which of the two happened
+   * instead of implying the user answered.
+   */
+  cancelled: Schema.optional(Schema.Boolean),
+  reason: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
@@ -975,6 +985,63 @@ export const reduceProviderSessionCommandCatalog = (
   return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_COMMAND_CATALOG : current;
 };
 
+/**
+ * Provider-neutral transient status surface.
+ *
+ * Runtimes emit fire-and-forget UI operations: notifications, a status string,
+ * a small widget, a window title, suggested editor text. None of that belongs
+ * in the transcript — each describes *now*, is replaced by key, and a whole
+ * snapshot is the only safe reconciliation across attached clients. The board
+ * is deliberately tiny so a chatty extension cannot flood a client.
+ */
+const SessionNoticeKind = Schema.Literals([
+  "notification",
+  "status",
+  "widget",
+  "title",
+  "editor-text",
+]);
+export type ProviderSessionNoticeKind = typeof SessionNoticeKind.Type;
+const SessionNoticeEntry = Schema.Struct({
+  /** Stable replacement key: a repeated key replaces, it never appends. */
+  key: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(96)),
+  kind: SessionNoticeKind,
+  severity: Schema.Literals(["info", "warning", "error"]),
+  text: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
+  lines: Schema.optional(
+    Schema.Array(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(160))).check(
+      Schema.isMaxLength(4),
+    ),
+  ),
+});
+export type ProviderSessionNotice = typeof SessionNoticeEntry.Type;
+export const PROVIDER_SESSION_NOTICE_LIMIT = 8;
+const SessionNoticesUpdatedPayload = Schema.Struct({
+  notices: Schema.Array(SessionNoticeEntry).check(
+    Schema.isMaxLength(PROVIDER_SESSION_NOTICE_LIMIT),
+  ),
+});
+export type SessionNoticesUpdatedPayload = typeof SessionNoticesUpdatedPayload.Type;
+
+export interface ProviderSessionNoticeBoard {
+  readonly notices: ReadonlyArray<ProviderSessionNotice>;
+}
+export const EMPTY_PROVIDER_SESSION_NOTICE_BOARD: ProviderSessionNoticeBoard = Object.freeze({
+  notices: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Status is transient by
+ * definition, so session termination clears the board instead of leaving a dead
+ * runtime's status text on screen.
+ */
+export const reduceProviderSessionNoticeBoard = (
+  current: ProviderSessionNoticeBoard = EMPTY_PROVIDER_SESSION_NOTICE_BOARD,
+  event: ProviderRuntimeEvent,
+): ProviderSessionNoticeBoard => {
+  if (event.type === "session.notices.updated") return { notices: [...event.payload.notices] };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_NOTICE_BOARD : current;
+};
+
 const ProviderRuntimeSessionStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionStartedType,
@@ -1359,6 +1426,14 @@ const ProviderRuntimeSessionCommandsUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionCommandsUpdatedEvent =
   typeof ProviderRuntimeSessionCommandsUpdatedEvent.Type;
 
+const ProviderRuntimeSessionNoticesUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionNoticesUpdatedType,
+  payload: SessionNoticesUpdatedPayload,
+});
+export type ProviderRuntimeSessionNoticesUpdatedEvent =
+  typeof ProviderRuntimeSessionNoticesUpdatedEvent.Type;
+
 export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
@@ -1412,6 +1487,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionActionsUpdatedEvent,
   ProviderRuntimeSessionContextUpdatedEvent,
   ProviderRuntimeSessionCommandsUpdatedEvent,
+  ProviderRuntimeSessionNoticesUpdatedEvent,
 ]);
 export type ProviderRuntimeEventV2 = typeof ProviderRuntimeEventV2.Type;
 
