@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
+import { createHash } from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -64,6 +65,13 @@ const isolatedProbeEnvironment = (
   for (const [key, value] of Object.entries(source)) {
     if (allowed.test(key) && value !== undefined) env[key] = value;
   }
+  // TMPDIR must stay short: Prime hosts its daemon on a Unix socket beneath
+  // it, and `sun_path` is capped at ~104 bytes on macOS. A deep home path
+  // would make the daemon die at startup with `listen EINVAL`.
+  const tmp = NodePath.join(
+    NodeOS.tmpdir(),
+    `t3-prime-${createHash("sha256").update(home).digest("hex").slice(0, 12)}`,
+  );
   return {
     ...env,
     HOME: home,
@@ -71,9 +79,9 @@ const isolatedProbeEnvironment = (
     XDG_CONFIG_HOME: NodePath.join(home, ".config"),
     XDG_DATA_HOME: NodePath.join(home, ".local", "share"),
     XDG_STATE_HOME: NodePath.join(home, ".local", "state"),
-    TMPDIR: home,
-    TMP: home,
-    TEMP: home,
+    TMPDIR: tmp,
+    TMP: tmp,
+    TEMP: tmp,
   };
 };
 

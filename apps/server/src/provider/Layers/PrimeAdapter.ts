@@ -4,7 +4,8 @@
 // @effect-diagnostics globalTimers:off
 import * as NodeFSP from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES,
@@ -317,6 +318,18 @@ const startKey = (input: ProviderSessionStartInput, cwd: string) =>
     nativeIdentity: input.modelSelection?.nativeIdentity,
   });
 
+/**
+ * The child's TMPDIR must stay SHORT: Prime hosts its daemon on a Unix socket
+ * beneath it, and `sun_path` is capped at ~104 bytes on macOS (~108 on Linux).
+ * A tmp directory nested under the deep per-instance home overflows that cap
+ * and the daemon dies at startup with `listen EINVAL`. Isolation is preserved
+ * by deriving a per-home 0700 directory under the OS tmpdir instead: unique
+ * per instance home, stable across restarts so the daemon socket can be found
+ * again, and never shared with another instance.
+ */
+const shortPrimeTmpDir = (home: string): string =>
+  `${tmpdir()}/t3-prime-${createHash("sha256").update(home).digest("hex").slice(0, 12)}`;
+
 const sanitizedEnvironment = (
   home: string,
   source: Readonly<NodeJS.ProcessEnv>,
@@ -326,6 +339,7 @@ const sanitizedEnvironment = (
   for (const [key, value] of Object.entries(source)) {
     if (value !== undefined && allowed.test(key)) result[key] = value;
   }
+  const tmp = shortPrimeTmpDir(home);
   return {
     ...result,
     HOME: home,
@@ -333,9 +347,9 @@ const sanitizedEnvironment = (
     XDG_CONFIG_HOME: `${home}/.config`,
     XDG_DATA_HOME: `${home}/.local/share`,
     XDG_STATE_HOME: `${home}/.local/state`,
-    TMPDIR: `${home}/tmp`,
-    TMP: `${home}/tmp`,
-    TEMP: `${home}/tmp`,
+    TMPDIR: tmp,
+    TMP: tmp,
+    TEMP: tmp,
   };
 };
 

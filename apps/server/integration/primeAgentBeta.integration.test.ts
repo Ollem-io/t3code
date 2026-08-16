@@ -260,7 +260,11 @@ const withFixture = <A, E>(
   Effect.gen(function* () {
     const input = yield* Effect.promise(() => fixture(label, environmentId));
     yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(input.root, { recursive: true, force: true })),
+      // maxRetries: the real-binary lane's runtime may still be flushing state
+      // beneath the fixture home when teardown begins.
+      Effect.promise(() =>
+        rm(input.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
+      ),
     );
     return yield* use(input);
   }).pipe(Effect.scoped, Effect.orDie);
@@ -777,10 +781,25 @@ describe("PA-B06 Beta gate: durable continuity matrix", () => {
   realBinaryLane("real-binary lane: seeds and resumes against the installed binary", () =>
     withFixture("real", "env-a", (input) =>
       Effect.gen(function* () {
+        // --offline keeps the real runtime from provisioning tool runtimes
+        // into the disposable fixture home mid-test; the lane certifies the
+        // durable-session round trip, not the download path.
         yield* Effect.promise(() =>
-          writeFile(input.binary, `#!/bin/sh\nexec ${REAL_BINARY} "$@"\n`),
+          writeFile(input.binary, `#!/bin/sh\nexec ${REAL_BINARY} --offline "$@"\n`),
         );
         yield* Effect.promise(() => chmod(input.binary, 0o755));
+        // The real runtime hosts a resident daemon that outlives the RPC
+        // child. It belongs to this disposable fixture home only, so it is
+        // stopped before teardown removes that home.
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(async () => {
+            const { execFile } = await import("node:child_process");
+            await new Promise<void>((resolve) => {
+              execFile("pkill", ["-f", input.root], () => resolve());
+            });
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          }),
+        );
         yield* Effect.scoped(
           Effect.gen(function* () {
             const adapter = yield* adapterFor(input, "real-one");
