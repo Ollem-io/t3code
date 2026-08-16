@@ -57,8 +57,11 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure     | Done — `75f56f24` |
 | PA-A08    | Session naming/forking and Alpha integration/docs                  | Done — `ce3187ba` |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy          | Done — `4b4043f2` |
+| PA-B03    | Server-side single-writer arbitration and conflict receipts        | Done — `a58bbafd` |
 
-Completed total: **26 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; Beta is underway.
+Completed total: **27 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; Beta is underway.
+
+**PA-B03 (merged).** Dual-approved on exact SHA `85261488` (three workflow rounds: round 1 REJECTed with three code/security blockers — the lease was never constructed in production, stop/teardown released it before killing the process, and fenced writers could still send compaction/interrupt/dialog mutations — all repaired; final round dual APPROVE, Luna-verified watches) and merged at `a58bbafd` on 2026-08-16.
 
 **PA-B01 (merged).** Dual-approved on exact SHA `c49a261d` (two workflow rounds: round-1 code/security REJECT for a one-write-deep filesystem downgrade backup that a second downgraded write destroyed — repaired; final round dual APPROVE, Luna-verified watches) and merged at `4b4043f2` on 2026-08-16. Delivered: versioned Prime resume cursor contract (`packages/contracts/src/primeResume.ts`), 0600 T3-scoped atomic storage with non-destructive unknown-version handling, migration 048, and a 48-assertion source-derived artifact. Accepted non-blockers: six `nodeBuiltinImport` lint lines matching the established prime/ storage convention; the 1.1 MB generated artifact is linted as first-party source; a NUL-byte hash separator makes `PrimeResumeCursor.ts` render as binary in diffs; a BSD mktemp template collision in the artifact generator; `.bak` sidecar retains a `recorded` copy after invalidation.
 
@@ -326,16 +329,15 @@ bounded schedule for as long as this server owns the session, so a turn that out
 
 ## Pending milestones
 
-| Milestone | Planned scope                                                    | State                 |
-| --------- | ---------------------------------------------------------------- | --------------------- |
-| PA-B02    | Exact adoption/resume state machine and compatibility validation | Pending after B01/B03 |
-| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Pending               |
-| PA-B05    | Durable cleanup, retention, migrations, rollback safety          | Pending               |
-| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Pending               |
+| Milestone | Planned scope                                                    | State   |
+| --------- | ---------------------------------------------------------------- | ------- |
+| PA-B02    | Exact adoption/resume state machine and compatibility validation | Next    |
+| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Pending |
+| PA-B05    | Durable cleanup, retention, migrations, rollback safety          | Pending |
+| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Pending |
 
 ## Immediate next steps
 
-1. Capture the still-pending PA-A02/PA-A02.1 visual evidence when UI-launch permission is granted (exact steps recorded above).
-2. Implement and review `PA-A03`–`PA-A08` sequentially.
-3. Implement Beta in the dependency order above.
-4. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.
+1. Capture the standing visual-evidence debt (PA-A02 through PA-A08 surfaces) when UI-launch permission is granted (exact steps recorded above).
+2. Implement remaining Beta in dependency order: `PA-B02`, `PA-B04`, `PA-B05`, `PA-B06`.
+3. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.
