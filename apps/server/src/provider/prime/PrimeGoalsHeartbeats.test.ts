@@ -304,7 +304,7 @@ let made=0;
 const snapshot=()=>({heartbeats:store,resident:store.length>0});
 createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{const c=JSON.parse(line);log(c);
  if(c.type==="get_available_models") return out({type:"response",id:c.id,command:c.type,success:true,data:models});
- if(c.type==="heartbeat_create"){made+=1;const heartbeatId="hb-t3-"+made;
+ if(c.type==="heartbeat_create"){made+=1;const heartbeatId=(c.title.includes("unbrandable")?"1hb.":"hb-t3-")+made;
   store=[...store,{heartbeatId,title:c.title,intervalSeconds:c.intervalSeconds,nextRunAt:"2026-08-16T09:20:00.000Z"}];
   return out({type:"response",id:c.id,command:c.type,success:true,data:{heartbeatId,...snapshot()}});}
  if(c.type==="heartbeat_get") return out({type:"response",id:c.id,command:c.type,success:true,data:snapshot()});
@@ -491,6 +491,37 @@ describe("PrimeAdapter owned heartbeats", () => {
         const sent = yield* commands(f.marker);
         assert.ok(!sent.some((c) => String(c.type).startsWith("heartbeat_")));
         assert.ok(!sent.some((c) => String(c.type).startsWith("goal")));
+      }),
+    ),
+  );
+
+  it.effect("stops rather than keeps a schedule whose id it cannot represent", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup;
+        const adapter = yield* start(f);
+        const refusal = yield* Effect.flip(
+          operation(adapter, {
+            type: "heartbeat.create",
+            heartbeatId: HeartbeatId.make("client-draft"),
+            title: "unbrandable schedule",
+            intervalSeconds: 1_200,
+          }),
+        );
+        assert.match(String(refusal), /cannot represent exactly/);
+        const sent = yield* commands(f.marker);
+        // The runtime named the schedule "1hb.1"; T3 stopped exactly that id
+        // instead of leaving an unlistable, untargetable schedule running.
+        assert.deepStrictEqual(
+          sent
+            .filter((c) => String(c.type).startsWith("heartbeat_"))
+            .map((c) => [c.type, c.heartbeatId ?? null]),
+          [
+            ["heartbeat_create", null],
+            ["heartbeat_stop", "1hb.1"],
+            ["heartbeat_get", null],
+          ],
+        );
       }),
     ),
   );

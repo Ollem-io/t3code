@@ -84,6 +84,9 @@ const exactId = (value: string): string | undefined => {
   return bounded && bounded === value && CONTRACT_ID.test(bounded) ? bounded : undefined;
 };
 
+/** Whether the wire contract can carry this id at all (see `exactId`). */
+export const isPrimeRenderableId = (value: string): boolean => exactId(value) !== undefined;
+
 /**
  * The canonical contract carries an exact UTC instant. A native timestamp is
  * passed through only when it already is one: re-encoding a loose value would

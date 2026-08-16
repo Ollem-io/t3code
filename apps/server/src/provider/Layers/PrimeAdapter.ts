@@ -76,6 +76,7 @@ import {
 } from "../prime/PrimeObservation.ts";
 import {
   EMPTY_PRIME_GOAL_BOARD,
+  isPrimeRenderableId,
   MAX_PRIME_HEARTBEATS,
   PRIME_GOAL_MUTATION_REFUSAL,
   primeGoalBoard,
@@ -1212,12 +1213,36 @@ export const makePrimeAdapter = (
                 title: operation.title,
                 intervalSeconds: operation.intervalSeconds,
               });
+              // An id the wire contract cannot brand could never be listed or
+              // reversed by any client, so a schedule under such an id must not
+              // be left running: stop it by its exact raw id and refuse the
+              // create truthfully. If even the stop fails, the handle is
+              // adopted anyway so residency stays disclosed and cleanup can
+              // still prove it by raw id.
+              if (created.heartbeatId !== undefined && !isPrimeRenderableId(created.heartbeatId)) {
+                try {
+                  await expectSuccess(context, {
+                    type: "heartbeat_stop",
+                    heartbeatId: created.heartbeatId,
+                  });
+                  await heartbeatSnapshot(context, { type: "heartbeat_get" });
+                } catch {
+                  if (isPrimeOwnableHeartbeatId(created.heartbeatId))
+                    context.ownedHeartbeats.add(created.heartbeatId);
+                }
+                await persistHeartbeatOwnership(context);
+                await publishGoals(context);
+                throw new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "executeRuntimeOperation",
+                  issue:
+                    "Prime Agent issued a heartbeat identity T3 cannot represent exactly; the schedule was not kept.",
+                });
+              }
               // An id the ownership record could not hold is not adopted: the
               // write would throw after the heartbeat already exists, which is
               // the one outcome that leaves a real T3-created schedule running
-              // with no handle at all. An id the board cannot render exactly is
-              // still recorded — cleanup proves a handle by its id, never by
-              // rendering it, so the reverse path stays available.
+              // with no handle at all.
               if (isPrimeOwnableHeartbeatId(created.heartbeatId))
                 context.ownedHeartbeats.add(created.heartbeatId);
               await persistHeartbeatOwnership(context);
@@ -1249,7 +1274,14 @@ export const makePrimeAdapter = (
                 throw new ProviderAdapterValidationError({
                   provider: PROVIDER,
                   operation: "executeRuntimeOperation",
-                  issue: primeHeartbeatRefusalMessage(decision.reason),
+                  // Never deny ownership of a handle T3 actually holds: an
+                  // owned row can be absent from the board only because it is
+                  // not representable exactly.
+                  issue:
+                    decision.reason === "unknown-heartbeat" &&
+                    context.ownedHeartbeats.has(String(operation.heartbeatId))
+                      ? "This T3-owned schedule cannot be displayed or targeted exactly by this client."
+                      : primeHeartbeatRefusalMessage(decision.reason),
                 });
               const heartbeatId = decision.heartbeat.heartbeatId;
               await expectSuccess(context, {
