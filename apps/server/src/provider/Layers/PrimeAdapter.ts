@@ -57,6 +57,10 @@ import {
 import { provePrimeProcess, stopProvenPrimeProcess } from "../prime/PrimeProcessOwnership.ts";
 import { PrimeEventNormalizer } from "../prime/PrimeEventNormalizer.ts";
 import {
+  PrimeSessionLeaseConflictError,
+  type PrimeSessionWriteGate,
+} from "../prime/PrimeSessionLease.ts";
+import {
   PRIME_COMPACT_COMMAND,
   PRIME_SESSION_STATS_COMMAND,
   normalizePrimeSessionStats,
@@ -193,7 +197,41 @@ export interface PrimeAdapterOptions {
   readonly attachmentsDir?: string;
   readonly handshakeTimeoutMs?: number;
   readonly launch?: typeof spawnPrimeRpcTransport;
+  /**
+   * PA-B03 single-writer gate. No session may be activated and no durable
+   * mutation — turn, abort, compaction, runtime action, dialog answer — may be
+   * sent without a valid lease; stop and teardown release it once the process
+   * it authorized is gone. `PrimeDriver` always supplies one, so the shipped
+   * server always arbitrates; it stays optional only so adapter-level fixtures
+   * can exercise the transport without a database.
+   */
+  readonly writeGate?: PrimeSessionWriteGate;
 }
+
+/**
+ * A lease refusal is a validation failure, not a process failure: nothing was
+ * started, nothing was sent, and the caller may retry after the authoritative
+ * writer finishes. The typed receipt travels as the cause so an arbitration-
+ * aware caller can read it, while the message names no owner.
+ */
+const asAdapterConflict = (cause: unknown, operation: string) =>
+  cause instanceof PrimeSessionLeaseConflictError
+    ? new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation,
+        issue: "Another writer is authoritative for this Prime Agent session.",
+        cause,
+      })
+    : undefined;
+
+/**
+ * Runtime operations that only re-read state the session already published.
+ * They commit nothing, so they are the only ones a lease is not required for.
+ */
+const PRIME_UNGATED_RUNTIME_OPERATIONS: ReadonlySet<string> = new Set([
+  "command.discover",
+  "usage.snapshot.retry",
+]);
 
 const startKey = (input: ProviderSessionStartInput, cwd: string) =>
   JSON.stringify({
@@ -921,6 +959,20 @@ export const makePrimeAdapter = (
           Effect.tryPromise({
             try: async () => {
               const cwd = await validateStart(input);
+              // Arbitration precedes activation: a second client cannot even
+              // reach the launch path for a thread another writer owns.
+              await options.writeGate?.acquire({
+                threadId: String(input.threadId),
+                operation: "activate",
+              });
+              // An activation that acquires and then fails to launch must not
+              // sit on the scope for a full TTL: whatever fails below hands the
+              // lease straight back before the error propagates.
+              const releaseOnFailure = async (cause: unknown): Promise<never> => {
+                if (!sessions.has(input.threadId) && !pending.has(input.threadId))
+                  await options.writeGate?.release({ threadId: String(input.threadId) });
+                throw cause;
+              };
               const key = startKey(input, cwd);
               const live = sessions.get(input.threadId);
               if (live) {
@@ -947,18 +999,19 @@ export const makePrimeAdapter = (
                   pending.delete(input.threadId);
               });
               pending.set(input.threadId, { key, promise });
-              return promise;
+              return await promise.catch(releaseOnFailure);
             },
             catch: (cause) =>
               cause instanceof ProviderAdapterValidationError ||
               cause instanceof ProviderAdapterProcessError
                 ? cause
-                : new ProviderAdapterProcessError({
+                : (asAdapterConflict(cause, "startSession") ??
+                  new ProviderAdapterProcessError({
                     provider: PROVIDER,
                     threadId: input.threadId,
                     detail: "Prime Agent RPC process could not be started.",
                     cause,
-                  }),
+                  })),
           }),
         ),
       );
@@ -968,10 +1021,19 @@ export const makePrimeAdapter = (
         try: async () => {
           await pending.get(threadId)?.promise.catch(() => undefined);
           const context = sessions.get(threadId);
-          if (!context) return;
+          if (!context) {
+            // Nothing is live, but an activation that crashed still holds the
+            // lease; handing it back is the whole point of stopping.
+            await options.writeGate?.release({ threadId: String(threadId) });
+            return;
+          }
           sessions.delete(threadId);
           await closeContext(context);
           await context.eventDrain;
+          // Release only once this process is provably gone. Releasing first
+          // would let a second writer activate a second native Prime process
+          // for the same durable thread while ours was still alive.
+          await options.writeGate?.release({ threadId: String(threadId) });
           await cancelPendingDialogs(
             context,
             "Prime Agent interactive request was cancelled because the session was stopped.",
@@ -1204,6 +1266,13 @@ export const makePrimeAdapter = (
       Effect.tryPromise({
         try: async () => {
           const context = requireContext(input.threadId);
+          // Re-proved on every turn, not just at activation: a lease that was
+          // taken over or expired while this session sat idle must fence the
+          // write instead of letting a second writer reach the model.
+          await options.writeGate?.authorizeWrite({
+            threadId: String(input.threadId),
+            operation: "send",
+          });
           const resolved = await resolveTurnInput(input, context);
           if (
             !context.selectedModel ||
@@ -1243,23 +1312,31 @@ export const makePrimeAdapter = (
           cause instanceof ProviderAdapterValidationError ||
           cause instanceof ProviderAdapterSessionNotFoundError
             ? cause
-            : new ProviderAdapterProcessError({
+            : (asAdapterConflict(cause, "sendTurn") ??
+              new ProviderAdapterProcessError({
                 provider: PROVIDER,
                 threadId: input.threadId,
                 detail: "Prime Agent turn input failed.",
                 cause,
-              }),
+              })),
       });
 
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (threadId) =>
       Effect.tryPromise({
         try: async () => {
           const context = requireContext(threadId);
+          // An abort mutates the durable session as surely as a prompt does, so
+          // a fenced writer may not send one either.
+          await options.writeGate?.authorizeWrite({
+            threadId: String(threadId),
+            operation: "interrupt",
+          });
           await expectSuccess(context, { type: "abort" });
           for (const event of context.normalizer.abort("Prime Agent turn was interrupted."))
             await Effect.runPromise(Queue.offer(runtimeEvents, event));
         },
         catch: (cause) =>
+          asAdapterConflict(cause, "interruptTurn") ??
           new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId,
@@ -1277,6 +1354,15 @@ export const makePrimeAdapter = (
       Effect.tryPromise({
         try: async () => {
           const context = requireContext(operation.threadId);
+          // Everything below this line except the two read-only refreshes sends
+          // a mutating RPC into the durable session (compaction rewrites the
+          // transcript; heartbeats and observation change resident state), so
+          // the lease is re-proved before any of them leaves the server.
+          if (!PRIME_UNGATED_RUNTIME_OPERATIONS.has(operation.type))
+            await options.writeGate?.authorizeWrite({
+              threadId: String(operation.threadId),
+              operation: "runtimeAction",
+            });
           if (operation.type === "compaction.request") {
             await expectSuccess(context, PRIME_COMPACT_COMMAND);
             return;
@@ -1535,13 +1621,36 @@ export const makePrimeAdapter = (
         catch: (cause) =>
           isProviderAdapterValidationError(cause)
             ? cause
-            : new ProviderAdapterProcessError({
+            : (asAdapterConflict(cause, "executeRuntimeOperation") ??
+              new ProviderAdapterProcessError({
                 provider: PROVIDER,
                 threadId: operation.threadId,
                 detail: "Prime Agent runtime action failed.",
                 cause,
-              }),
+              })),
       });
+
+    /**
+     * Answering a native dialog unblocks the agent and commits work, so it
+     * needs the same lease proof a prompt does. The caller has already claimed
+     * the dialog; a refusal releases that claim so the authoritative writer can
+     * still answer it.
+     */
+    const gateDialogAnswer = async (
+      threadId: ThreadId,
+      pending: { responding: boolean },
+    ): Promise<void> => {
+      if (options.writeGate === undefined) return;
+      try {
+        await options.writeGate.authorizeWrite({
+          threadId: String(threadId),
+          operation: "respond",
+        });
+      } catch (cause) {
+        pending.responding = false;
+        throw cause;
+      }
+    };
 
     const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (
       threadId,
@@ -1559,7 +1668,11 @@ export const makePrimeAdapter = (
           // correlation id; a second would be a second native response.
           if (pending.responding) throw new Error("Interactive request is already being answered.");
           const value = decision === "accept" || decision === "acceptForSession";
+          // Claim the dialog before proving the lease, so the proof cannot
+          // reorder this answer against its own timeout; a refusal hands the
+          // claim straight back.
           pending.responding = true;
+          await gateDialogAnswer(threadId, pending);
           try {
             await expectSuccess(
               context,
@@ -1584,6 +1697,7 @@ export const makePrimeAdapter = (
             await Effect.runPromise(Queue.offer(runtimeEvents, event));
         },
         catch: (cause) =>
+          asAdapterConflict(cause, "respondToRequest") ??
           new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId,
@@ -1614,7 +1728,10 @@ export const makePrimeAdapter = (
           const clean = cleanNative(value);
           if (pending.method === "select" && !pending.options.includes(clean))
             throw new Error("Prime Agent select answer is invalid.");
+          // Same rule as an approval: a fenced writer may not answer for the
+          // session it no longer owns.
           pending.responding = true;
+          await gateDialogAnswer(threadId, pending);
           try {
             await expectSuccess(
               context,
@@ -1635,6 +1752,7 @@ export const makePrimeAdapter = (
             await Effect.runPromise(Queue.offer(runtimeEvents, event));
         },
         catch: (cause) =>
+          asAdapterConflict(cause, "respondToUserInput") ??
           new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId,
@@ -1663,6 +1781,12 @@ export const makePrimeAdapter = (
           sessions.clear();
           await Promise.all(contexts.map(closeContext));
           await Promise.all(contexts.map((context) => context.eventDrain));
+          // Provider-instance removal and process teardown give up every lease
+          // this adapter held, and only after the processes those leases
+          // authorized are gone; anything it fails to release simply expires.
+          for (const context of contexts) {
+            await options.writeGate?.release({ threadId: String(context.session.threadId) });
+          }
           for (const context of contexts) {
             await cancelPendingDialogs(
               context,
