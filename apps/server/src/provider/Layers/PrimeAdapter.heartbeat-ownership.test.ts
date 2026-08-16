@@ -260,6 +260,43 @@ describe("PrimeAdapter owned-heartbeat handles across sessions", () => {
     }),
   );
 
+  it.effect("keeps an owned handle actionable after the runtime drifts its row off the board", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const adapter = yield* make(f);
+      yield* adapter.startSession(makeInput(f.cwd));
+      yield* create(adapter, "steady");
+      const [ownedId] = yield* ownedIds(f.root);
+      assert.ok(ownedId, "creation must record the owned handle");
+      // The runtime later drifts the schedule to an interval T3 refuses to
+      // state (e.g. a TUI edit); the next re-read drops the row from the
+      // board while the handle stays owned.
+      const drifted = JSON.parse(yield* Effect.promise(() => readFile(f.store, "utf8"))) as {
+        seq: number;
+        heartbeats: Array<{ heartbeatId: string; intervalSeconds: number }>;
+      };
+      for (const row of drifted.heartbeats)
+        if (row.heartbeatId === ownedId) row.intervalSeconds = 30;
+      yield* Effect.promise(() => writeFile(f.store, JSON.stringify(drifted)));
+      // Pause still targets the (stale-rendered) row and re-reads, which
+      // removes it from the board but not from the owned set.
+      yield* act(adapter, "heartbeat.pause", ownedId);
+      assert.deepStrictEqual(yield* ownedIds(f.root), [ownedId]);
+      // Delete must remain reachable through the raw owned id even though
+      // the board can no longer render the row.
+      yield* act(adapter, "heartbeat.delete", ownedId);
+      assert.deepStrictEqual(yield* ownedIds(f.root), []);
+      const after = JSON.parse(yield* Effect.promise(() => readFile(f.store, "utf8"))) as {
+        heartbeats: ReadonlyArray<{ heartbeatId: string }>;
+      };
+      assert.deepStrictEqual(
+        after.heartbeats.map((h) => h.heartbeatId),
+        ["hb-sentinel"],
+        "the drifted owned schedule is gone; the unowned sentinel untouched",
+      );
+    }),
+  );
+
   it.effect(
     "caps creation on the handles it would persist, not only on the rows it can render",
     () =>

@@ -1231,6 +1231,7 @@ export const makePrimeAdapter = (
                   context.ownedHeartbeats,
                 ).some((heartbeat) => heartbeat.heartbeatId === created.heartbeatId);
                 if (!renderable) {
+                  let stopped = true;
                   try {
                     await expectSuccess(context, {
                       type: "heartbeat_stop",
@@ -1240,14 +1241,16 @@ export const makePrimeAdapter = (
                     await heartbeatSnapshot(context, { type: "heartbeat_get" });
                   } catch {
                     // Handle retained on purpose; see comment above.
+                    stopped = false;
                   }
                   await persistHeartbeatOwnership(context);
                   await publishGoals(context);
                   throw new ProviderAdapterValidationError({
                     provider: PROVIDER,
                     operation: "executeRuntimeOperation",
-                    issue:
-                      "Prime Agent created this schedule in a form T3 cannot represent exactly; it was not kept.",
+                    issue: stopped
+                      ? "Prime Agent created this schedule in a form T3 cannot represent exactly; it was not kept."
+                      : "Prime Agent created this schedule in a form T3 cannot represent exactly, and stopping it failed: it is still running and is disclosed on the board; deleting it remains available.",
                   });
                 }
               }
@@ -1276,20 +1279,25 @@ export const makePrimeAdapter = (
               // Ownership is checked on every action against the board this
               // T3-owned session currently reports. A stale id, another thread's
               // schedule, and an id fished out of the daemon all stop here.
-              if (!decision.allowed)
+              // One exception: a handle T3 owns whose row the board cannot
+              // render (the runtime drifted its interval or title out of the
+              // representable range) stays directly actionable by its raw id —
+              // pause/resume/delete need only the id, and rendering is a
+              // display concern that must never cost the user the reverse
+              // control of a schedule they created.
+              const ownedHidden =
+                !decision.allowed &&
+                decision.reason === "unknown-heartbeat" &&
+                context.ownedHeartbeats.has(String(operation.heartbeatId));
+              if (!decision.allowed && !ownedHidden)
                 throw new ProviderAdapterValidationError({
                   provider: PROVIDER,
                   operation: "executeRuntimeOperation",
-                  // Never deny ownership of a handle T3 actually holds: an
-                  // owned row can be absent from the board only because it is
-                  // not representable exactly.
-                  issue:
-                    decision.reason === "unknown-heartbeat" &&
-                    context.ownedHeartbeats.has(String(operation.heartbeatId))
-                      ? "This T3-owned schedule cannot be displayed or targeted exactly by this client."
-                      : primeHeartbeatRefusalMessage(decision.reason),
+                  issue: primeHeartbeatRefusalMessage(decision.reason),
                 });
-              const heartbeatId = decision.heartbeat.heartbeatId;
+              const heartbeatId = decision.allowed
+                ? decision.heartbeat.heartbeatId
+                : String(operation.heartbeatId);
               await expectSuccess(context, {
                 type:
                   intent === "pause"
