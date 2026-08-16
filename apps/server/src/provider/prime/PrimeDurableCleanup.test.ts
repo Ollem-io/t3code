@@ -194,6 +194,10 @@ describe("PrimeDurableCleanup", () => {
       });
       assert.strictEqual(report.outcome, "refused");
       assert.strictEqual(report.reasonCode, "nonDestructiveLifecycle");
+      // An audit record for a stop must not read as a refused delete: no
+      // deletion reason is reported, because none was ever requested.
+      assert.strictEqual(plan.reason, "none");
+      assert.strictEqual(report.reason, "none");
     }
 
     // History, session and cursor all survive every one of those events.
@@ -489,13 +493,32 @@ describe("PrimeDurableCleanup", () => {
 
     const journal = makeInMemoryPrimeCleanupJournalStore();
     const report = await confirmedRun({ home, scope, journal, events: [] });
-    assert.strictEqual(report.outcome, "incomplete");
+    // Terminal, not retryable: a foreign cursor at this derived path can never
+    // become ours, so the run must not leave work startup recovery re-picks up
+    // on every boot.
+    assert.strictEqual(report.outcome, "refused");
+    assert.strictEqual(report.reasonCode, "cursorScopeMismatch");
+    assert.strictEqual(report.resumable, false);
     assert.deepStrictEqual(
-      report.steps.map((step) => [step.kind, step.status]),
+      report.steps.map((step) => [step.kind, step.status, step.detail]),
       [
-        ["resumeCursor", "retained"],
-        ["ownedResources", "retained"],
+        ["resumeCursor", "retained", "cursorScopeMismatch"],
+        ["ownedResources", "retained", "cursorScopeMismatch"],
       ],
+    );
+    assert.strictEqual(journal.rows.get(primeResumeScopeKey(scope))?.status, "refused");
+    // A resume pass over the terminal row does nothing at all.
+    assert.strictEqual(
+      await resumePrimeCleanup({
+        home,
+        scope,
+        journal,
+        guard: async () => ({ status: "clear" }),
+        proof: { processMatches: async () => false },
+        cleanup: { stopProcess: async () => undefined },
+        now: () => "2026-08-16T00:00:01.000Z",
+      }),
+      undefined,
     );
     const { state } = await readPrimeResumeCursor(layout.resumeCursor);
     assert.strictEqual(state.status, "available");
@@ -503,6 +526,86 @@ describe("PrimeDurableCleanup", () => {
     // are exactly where they were.
     assert.ok(await exists(layout.session));
     assert.ok(await exists(layout.ownership));
+  });
+
+  it("never lets a failing removal leak its host path into the report or the journal", async () => {
+    const { home, scopeFor } = await makeHome("leak");
+    const scope = scopeFor(THREAD);
+    const layout = await seedThread(home, THREAD, scope);
+    const journal = makeInMemoryPrimeCleanupJournalStore();
+
+    // The realistic failure mode: the platform boundary throws a Node fs error,
+    // whose message carries the absolute path it failed on — and a Prime layout
+    // path carries base64-encoded environment, instance and thread ids with it.
+    const report = await confirmedRun({
+      home,
+      scope,
+      journal,
+      events: [],
+      cleanup: {
+        stopProcess: async () => undefined,
+        removeOwnedResource: async (resource) => {
+          throw Object.assign(new Error(`EACCES: permission denied, rmdir '${resource.path}'`), {
+            code: "EACCES",
+          });
+        },
+      },
+    });
+
+    assert.strictEqual(report.outcome, "incomplete");
+    const ownership = report.steps.find((step) => step.kind === "ownedResources");
+    assert.ok(ownership !== undefined);
+    assert.strictEqual(ownership.status, "retained");
+    // A code from the closed vocabulary, not classified-and-truncated text.
+    assert.strictEqual(ownership.detail, "ownershipCleanupFailedClosed");
+
+    const journalled = journal.rows.get(primeResumeScopeKey(scope));
+    assert.ok(journalled !== undefined);
+    // The journal is host-local and keyed by scope, so it legitimately holds
+    // the scope key; what it may never hold is a host path or raw error text.
+    // The report additionally may not carry any id at all — it is the shape
+    // allowed into logs, telemetry and a remote client.
+    const hostSecrets = [home, layout.ownership, "EACCES", "/"];
+    for (const [label, serialized, forbidden] of [
+      [
+        "report",
+        JSON.stringify(redactPrimeCleanupReport(report)),
+        [...hostSecrets, "id-", THREAD, "env-a"],
+      ],
+      ["steps", JSON.stringify(report.steps), [...hostSecrets, "id-", THREAD, "env-a"]],
+      ["journal", JSON.stringify(journalled), hostSecrets],
+    ] as const) {
+      for (const needle of forbidden) {
+        assert.ok(
+          !serialized.includes(needle),
+          `${label} disclosed ${JSON.stringify(needle)}: ${serialized}`,
+        );
+      }
+    }
+    // Failing closed means retaining: nothing was destroyed on the way out.
+    assert.ok(await exists(layout.ownership));
+    assert.ok(await exists(layout.session));
+  });
+
+  it("keeps its own source byte-clean so the security-critical diff stays reviewable", async () => {
+    // A literal NUL in the path-token hash separator made git store this module
+    // as a binary blob: no line diff, no blame, no three-way merge on the one
+    // file that may destroy durable data. The escape hashes identically.
+    const source = await readFile(new URL("./PrimeDurableCleanup.ts", import.meta.url));
+    assert.strictEqual(source.includes(0), false);
+    const { home, scopeFor } = await makeHome("token");
+    const scope = scopeFor(THREAD);
+    const plan = planPrimeCleanup({
+      home,
+      scope,
+      lifecycleEvent: "threadDelete",
+      guard: { status: "clear" },
+    });
+    // Tokens stay opaque and carry nothing from the path they name.
+    for (const target of plan.targets) {
+      assert.match(target.pathToken, /^pct-[0-9a-f]{16}$/);
+      assert.ok(!target.pathToken.includes(home));
+    }
   });
 
   it("keeps rollout and rollback provider-scoped and non-destructive", async () => {

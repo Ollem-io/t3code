@@ -32423,7 +32423,7 @@ const primeCleanupReasonForLifecycle = (event) => {
   }
 };
 const pathToken = (scopeKey, path) =>
-  `pct-${createHash("sha256").update(`${scopeKey} ${path}`).digest("hex").slice(0, 16)}`;
+  `pct-${createHash("sha256").update(`${scopeKey}\u0000${path}`).digest("hex").slice(0, 16)}`;
 /**
  * Builds the dry-run manifest. Nothing is read, written or removed: the
  * manifest is derived entirely from this home's own resource layout for the
@@ -32437,7 +32437,7 @@ const planPrimeCleanup = (input) => {
   if (reason === void 0)
     return {
       mode: "dryRun",
-      reason: "explicitDelete",
+      reason: "none",
       scope: input.scope,
       scopeKey,
       scopeDigest,
@@ -32498,8 +32498,20 @@ const makeInMemoryPrimeCleanupJournalStore = () => {
     },
   };
 };
-/** Warning text is already path-free by construction; this enforces it. */
-const redactDetail = (text) => (text.length > 200 ? `${text.slice(0, 197)}...` : text);
+/**
+ * Classifies one ownership warning into the closed detail vocabulary. The
+ * reason text is only ever *matched against* here — it is never returned, so a
+ * path, an id or an errno message embedded in it cannot escape this function.
+ * Anything unrecognised degrades to the least specific code rather than being
+ * echoed.
+ */
+const detailCodeForWarning = (reason) => {
+  if (/callback missing/i.test(reason)) return "ownershipCleanupUnavailable";
+  if (/threw|failed/i.test(reason)) return "ownershipCleanupFailedClosed";
+  if (/changed/i.test(reason)) return "ownershipRecordChanged";
+  if (/cannot be proven|does not match/i.test(reason)) return "ownershipIdentityUnproven";
+  return "ownershipRetained";
+};
 const warningsOf = (actions) =>
   actions.flatMap((action) => (action.kind === "warning" ? [action.warning.reason] : []));
 const stepsWith = (steps, kind, next) => steps.map((step) => (step.kind === kind ? next : step));
@@ -32526,6 +32538,15 @@ const executePrimeCleanup = async (input) => {
       steps: [],
       resumable: false,
     };
+  if (plan.reason === "none")
+    return {
+      ...base,
+      outcome: "refused",
+      reasonCode: "nonDestructiveLifecycle",
+      steps: [],
+      resumable: false,
+    };
+  const reason = plan.reason;
   if (input.confirmation === void 0 || !input.confirmation.acknowledged)
     return {
       ...base,
@@ -32569,7 +32590,7 @@ const executePrimeCleanup = async (input) => {
       version: 1,
       scopeKey: plan.scopeKey,
       scopeDigest: plan.scopeDigest,
-      reason: plan.reason,
+      reason,
       status,
       steps,
       startedAt,
@@ -32577,16 +32598,18 @@ const executePrimeCleanup = async (input) => {
     });
   };
   await persist("running");
+  let scopeMismatch = false;
   const cursorTarget = plan.targets.find((target) => target.kind === "resumeCursor");
   if (cursorTarget !== void 0 && !doneAlready(existing, "resumeCursor")) {
     const { state } = await readPrimeResumeCursor(cursorTarget.path, plan.scope);
-    if (state.status === "unavailable" && state.reason === "scopeMismatch")
+    if (state.status === "unavailable" && state.reason === "scopeMismatch") {
+      scopeMismatch = true;
       steps = stepsWith(steps, "resumeCursor", {
         kind: "resumeCursor",
         status: "retained",
-        detail: "stored cursor belongs to another scope; nothing was removed",
+        detail: "cursorScopeMismatch",
       });
-    else {
+    } else {
       await discardPrimeResumeCursor(cursorTarget.path, plan.scope);
       steps = stepsWith(steps, "resumeCursor", {
         kind: "resumeCursor",
@@ -32613,14 +32636,14 @@ const executePrimeCleanup = async (input) => {
         : {
             kind: "ownedResources",
             status: "retained",
-            detail: redactDetail(warnings[0]),
+            detail: detailCodeForWarning(warnings[0]),
           },
     );
   } else if (ownershipTarget !== void 0 && !cursorCleared)
     steps = stepsWith(steps, "ownedResources", {
       kind: "ownedResources",
       status: "retained",
-      detail: "scope could not be proven from the stored cursor; owned resources retained",
+      detail: scopeMismatch ? "cursorScopeMismatch" : "cursorScopeUnproven",
     });
   if (steps.every((step) => step.status === "done")) {
     await persist("completed");
@@ -32628,6 +32651,16 @@ const executePrimeCleanup = async (input) => {
     return {
       ...base,
       outcome: "completed",
+      steps,
+      resumable: false,
+    };
+  }
+  if (scopeMismatch) {
+    await persist("refused");
+    return {
+      ...base,
+      outcome: "refused",
+      reasonCode: "cursorScopeMismatch",
       steps,
       resumable: false,
     };
@@ -32650,6 +32683,7 @@ const resumePrimeCleanup = async (input) => {
   const scopeKey = primeResumeScopeKey(input.scope);
   const entry = await input.journal.read(scopeKey);
   if (entry === void 0) return void 0;
+  if (entry.status === "completed" || entry.status === "refused") return void 0;
   const guard = await input.guard();
   const plan = planPrimeCleanup({
     home: input.home,
@@ -33163,6 +33197,56 @@ for (const secret of [
   check(!redacted.includes(secret), `the report leaked ${secret.slice(0, 12)}`);
 check(redacted.length < 1500, "the report is bounded");
 await rm(partialHome.home, {
+  recursive: true,
+  force: true,
+});
+const throwingHome = await makeHome("throwing");
+const throwingTarget = await throwingHome.seed("thread-a", 7100);
+const throwingPlan = planPrimeCleanup({
+  home: throwingHome.home,
+  scope: throwingTarget.scope,
+  lifecycleEvent: "threadDelete",
+  guard: { status: "clear" },
+});
+const thrown = await executePrimeCleanup({
+  plan: throwingPlan,
+  confirmation: {
+    scopeDigest: throwingPlan.scopeDigest,
+    acknowledged: true,
+  },
+  journal: makeInMemoryPrimeCleanupJournalStore(),
+  guard: clearGuard,
+  cleanup: {
+    stopProcess: async () => {},
+    removeOwnedResource: async (resource) => {
+      throw new Error(`EACCES: permission denied, rmdir '${resource.path}'`);
+    },
+  },
+  proof,
+  now: nowIso,
+});
+const thrownRedacted = JSON.stringify(redactPrimeCleanupReport(thrown), void 0, 2);
+line(thrownRedacted);
+equal(thrown.outcome, "incomplete", "a thrown removal must be reported as incomplete");
+equal(
+  thrown.steps.find((step) => step.kind === "ownedResources")?.detail,
+  "ownershipCleanupFailedClosed",
+  "a thrown removal must be classified, not echoed",
+);
+for (const secret of [
+  throwingHome.home,
+  throwingTarget.layout.ownership,
+  "EACCES",
+  "/",
+  "thread-a",
+  "env-a",
+])
+  check(!thrownRedacted.includes(secret), `the report leaked ${secret.slice(0, 12)}`);
+check(
+  await present(throwingTarget.layout.ownership),
+  "a thrown removal destroyed the record anyway",
+);
+await rm(throwingHome.home, {
   recursive: true,
   force: true,
 });

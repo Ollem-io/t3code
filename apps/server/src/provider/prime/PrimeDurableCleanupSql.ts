@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  PRIME_CLEANUP_DETAIL_CODES,
   PRIME_CLEANUP_JOURNAL_VERSION,
   type PrimeCleanupJournalEntry,
   type PrimeCleanupJournalStore,
@@ -36,7 +37,13 @@ type JournalRow = {
 const STEP_KINDS = new Set(["ownedResources", "resumeCursor"]);
 const STEP_STATUSES = new Set(["pending", "done", "retained"]);
 const REASONS = new Set(["explicitDelete", "providerRemoval", "reconfigure", "migration"]);
-const STATUSES = new Set(["running", "completed", "incomplete"]);
+const STATUSES = new Set(["running", "completed", "incomplete", "refused"]);
+// `detail` is a closed vocabulary, so an unknown value is an unreadable row —
+// same bucket as an unknown journal version, and never acted on.
+const DETAIL_CODES = new Set<string>(PRIME_CLEANUP_DETAIL_CODES);
+// Terminal rows: `completed` finished the work, `refused` proved the work can
+// never succeed. Startup recovery must list neither, or it loops forever.
+const TERMINAL_STATUSES = ["completed", "refused"] as const;
 
 const decodeSteps = (text: string): readonly PrimeCleanupJournalStep[] | undefined => {
   let parsed: unknown;
@@ -52,11 +59,13 @@ const decodeSteps = (text: string): readonly PrimeCleanupJournalStep[] | undefin
     const step = value as Record<string, unknown>;
     if (typeof step.kind !== "string" || !STEP_KINDS.has(step.kind)) return undefined;
     if (typeof step.status !== "string" || !STEP_STATUSES.has(step.status)) return undefined;
-    if (step.detail !== undefined && typeof step.detail !== "string") return undefined;
+    if (step.detail !== undefined && !DETAIL_CODES.has(step.detail as string)) return undefined;
     steps.push({
       kind: step.kind as PrimeCleanupJournalStep["kind"],
       status: step.status as PrimeCleanupJournalStep["status"],
-      ...(typeof step.detail === "string" ? { detail: step.detail } : {}),
+      ...(step.detail === undefined
+        ? {}
+        : { detail: step.detail as NonNullable<PrimeCleanupJournalStep["detail"]> }),
     });
   }
   return steps;
@@ -94,7 +103,8 @@ export const makePrimeCleanupJournalSqlStore = (): Effect.Effect<
       Effect.runPromise(
         (scopeKey === undefined
           ? sql<JournalRow>`
-              SELECT * FROM prime_cleanup_journal WHERE status <> 'completed'
+              SELECT * FROM prime_cleanup_journal
+              WHERE status <> ${TERMINAL_STATUSES[0]} AND status <> ${TERMINAL_STATUSES[1]}
               ORDER BY started_at
             `
           : sql<JournalRow>`SELECT * FROM prime_cleanup_journal WHERE scope_key = ${scopeKey}`

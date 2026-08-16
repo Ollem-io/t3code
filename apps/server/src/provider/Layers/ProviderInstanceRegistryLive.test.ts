@@ -50,7 +50,13 @@ import { GrokDriver } from "../Drivers/GrokDriver.ts";
 import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
-import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
+import {
+  makeProviderInstanceRegistry,
+  ProviderInstanceRegistryLayer,
+  ProviderInstanceRegistryMutableLayer,
+  type ProviderInstanceRemovalListener,
+} from "./ProviderInstanceRegistryLive.ts";
+import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
 
 const TestHttpClientLive = Layer.succeed(
   HttpClient.HttpClient,
@@ -305,6 +311,54 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       });
       yield* failing.mutator.reconcile({});
       expect(yield* failing.registry.listInstances).toEqual([]);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  // The notice is only observable in the product if the Layers production
+  // builds through can carry it. Both exported layers took `{ drivers,
+  // configMap }` only, so the listener could never reach a running server.
+  it.live("forwards the removal notice through both exported layers", () =>
+    Effect.gen(function* () {
+      const goingId = ProviderInstanceId.make("codex_going");
+      const codexDriverKind = ProviderDriverKind.make("codex");
+      const configMap = {
+        [goingId]: {
+          driver: codexDriverKind,
+          enabled: false,
+          config: makeCodexConfig({ binaryPath: "/b/codex" }),
+        },
+      };
+
+      // The read-only layer must at least accept and carry the listener; it is
+      // the layer tests and alternate hosts build through.
+      const readOnly: ProviderInstanceRemovalListener = () => Effect.void;
+      expect(
+        typeof ProviderInstanceRegistryLayer({
+          drivers: [CodexDriver],
+          configMap,
+          onInstanceRemoved: readOnly,
+        }),
+      ).toBe("object");
+
+      // The mutable layer is the one hydration builds through, so it must
+      // actually deliver — an empty result here would be the original bug.
+      const notices: Array<string> = [];
+      yield* Effect.gen(function* () {
+        const mutator = yield* ProviderInstanceRegistryMutator;
+        yield* mutator.reconcile({});
+      }).pipe(
+        Effect.provide(
+          ProviderInstanceRegistryMutableLayer({
+            drivers: [CodexDriver],
+            configMap,
+            onInstanceRemoved: ({ instanceId, reason }) =>
+              Effect.sync(() => {
+                notices.push(`${reason}:${instanceId}`);
+              }),
+          }),
+        ),
+      );
+      expect(notices).toEqual([`removed:${goingId}`]);
     }).pipe(Effect.provide(testLayer)),
   );
 });

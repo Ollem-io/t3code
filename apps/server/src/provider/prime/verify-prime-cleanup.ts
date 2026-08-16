@@ -437,6 +437,55 @@ for (const secret of [
 }
 check(redacted.length < 1_500, "the report is bounded");
 await rm(partialHome.home, { recursive: true, force: true });
+
+// The case above fails closed on a *static* warning string. The realistic leak
+// is the platform boundary throwing a Node fs error, whose message carries the
+// absolute path it failed on and the ids encoded into it.
+const throwingHome = await makeHome("throwing");
+const throwingTarget = await throwingHome.seed("thread-a", 7100);
+const throwingPlan = planPrimeCleanup({
+  home: throwingHome.home,
+  scope: throwingTarget.scope,
+  lifecycleEvent: "threadDelete",
+  guard: { status: "clear" },
+});
+const thrown = await executePrimeCleanup({
+  plan: throwingPlan,
+  confirmation: { scopeDigest: throwingPlan.scopeDigest, acknowledged: true },
+  journal: makeInMemoryPrimeCleanupJournalStore(),
+  guard: clearGuard,
+  cleanup: {
+    stopProcess: async () => {},
+    removeOwnedResource: async (resource) => {
+      throw new Error(`EACCES: permission denied, rmdir '${resource.path}'`);
+    },
+  },
+  proof,
+  now: nowIso,
+});
+const thrownRedacted = JSON.stringify(redactPrimeCleanupReport(thrown), undefined, 2);
+line(thrownRedacted);
+equal(thrown.outcome, "incomplete", "a thrown removal must be reported as incomplete");
+equal(
+  thrown.steps.find((step) => step.kind === "ownedResources")?.detail,
+  "ownershipCleanupFailedClosed",
+  "a thrown removal must be classified, not echoed",
+);
+for (const secret of [
+  throwingHome.home,
+  throwingTarget.layout.ownership,
+  "EACCES",
+  "/",
+  "thread-a",
+  "env-a",
+]) {
+  check(!thrownRedacted.includes(secret), `the report leaked ${secret.slice(0, 12)}`);
+}
+check(
+  await present(throwingTarget.layout.ownership),
+  "a thrown removal destroyed the record anyway",
+);
+await rm(throwingHome.home, { recursive: true, force: true });
 line("");
 
 await rm(homeA.home, { recursive: true, force: true });

@@ -29,37 +29,38 @@ Phase order:
 
 The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a46f4026f158f09867483d3e7793`.
 
-| Milestone | Scope                                                              | Status / merge    |
-| --------- | ------------------------------------------------------------------ | ----------------- |
-| PA-M01    | Versioned Prime RPC schemas and fixture corpus                     | Done — `c9e54704` |
-| PA-M02    | Strict-LF bounded transport parser/writer                          | Done — `329eeba7` |
-| PA-M03    | Correlated RPC client and asynchronous event multiplexer           | Done — `28efd932` |
-| PA-M04    | Provider contracts, typed settings, structured model identity      | Done — `8567c8fe` |
-| PA-M05    | Read-only version/auth/model/capability probes                     | Done — `e52ec401` |
-| PA-M06    | T3-scoped resources and exact ownership registry                   | Done — `aace57a5` |
-| PA-M07    | Driver registration and live session bootstrap                     | Done — `2049a8d0` |
-| PA-M08    | Prompt, attachment, model, and thinking path                       | Done — `45b0c241` |
-| PA-M09    | Canonical runtime event mapping                                    | Done — `9e209d68` |
-| PA-M10    | Interactions, interrupt, stop, crash, scoped teardown              | Done — `98c0ae02` |
-| PA-M11    | Prime text-generation operations                                   | Done — `981937a9` |
-| PA-M12    | Provider-neutral orchestration/checkpoint/multi-client integration | Done — `adfb9661` |
-| PA-M13    | Web/desktop settings and health UI                                 | Done — `a308e67f` |
-| PA-M14    | Web/desktop picker, composer, timeline, recovery UI                | Done — `68b28f51` |
-| PA-M15    | Mobile selection/control/interaction/host-status parity            | Done — `112d977a` |
-| PA-M16    | Isolated real-binary gate and MVP documentation graduation         | Done — `074f18a9` |
-| PA-A01    | Capability negotiation and provider-neutral Alpha contracts        | Done — `c9659346` |
-| PA-A02    | Steering and queued follow-up with visible cancellation            | Done — `962c80b7` |
-| PA-A02.1  | PA-A02 review-debt cleanup                                         | Done — `2d8772c1` |
-| PA-A03    | Context usage, compaction, retry, bounded status UI                | Done — `f8218111` |
-| PA-A04    | Prime commands, skills, prompt templates                           | Done — `44c23c2c` |
-| PA-A05    | Rich extension UI and transient status integration                 | Done — `251b823c` |
-| PA-A06    | Subagents, observation, Agents-surface controls                    | Done — `2e6c1d3e` |
-| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure     | Done — `75f56f24` |
-| PA-A08    | Session naming/forking and Alpha integration/docs                  | Done — `ce3187ba` |
-| PA-B01    | Versioned resume cursor and scoped durable storage policy          | Done — `4b4043f2` |
-| PA-B03    | Server-side single-writer arbitration and conflict receipts        | Done — `a58bbafd` |
-| PA-B02    | Exact adoption/resume state machine and compatibility validation   | Done — `5da5d397` |
-| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                   | Done — `f6f3b1b5` |
+| Milestone | Scope                                                              | Status / merge      |
+| --------- | ------------------------------------------------------------------ | ------------------- |
+| PA-M01    | Versioned Prime RPC schemas and fixture corpus                     | Done — `c9e54704`   |
+| PA-M02    | Strict-LF bounded transport parser/writer                          | Done — `329eeba7`   |
+| PA-M03    | Correlated RPC client and asynchronous event multiplexer           | Done — `28efd932`   |
+| PA-M04    | Provider contracts, typed settings, structured model identity      | Done — `8567c8fe`   |
+| PA-M05    | Read-only version/auth/model/capability probes                     | Done — `e52ec401`   |
+| PA-M06    | T3-scoped resources and exact ownership registry                   | Done — `aace57a5`   |
+| PA-M07    | Driver registration and live session bootstrap                     | Done — `2049a8d0`   |
+| PA-M08    | Prompt, attachment, model, and thinking path                       | Done — `45b0c241`   |
+| PA-M09    | Canonical runtime event mapping                                    | Done — `9e209d68`   |
+| PA-M10    | Interactions, interrupt, stop, crash, scoped teardown              | Done — `98c0ae02`   |
+| PA-M11    | Prime text-generation operations                                   | Done — `981937a9`   |
+| PA-M12    | Provider-neutral orchestration/checkpoint/multi-client integration | Done — `adfb9661`   |
+| PA-M13    | Web/desktop settings and health UI                                 | Done — `a308e67f`   |
+| PA-M14    | Web/desktop picker, composer, timeline, recovery UI                | Done — `68b28f51`   |
+| PA-M15    | Mobile selection/control/interaction/host-status parity            | Done — `112d977a`   |
+| PA-M16    | Isolated real-binary gate and MVP documentation graduation         | Done — `074f18a9`   |
+| PA-A01    | Capability negotiation and provider-neutral Alpha contracts        | Done — `c9659346`   |
+| PA-A02    | Steering and queued follow-up with visible cancellation            | Done — `962c80b7`   |
+| PA-A02.1  | PA-A02 review-debt cleanup                                         | Done — `2d8772c1`   |
+| PA-A03    | Context usage, compaction, retry, bounded status UI                | Done — `f8218111`   |
+| PA-A04    | Prime commands, skills, prompt templates                           | Done — `44c23c2c`   |
+| PA-A05    | Rich extension UI and transient status integration                 | Done — `251b823c`   |
+| PA-A06    | Subagents, observation, Agents-surface controls                    | Done — `2e6c1d3e`   |
+| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure     | Done — `75f56f24`   |
+| PA-A08    | Session naming/forking and Alpha integration/docs                  | Done — `ce3187ba`   |
+| PA-B01    | Versioned resume cursor and scoped durable storage policy          | Done — `4b4043f2`   |
+| PA-B03    | Server-side single-writer arbitration and conflict receipts        | Done — `a58bbafd`   |
+| PA-B02    | Exact adoption/resume state machine and compatibility validation   | Done — `5da5d397`   |
+| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                   | Done — `f6f3b1b5`   |
+| PA-B05    | Durable cleanup, retention, migrations, rollback safety            | Done — `PA_B05_SHA` |
 
 Completed total: **29 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; Beta is underway.
 
@@ -358,12 +359,10 @@ callback until PA-B04 renders them.
 
 | Milestone | Planned scope                                                    | State   |
 | --------- | ---------------------------------------------------------------- | ------- |
-| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Next    |
-| PA-B05    | Durable cleanup, retention, migrations, rollback safety          | Next    |
 | PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Pending |
 
 ## Immediate next steps
 
 1. Capture the standing visual-evidence debt (PA-A02 through PA-A08 surfaces) when UI-launch permission is granted (exact steps recorded above).
-2. Implement remaining Beta in dependency order: `PA-B04`, `PA-B05`, `PA-B06`.
+2. Implement remaining Beta in dependency order: `PA-B06`.
 3. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.

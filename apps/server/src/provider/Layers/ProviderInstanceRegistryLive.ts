@@ -451,6 +451,8 @@ export const makeProviderInstanceRegistry = <R>(input: {
 export const ProviderInstanceRegistryLayer = <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
   readonly configMap: ProviderInstanceConfigMap;
+  /** Non-destructive removal notice; see `ProviderInstanceRemovalListener`. */
+  readonly onInstanceRemoved?: ProviderInstanceRemovalListener;
 }): Layer.Layer<ProviderInstanceRegistry, never, R> =>
   Layer.effect(
     ProviderInstanceRegistry,
@@ -466,6 +468,8 @@ export const ProviderInstanceRegistryLayer = <R>(input: {
 export const ProviderInstanceRegistryMutableLayer = <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
   readonly configMap: ProviderInstanceConfigMap;
+  /** Non-destructive removal notice; see `ProviderInstanceRemovalListener`. */
+  readonly onInstanceRemoved?: ProviderInstanceRemovalListener;
 }): Layer.Layer<ProviderInstanceRegistry | ProviderInstanceRegistryMutator, never, R> =>
   Layer.effectContext(
     makeProviderInstanceRegistry(input).pipe(

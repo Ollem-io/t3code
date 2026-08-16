@@ -4,7 +4,7 @@
 checked-in cleanup planner/executor, the Prime ownership proof boundary, the resume-cursor codec
 and the PA-B03 arbitration lease. Nothing in it is mocked or re-implemented.
 
-SHA-256: `7dd626448570e414722a93c75f1103f2250ae73b733a0d6a50b0e3ce92ce724c`.
+SHA-256: `3133b460e3b812369215db1f74a09df8376edf3853443a391226fd4bd5037dc0`.
 
 Run the committed artifact directly:
 
@@ -24,7 +24,7 @@ Prove deterministic regeneration without replacing the committed artifact:
 apps/server/src/provider/prime/generate-prime-cleanup-artifact.sh --check
 ```
 
-The verifier reports 79 source-derived assertions over a disposable **two-home** tree. Each home
+The verifier reports 88 source-derived assertions over a disposable **two-home** tree. Each home
 holds two owned Prime threads plus two sentinels — a Prime-shaped file this T3 never created and a
 file outside the Prime namespace — and both homes are removed at the end.
 
@@ -46,9 +46,14 @@ file outside the Prime namespace — and both homes are removed at the end.
 6. **Rollback.** Every rollout transition is `prime-agent`-scoped with `deletesDurableData=false`. A
    cursor written by a newer build decodes as `unsupportedVersion` (not corrupt) and is preserved
    verbatim in its version-keyed sidecar after this build writes over it.
-7. **Redaction.** A partial failure (the platform removal callback missing, so the boundary fails
-   closed) is reported as `incomplete`/`resumable` with an actionable reason, and the printed report
-   is checked to contain no host path, thread id, project id, environment id or scope key.
+7. **Redaction.** Two partial failures are printed and checked. The first is the platform removal
+   callback missing, so the boundary fails closed on a static warning string. The second is the
+   realistic leak: the callback throws a Node `EACCES` fs error whose message carries the absolute
+   path it failed on and the base64-encoded ids inside it. Both are reported as
+   `incomplete`/`resumable` with a code from the closed detail vocabulary
+   (`ownershipCleanupFailedClosed` for the throw, never the text), and both printed reports are
+   checked to contain no host path, no `/` at all, no error text, and no thread, project or
+   environment id or scope key.
 
 ## Boundary
 

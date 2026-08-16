@@ -16,6 +16,7 @@ import { makePrimeTextGeneration } from "../../textGeneration/PrimeTextGeneratio
 import { ProviderDriverError } from "../Errors.ts";
 import { makePrimeAdapter } from "../Layers/PrimeAdapter.ts";
 import { primeProbeToSnapshot, probePrimeProvider } from "../Layers/PrimeProvider.ts";
+import { resumeUnfinishedPrimeCleanup } from "../prime/PrimeDurableCleanupRuntime.ts";
 import { makePrimeServerWriteGate } from "../prime/PrimeSessionLeaseRuntime.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -54,6 +55,22 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
         instanceId: String(instanceId),
         home: serverConfig.stateDir,
       });
+      // PA-B05: a crash can leave a confirmed cleanup half-done, and the only
+      // durable record of it is the journal. Finish those rows here — before
+      // the adapter can hand this instance's scopes back out — so a resumed
+      // session never races an unfinished deletion. It resumes only rows this
+      // environment/instance/home owns and never starts a new one; a failure
+      // is logged and swallowed, because recovery may not block startup.
+      const resumedCleanup = yield* resumeUnfinishedPrimeCleanup({
+        environmentId: String(environmentId),
+        instanceId: String(instanceId),
+        home: serverConfig.stateDir,
+      }).pipe(Effect.catchCause(() => Effect.succeed([])));
+      if (resumedCleanup.length > 0) {
+        yield* Effect.logInfo("resumed unfinished Prime cleanup").pipe(
+          Effect.annotateLogs({ reports: resumedCleanup }),
+        );
+      }
       // PA-B02 compatibility input. The probe is the only place this server
       // learns the installed runtime version, so the newest one it saw is what
       // resume validates a cursor against; before the first probe answers,
