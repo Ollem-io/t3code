@@ -4,7 +4,9 @@ import { ProviderInstanceId, type ServerConfig } from "@t3tools/contracts";
 
 import {
   buildModelOptions,
+  getModelSelectionAvailability,
   groupByProvider,
+  modelCapabilityLabels,
   resolveDefaultableModelSelection,
   resolveSelectableModelSelection,
 } from "./modelOptions";
@@ -49,6 +51,73 @@ describe("mobile model options", () => {
         ],
       },
     ]);
+  });
+
+  it("marks models unavailable when their provider cannot serve them", () => {
+    for (const providerState of [
+      {
+        enabled: false,
+        installed: true,
+        auth: { status: "authenticated" },
+        availability: "available",
+        status: "ready",
+      },
+      {
+        enabled: true,
+        installed: false,
+        auth: { status: "authenticated" },
+        availability: "available",
+        status: "ready",
+      },
+      {
+        enabled: true,
+        installed: true,
+        auth: { status: "unauthenticated" },
+        availability: "available",
+        status: "ready",
+      },
+      {
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        availability: "unavailable",
+        status: "ready",
+      },
+      {
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        availability: "available",
+        status: "error",
+      },
+      {
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        availability: "available",
+        status: "disabled",
+      },
+    ]) {
+      const config = {
+        providers: [
+          {
+            instanceId: "codex",
+            driver: "codex",
+            ...providerState,
+            models: [
+              {
+                slug: "gpt",
+                name: "GPT",
+                isCustom: false,
+                availability: "available",
+                capabilities: null,
+              },
+            ],
+          },
+        ],
+      } as unknown as ServerConfig;
+      expect(buildModelOptions(config, null)[0]?.availability).toBe("unavailable");
+    }
   });
 
   it("normalizes a legacy fallback selection against current capabilities", () => {
@@ -170,5 +239,88 @@ describe("mobile model options", () => {
     expect(resolveDefaultableModelSelection(config, legacy)).toBeNull();
     // Offline: nothing to validate against, selection passes through.
     expect(resolveDefaultableModelSelection(null, legacy)).toBe(legacy);
+  });
+});
+
+describe("Prime model snapshot behavior", () => {
+  const config = {
+    providers: [
+      {
+        instanceId: "prime-a",
+        driver: "prime-agent",
+        displayName: "Prime A",
+        enabled: true,
+        installed: true,
+        status: "ready",
+        availability: "available",
+        version: "1",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-01-01T00:00:00Z",
+        models: [
+          {
+            slug: "reasoner",
+            name: "Reasoner",
+            isCustom: false,
+            availability: "available",
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "effort",
+                  label: "Thinking",
+                  type: "select",
+                  options: [{ id: "high", label: "High" }],
+                },
+              ],
+            },
+          },
+        ],
+        slashCommands: [],
+        skills: [],
+      },
+      {
+        instanceId: "prime-b",
+        driver: "prime-agent",
+        displayName: "Prime B",
+        enabled: true,
+        installed: true,
+        status: "ready",
+        availability: "available",
+        version: "1",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-01-01T00:00:00Z",
+        models: [
+          {
+            slug: "reasoner",
+            name: "Reasoner",
+            isCustom: false,
+            availability: "stale",
+            capabilities: null,
+          },
+        ],
+        slashCommands: [],
+        skills: [],
+      },
+    ],
+  } as unknown as ServerConfig;
+  it("keeps duplicate names distinct and exposes descriptor labels", () => {
+    const options = buildModelOptions(config, null);
+    expect(options.map((x) => x.key)).toEqual(["prime-a:reasoner", "prime-b:reasoner"]);
+    expect(modelCapabilityLabels(options[0]!.capabilities)).toEqual(["Thinking"]);
+  });
+  it("retains exact bound selection when stale", () => {
+    const selection = { instanceId: ProviderInstanceId.make("prime-b"), model: "reasoner" };
+    expect(getModelSelectionAvailability(config, selection)).toEqual({
+      available: false,
+      reason: "model-unavailable",
+    });
+    expect(buildModelOptions(config, selection).at(-1)?.selection).toEqual(selection);
+  });
+  it("does not reject selection offline", () => {
+    const selection = { instanceId: ProviderInstanceId.make("prime-a"), model: "reasoner" };
+    expect(getModelSelectionAvailability(null, selection)).toEqual({
+      available: true,
+      instanceId: "prime-a",
+      model: "reasoner",
+    });
   });
 });

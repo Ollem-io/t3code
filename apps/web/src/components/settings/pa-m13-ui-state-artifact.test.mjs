@@ -1,0 +1,10 @@
+import assert from "node:assert/strict";
+import { derivePrimeHealthState, seedInstructions, providerConfirmationCopy, primeSetupPresentation } from "./pa-m13-ui-state-artifact.mjs";
+assert.deepEqual(derivePrimeHealthState({ version: "1.2.3", compatibility: "compatible", auth: { status: "authenticated" }, checkedAt: "2026-01-01T00:00:00Z", models: [{ availability: "stale" }, { availability: "available" }], availability: "unavailable", unavailableReason: "Bound device has no Prime Agent driver." }), { version: "1.2.3", compatibility: "compatible", auth: "authenticated", staleModels: 1, lastChecked: "2026-01-01T00:00:00Z", unavailable: true, unavailableMessage: "Bound device has no Prime Agent driver." });
+assert.equal(seedInstructions.prohibited.includes("API key fields"), true);
+assert.equal(providerConfirmationCopy("remove", { activeThreads: 1, boundThreads: 1 }).requiresConfirmation, true);
+assert.match(providerConfirmationCopy("remove", { activeThreads: 1, boundThreads: 1 }).description, /credentials untouched/i);
+assert.equal(primeSetupPresentation({ installed: false }).headline, "Setup required");
+assert.equal(primeSetupPresentation({ installed: true, compatibility: "incompatible" }).headline, "Incompatible");
+assert.equal(primeSetupPresentation({ installed: true, stale: true }).headline, "Needs refresh");
+console.log("PA-M13 artifact checks passed");

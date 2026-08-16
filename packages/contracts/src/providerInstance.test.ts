@@ -7,13 +7,18 @@ import {
   ProviderInstanceConfigMap,
   ProviderInstanceId,
   ProviderInstanceRef,
+  bootstrapPrimeAgentInstance,
+  PRIME_AGENT_DEFAULT_INSTANCE_ID,
+  PrimeAgentSettings,
 } from "./providerInstance.ts";
 
 const decodeProviderDriverKind = Schema.decodeUnknownSync(ProviderDriverKind);
 const decodeProviderInstanceId = Schema.decodeUnknownSync(ProviderInstanceId);
 const decodeProviderInstanceRef = Schema.decodeUnknownSync(ProviderInstanceRef);
 const decodeProviderInstanceConfig = Schema.decodeUnknownSync(ProviderInstanceConfig);
+const encodeProviderInstanceConfig = Schema.encodeSync(ProviderInstanceConfig);
 const decodeProviderInstanceConfigMap = Schema.decodeUnknownSync(ProviderInstanceConfigMap);
+const decodePrimeAgentSettings = Schema.decodeUnknownSync(PrimeAgentSettings);
 
 describe("provider slug validation (shared by driver + instance ids)", () => {
   const cases = [
@@ -171,6 +176,65 @@ describe("ProviderInstanceConfig", () => {
     expect(() => decodeProviderInstanceConfig({ driver: "" })).toThrow();
     expect(() => decodeProviderInstanceConfig({ driver: "has spaces" })).toThrow();
   });
+
+  it("normalizes Prime config on decode and encode while leaving envelope metadata intact", () => {
+    const decoded = decodeProviderInstanceConfig({
+      driver: "prime-agent",
+      displayName: "  Prime Work  ",
+      environment: [{ name: "  PRIME_TOKEN  ", value: "secret" }],
+      config: {
+        binaryPath: "  /opt/prime-agent  ",
+        launchArgs: "--unsafe",
+        mode: "rpc",
+        workspace: "/tmp/wrong",
+        model: "wrong",
+        session: "wrong",
+      },
+    });
+
+    expect(decoded).toEqual({
+      driver: "prime-agent",
+      displayName: "Prime Work",
+      environment: [{ name: "PRIME_TOKEN", value: "secret", sensitive: false }],
+      config: { binaryPath: "/opt/prime-agent" },
+    });
+    expect(encodeProviderInstanceConfig(decoded)).toEqual(decoded);
+  });
+
+  it("rejects malformed Prime config instead of falling back to the opaque branch", () => {
+    expect(() =>
+      decodeProviderInstanceConfig({
+        driver: "prime-agent",
+        config: { binaryPath: "   ", launchArgs: "--must-not-pass" },
+      }),
+    ).toThrow();
+  });
+
+  it("round-trips an unknown-driver envelope config opaquely", () => {
+    const decoded = decodeProviderInstanceConfig({
+      driver: "future-driver",
+      displayName: "  Future  ",
+      config: { nested: { future: true }, list: [1, "two"] },
+      futureEnvelopeField: "dropped by the known envelope",
+    });
+    const encoded = encodeProviderInstanceConfig(decoded);
+    const decodedAgain = decodeProviderInstanceConfig(encoded);
+
+    expect(decodedAgain).toEqual({
+      driver: "future-driver",
+      displayName: "Future",
+      config: { nested: { future: true }, list: [1, "two"] },
+    });
+  });
+
+  it("drops unknown envelope fields while preserving unknown-driver config", () => {
+    const decoded = decodeProviderInstanceConfig({
+      driver: "fork-driver",
+      config: { futureChoice: "kept" },
+      futureEnvelopeField: "not materialized by this build",
+    });
+    expect(decoded).toEqual({ driver: "fork-driver", config: { futureChoice: "kept" } });
+  });
 });
 
 describe("ProviderInstanceConfigMap", () => {
@@ -204,5 +268,55 @@ describe("ProviderInstanceConfigMap", () => {
         "1codex": { driver: "codex" },
       }),
     ).toThrow();
+  });
+});
+
+describe("Prime Agent instance bootstrap and typed config", () => {
+  it("uses one stable, disabled default and is idempotent", () => {
+    const first = bootstrapPrimeAgentInstance({});
+    const second = bootstrapPrimeAgentInstance(first);
+    expect(first[PRIME_AGENT_DEFAULT_INSTANCE_ID]).toEqual({
+      driver: "prime-agent",
+      enabled: false,
+      config: { binaryPath: "prime-agent" },
+    });
+    expect(second).toBe(first);
+  });
+
+  it("does not replace an existing default envelope or its unknown fields", () => {
+    const instances = decodeProviderInstanceConfigMap({
+      "prime-agent": {
+        driver: "prime-agent",
+        displayName: "Prime Work",
+        config: { binaryPath: "/opt/prime-agent", futureChoice: "kept" },
+      },
+    });
+    expect(bootstrapPrimeAgentInstance(instances)).toBe(instances);
+  });
+
+  it("allows only the typed binary path, never free-form launch arguments", () => {
+    expect(decodePrimeAgentSettings({})).toEqual({ binaryPath: "prime-agent" });
+    expect(decodePrimeAgentSettings({ binaryPath: " /opt/prime-agent " })).toEqual({
+      binaryPath: "/opt/prime-agent",
+    });
+    // Unknown input is dropped by the standard settings decoder, so it can
+    // neither persist nor reach a launcher as an argument override.
+    expect(decodePrimeAgentSettings({ launchArgs: "--mode rpc" })).toEqual({
+      binaryPath: "prime-agent",
+    });
+    expect(() => decodePrimeAgentSettings({ binaryPath: "" })).toThrow();
+  });
+
+  it("drops Prime-owned launch overrides rather than materializing them", () => {
+    expect(
+      decodePrimeAgentSettings({
+        binaryPath: "prime-agent",
+        launchArgs: "--mode rpc",
+        mode: "interactive",
+        workspace: "/tmp/workspace",
+        model: "other-model",
+        session: "session-1",
+      }),
+    ).toEqual({ binaryPath: "prime-agent" });
   });
 });

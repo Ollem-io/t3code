@@ -108,8 +108,10 @@ function createProviderServiceHarness() {
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
+    executeRuntimeOperation: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
-    getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+    getCapabilities: () =>
+      Effect.succeed({ sessionModelSwitch: "in-session", conversationRollback: "supported" }),
     getInstanceInfo: (instanceId) => {
       const driverKind = ProviderDriverKind.make(String(instanceId));
       return Effect.succeed({
@@ -321,6 +323,162 @@ describe("ProviderRuntimeIngestion", () => {
       drain,
     };
   }
+
+  it("replaces authoritative action snapshots for independent reads and clears them on terminal events", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    // No persisted active running turn: ignore an otherwise valid snapshot.
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("evt-actions-before-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-actions"),
+      createdAt: now,
+      payload: { queuedCount: 1, steering: ["ignored"], followUps: [] },
+    });
+    await harness.drain();
+    const beforeTurn = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(beforeTurn?.session?.actionState).toBeUndefined();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-actions-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-actions"),
+      createdAt: now,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" && thread.session?.activeTurnId === "turn-actions",
+    );
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("evt-actions-first"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-actions"),
+      createdAt: now,
+      payload: { queuedCount: 2, steering: ["first steer"], followUps: ["first follow-up"] },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.actionState?.queuedCount === 2,
+    );
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("evt-actions-replacement"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-actions"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { queuedCount: 1, steering: ["replacement steer"], followUps: [] },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.actionState?.steering[0] === "replacement steer",
+    );
+    const firstRead = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    const secondRead = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(firstRead?.session?.actionState).toEqual({
+      queuedCount: 1,
+      steering: ["replacement steer"],
+      followUps: [],
+    });
+    expect(secondRead?.session?.actionState).toEqual(firstRead?.session?.actionState);
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-actions-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-actions"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: { state: "completed" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.actionState?.queuedCount === 0,
+    );
+    // A late provider snapshot must not repopulate the terminal turn's cleared state.
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("evt-actions-late-after-terminal"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-actions"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: { queuedCount: 1, steering: [], followUps: ["late"] },
+    });
+    await harness.drain();
+    const cleared = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(cleared?.session?.status).toBe("ready");
+    expect(cleared?.session?.actionState).toEqual({ queuedCount: 0, steering: [], followUps: [] });
+  });
+
+  it("fails closed for action snapshots with mismatched bound provider identity", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("identity-turn");
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("identity-start"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: now,
+    });
+    await waitForThread(harness.readModel, (entry) => entry.session?.activeTurnId === turnId);
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("wrong-driver"),
+      provider: ProviderDriverKind.make("prime-agent"),
+      threadId,
+      turnId,
+      createdAt: now,
+      payload: { queuedCount: 1, steering: ["reject"], followUps: [] },
+    });
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("wrong-instance"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("other"),
+      threadId,
+      turnId,
+      createdAt: now,
+      payload: { queuedCount: 1, steering: ["reject"], followUps: [] },
+    });
+    await harness.drain();
+    expect(
+      (await harness.readModel()).threads.find((entry) => entry.id === threadId)?.session
+        ?.actionState,
+    ).toBeUndefined();
+    // Unbound optional instance identity matches an omitted event identity.
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("matching-identity"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: now,
+      payload: { queuedCount: 1, steering: ["accept"], followUps: [] },
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.actionState?.steering[0] === "accept",
+    );
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
@@ -3558,5 +3716,66 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("runtime still processed");
+  });
+  it("fences action snapshots to their active turn and clears ready and aborted terminals", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const provider = ProviderDriverKind.make("prime-agent");
+    const turn = asTurnId("turn-current");
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("fence-start"),
+      provider,
+      threadId: asThreadId("thread-1"),
+      turnId: turn,
+      createdAt: now,
+    });
+    await waitForThread(harness.readModel, (x) => x.session?.activeTurnId === turn);
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("fence-stale"),
+      provider,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-old"),
+      createdAt: now,
+      payload: { queuedCount: 1, steering: ["stale"], followUps: [] },
+    });
+    await harness.drain();
+    expect((await harness.readModel()).threads[0]?.session?.actionState).toBeUndefined();
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("fence-current"),
+      provider,
+      threadId: asThreadId("thread-1"),
+      turnId: turn,
+      createdAt: now,
+      payload: { queuedCount: 1, steering: ["current"], followUps: [] },
+    });
+    await waitForThread(
+      harness.readModel,
+      (x) => x.session?.actionState?.steering[0] === "current",
+    );
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("fence-ready"),
+      provider,
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: { state: "ready" },
+    });
+    await waitForThread(harness.readModel, (x) => x.session?.actionState?.queuedCount === 0);
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("fence-abort"),
+      provider,
+      threadId: asThreadId("thread-1"),
+      turnId: turn,
+      createdAt: now,
+      payload: { reason: "stop" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (x) => x.session?.status === "ready" && x.session?.activeTurnId === null,
+    );
   });
 });

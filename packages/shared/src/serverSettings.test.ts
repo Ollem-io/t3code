@@ -118,6 +118,87 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("clears native identity when a model-only patch replaces a Prime selection", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("prime-agent"),
+        model: "anthropic/claude-sonnet",
+        nativeIdentity: { provider: "anthropic", modelId: "claude-sonnet" },
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        textGenerationModelSelection: { model: "custom/claude-sonnet" },
+      }).textGenerationModelSelection,
+    ).toEqual({ instanceId: "prime-agent", model: "custom/claude-sonnet" });
+  });
+
+  it("clears native identity when an instance-only patch replaces a selection", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("prime-agent"),
+        model: "anthropic/claude-sonnet",
+        nativeIdentity: { provider: "anthropic", modelId: "claude-sonnet" },
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        textGenerationModelSelection: { instanceId: ProviderInstanceId.make("prime-work") },
+      }).textGenerationModelSelection,
+    ).toEqual({ instanceId: "prime-work", model: "anthropic/claude-sonnet" });
+  });
+
+  it("uses an explicitly supplied native identity when replacing a selection", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("prime-agent"),
+        model: "anthropic/claude-sonnet",
+        nativeIdentity: { provider: "anthropic", modelId: "claude-sonnet" },
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        textGenerationModelSelection: {
+          model: "custom/claude-sonnet",
+          nativeIdentity: { provider: "custom", modelId: "claude-sonnet" },
+        },
+      }).textGenerationModelSelection,
+    ).toEqual({
+      instanceId: "prime-agent",
+      model: "custom/claude-sonnet",
+      nativeIdentity: { provider: "custom", modelId: "claude-sonnet" },
+    });
+  });
+
+  it("preserves native identity for options-only patches", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("prime-agent"),
+        model: "anthropic/claude-sonnet",
+        nativeIdentity: { provider: "anthropic", modelId: "claude-sonnet" },
+        options: [{ id: "effort", value: "medium" }],
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        textGenerationModelSelection: { options: [{ id: "effort", value: "high" }] },
+      }).textGenerationModelSelection,
+    ).toEqual({
+      instanceId: "prime-agent",
+      model: "anthropic/claude-sonnet",
+      nativeIdentity: { provider: "anthropic", modelId: "claude-sonnet" },
+      options: [{ id: "effort", value: "high" }],
+    });
+  });
+
   it("replaces text generation selection across providers without leaking stale options", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,

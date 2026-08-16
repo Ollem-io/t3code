@@ -1970,7 +1970,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   return {
     provider: PROVIDER,
     capabilities: {
-      sessionModelSwitch: "in-session",
+      sessionModelSwitch: "in-session", conversationRollback: "supported",
     },
     startSession,
     sendTurn,

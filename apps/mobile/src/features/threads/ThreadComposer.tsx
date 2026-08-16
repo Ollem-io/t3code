@@ -55,7 +55,12 @@ import {
 import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  getModelSelectionAvailability,
+  groupByProvider,
+} from "../../lib/modelOptions";
+import { primeHostPresentationForSelection } from "../../lib/primeHostStatus";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
@@ -72,6 +77,7 @@ import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerComm
 import { buildThreadSettingsMenu } from "./thread-settings-menu";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
+import { hasPrimeRuntimeActions, renderPrimeQueue, resolvePrimeSend, type PrimeActionMode } from "./primeQueue";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -111,7 +117,9 @@ export interface ThreadComposerProps {
   readonly onPickDraftImages: () => Promise<void>;
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
+  readonly onInterruptThread: () => void;
   readonly onStopThread: () => void;
+  readonly onRuntimeAction?: (mode: "steer" | "followUp", text: string) => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -286,11 +294,30 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const { onExpandedChange } = props;
 
   const [previewImageUri, setPreviewImageUri] = useState<string | null>(null);
+  const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
+  const primeRuntimeActive =
+    props.selectedThread.session?.status === "running" &&
+    hasPrimeRuntimeActions(props.selectedThread.session.providerName, props.selectedThread.session.runtimeCapabilities);
+  const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
+  // Keep the runtime-action decision visible before send is pressed: a disabled
+  // mode must explain how to proceed rather than silently dropping the draft.
+  const primeSendDecision = primeRuntimeActive
+    ? resolvePrimeSend(
+        props.selectedThread.session?.providerName,
+        primeActionMode,
+        props.selectedThread.session?.runtimeCapabilities,
+        props.draftAttachments.length,
+      )
+    : { ok: true };
   const hasContent = props.draftMessage.trim().length > 0 || props.draftAttachments.length > 0;
   // Opening and closing count as active so the composer stays expanded while
   // focus moves between its native editor and the settings modal.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
-  const canSend = hasContent;
+  const modelAvailability = getModelSelectionAvailability(
+    props.serverConfig,
+    props.selectedThread.modelSelection,
+  );
+  const canSend = hasContent && modelAvailability.available;
 
   // Notify the parent from the derived value, not focus events: the parent
   // sizes the feed inset from this, and blur-during-sheet would otherwise
@@ -343,14 +370,27 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   });
   const toolbarFadeOpaque = isDarkMode ? "rgba(0,0,0,0.95)" : "rgba(255,255,255,0.95)";
   const toolbarFadeTransparent = isDarkMode ? "rgba(0,0,0,0)" : "rgba(255,255,255,0)";
-  const selectedProviderStatus = useMemo(() => {
-    if (!props.serverConfig) return null;
-    return (
-      props.serverConfig.providers.find(
-        (p) => p.instanceId === props.selectedThread.modelSelection.instanceId,
-      ) ?? null
-    );
-  }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  const selectedProviderStatus = useMemo(
+    () =>
+      props.serverConfig?.providers.find(
+        (provider) => provider.instanceId === props.selectedThread.modelSelection.instanceId,
+      ) ?? null,
+    [props.serverConfig, props.selectedThread.modelSelection.instanceId],
+  );
+  const primeHostPresentation = useMemo(
+    () =>
+      primeHostPresentationForSelection(
+        props.serverConfig,
+        props.selectedThread.modelSelection.instanceId,
+        props.selectedThread.session?.status === "error" ? props.connectionError : null,
+      ),
+    [
+      props.connectionError,
+      props.serverConfig,
+      props.selectedThread.modelSelection.instanceId,
+      props.selectedThread.session?.status,
+    ],
+  );
 
   // ── Trigger detection ────────────────────────────────────
   const [composerSelection, setComposerSelection] = useState(() => ({
@@ -538,6 +578,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
     try {
+      if (primeRuntimeActive) {
+        const decision = resolvePrimeSend(
+          props.selectedThread.session?.providerName,
+          primeActionMode,
+          props.selectedThread.session?.runtimeCapabilities,
+          props.draftAttachments.length,
+        );
+        if (!decision.ok || !primeActionMode) return;
+        const success = await props.onRuntimeAction?.(primeActionMode, props.draftMessage.trim());
+        if (success) props.onChangeDraftMessage("");
+        return;
+      }
       await onSendMessage();
       // Sending a prompt starts agent work: arm the lock-screen card while the
       // app is foregrounded and the activity token can be registered. Armed
@@ -552,6 +604,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
   }, [
     onSendMessage,
+    primeActionMode,
+    primeRuntimeActive,
+    props.draftAttachments.length,
+    props.draftMessage,
+    props.onChangeDraftMessage,
+    props.onRuntimeAction,
+    props.selectedThread.session,
     props.environmentId,
     props.environmentLabel,
     props.selectedThread.id,
@@ -697,6 +756,28 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : 6),
       }}
     >
+      {!modelAvailability.available || primeHostPresentation ? (
+        <Pressable
+          accessibilityRole="button"
+          className="mx-1 mb-2 rounded-xl border border-border bg-card px-3 py-2 active:opacity-70"
+          onPress={
+            modelAvailability.available
+              ? props.onReconnectEnvironment
+              : settingsSheetPresentation.open
+          }
+        >
+          <Text className="text-sm font-t3-bold text-foreground">
+            {primeHostPresentation?.title ?? "Selected model is unavailable"}
+          </Text>
+          <Text className="text-xs text-foreground-muted">
+            {primeHostPresentation?.detail ??
+              "Open thread settings and reselect an available model before sending."}
+          </Text>
+          <Text className="pt-1 text-xs font-t3-bold text-primary">
+            {primeHostPresentation?.action ?? "Reselect model"}
+          </Text>
+        </Pressable>
+      ) : null}
       {/* The backdrop gradient lives on a plain View: Reanimated's Animated.View
           silently drops experimental_backgroundImage on Android, which left this
           strip fully transparent and the feed text legible through the composer. */}
@@ -830,7 +911,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           {!isExpanded ? (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
               {showStopAction ? (
-                <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
+                <ControlPill icon="stop.fill" variant="danger" onPress={props.onInterruptThread} />
               ) : (
                 <ControlPill
                   icon="arrow.up"
@@ -883,13 +964,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   />
                 )}
                 {showStopAction ? (
-                  <ComposerToolbarButton
-                    accessibilityLabel="Stop"
-                    icon="stop.fill"
-                    variant="danger"
-                    onPress={props.onStopThread}
-                    showChevron={false}
-                  />
+                  <>
+                    <ComposerToolbarButton
+                      accessibilityLabel="Interrupt turn"
+                      icon="pause.fill"
+                      variant="danger"
+                      onPress={props.onInterruptThread}
+                      showChevron={false}
+                    />
+                    <ComposerToolbarButton
+                      accessibilityLabel="Stop Prime session"
+                      icon="stop.fill"
+                      variant="danger"
+                      onPress={props.onStopThread}
+                      showChevron={false}
+                    />
+                  </>
                 ) : null}
               </ComposerToolbarScroller>
               <ComposerToolbarButton
@@ -904,6 +994,42 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Animated.View>
         ) : null}
 
+        {primeRuntimeActive ? (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            <Text className="text-xs font-t3-bold">Running runtime action</Text>
+            <View className="mt-2 flex-row gap-2">
+              <Pressable
+                accessibilityRole="button"
+                disabled={props.selectedThread.session?.runtimeCapabilities?.steer !== true}
+                onPress={() => setPrimeActionMode("steer")}
+                className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"
+              >
+                <Text>Steer now</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={props.selectedThread.session?.runtimeCapabilities?.followUps !== true}
+                onPress={() => setPrimeActionMode("followUp")}
+                className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"
+              >
+                <Text>Queue next</Text>
+              </Pressable>
+            </View>
+            {props.selectedThread.session?.runtimeCapabilities?.steer !== true ? <Text className="mt-1 text-xs text-foreground-muted">Steering is unavailable in this runtime.</Text> : null}
+            {props.selectedThread.session?.runtimeCapabilities?.followUps !== true ? <Text className="mt-1 text-xs text-foreground-muted">Queued follow-ups are unavailable in this runtime.</Text> : null}
+            {primeQueue.map((item, index) => (
+              <Text key={`${index}:${item}`} className="mt-1 text-xs text-foreground-muted">
+                {item}
+              </Text>
+            ))}
+            {!primeSendDecision.ok ? (
+              <Text className="mt-1 text-xs text-red-500">{primeSendDecision.reason}</Text>
+            ) : null}
+            <Text className="mt-1 text-xs text-foreground-muted">
+              Interrupt stops the turn; Stop ends the session. Queued actions cannot be cancelled.
+            </Text>
+          </View>
+        ) : null}
         {/* Queue count */}
         {props.queueCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>

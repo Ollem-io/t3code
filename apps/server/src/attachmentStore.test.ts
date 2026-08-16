@@ -6,6 +6,8 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  attachmentBelongsToThread,
+  attachmentRelativePath,
   createAttachmentId,
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPathById,
@@ -41,7 +43,7 @@ describe("attachmentStore", () => {
     if (!attachmentId) {
       return;
     }
-    expect(parseThreadSegmentFromAttachmentId(attachmentId)).toBe("thread-foo");
+    expect(parseThreadSegmentFromAttachmentId(attachmentId)).toMatch(/^thread-foo-[0-9a-f]{12}$/);
   });
 
   it("resolves attachment path by id using the extension that exists on disk", () => {
@@ -77,4 +79,30 @@ describe("attachmentStore", () => {
       NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
     }
   });
+  it("uses canonical MIME extension for images and safe filename extension for text", () => {
+    expect(attachmentRelativePath({
+      type: "image",
+      id: "thread-1-00000000-0000-4000-8000-000000000001",
+      name: "misleading.jpg",
+      mimeType: "image/png",
+      sizeBytes: 3,
+    })).toMatch(/\.png$/);
+    expect(attachmentRelativePath({
+      type: "text",
+      id: "thread-1-00000000-0000-4000-8000-000000000002",
+      name: "error.log",
+      mimeType: "text/plain",
+      sizeBytes: 4,
+    })).toMatch(/\.log$/);
+  });
+
+  it("keeps colliding readable thread slugs cryptographically distinct", () => {
+    const first = createAttachmentId("a/b");
+    const second = createAttachmentId("a-b");
+    expect(first).toBeTruthy(); expect(second).toBeTruthy();
+    expect(parseThreadSegmentFromAttachmentId(first!)).not.toBe(parseThreadSegmentFromAttachmentId(second!));
+    expect(attachmentBelongsToThread(first!, "a/b")).toBe(true);
+    expect(attachmentBelongsToThread(first!, "a-b")).toBe(false);
+  });
+
 });

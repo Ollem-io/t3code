@@ -13,6 +13,8 @@ import type {
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
+  ProviderRuntimeCapabilities,
+  ProviderRuntimeOperation,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -24,12 +26,16 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
+export type ProviderConversationRollbackMode = "supported" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
   /**
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+  readonly conversationRollback: ProviderConversationRollbackMode;
+  /** Optional additive extension flags. Absent preserves all existing adapters. */
+  readonly runtimeExtensions?: ProviderRuntimeCapabilities;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -67,6 +73,12 @@ export interface ProviderAdapterShape<TError> {
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+
+  /** Bounded, provider-neutral runtime action. Implementations must only expose
+   * operations for which both this capability and the exact native RPC shape exist. */
+  readonly executeRuntimeOperation?: (
+    operation: ProviderRuntimeOperation,
+  ) => Effect.Effect<void, TError>;
 
   /**
    * Respond to an interactive approval request.

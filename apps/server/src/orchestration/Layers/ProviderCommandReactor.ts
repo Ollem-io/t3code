@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  FollowUpId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -9,6 +10,7 @@ import {
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
+  type ProviderRuntimeOperation,
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
@@ -47,6 +49,15 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+const isFollowUpId = Schema.is(FollowUpId);
+const hasRuntimeActionCapabilities = (
+  capabilities:
+    | {
+        readonly steer?: boolean | undefined;
+        readonly followUps?: boolean | undefined;
+      }
+    | undefined,
+): boolean => capabilities?.steer === true || capabilities?.followUps === true;
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -56,6 +67,8 @@ type ProviderIntentEvent = Extract<
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
+      | "thread.steer-add-requested"
+      | "thread.follow-up-add-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -337,6 +350,10 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  // A turn start remains authoritative until its provider send settles. This
+  // closes the gap between session startup and the provider request itself,
+  // where concurrent client commands could otherwise both pass preconditions.
+  const inFlightTurnStartThreads = new Set<string>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -345,7 +362,8 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
-      | "provider.session.stop.failed";
+      | "provider.session.stop.failed"
+      | "provider.runtime-action.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -570,6 +588,12 @@ const make = Effect.gen(function* () {
           activeTurnId: null,
           lastError: null,
           updatedAt: createdAt,
+          // thread.session.set replaces the session wholesale; a live reused
+          // session never passes through bindSessionToThread again, so the
+          // negotiated runtime capabilities must be carried forward here.
+          ...(thread.session?.runtimeCapabilities
+            ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+            : {}),
         },
         createdAt,
       });
@@ -640,6 +664,7 @@ const make = Effect.gen(function* () {
             detail: `Provider session '${session.threadId}' started without a provider instance id.`,
           });
         }
+        const capabilities = yield* providerService.getCapabilities(session.providerInstanceId);
         yield* setThreadSession({
           threadId,
           session: {
@@ -655,6 +680,9 @@ const make = Effect.gen(function* () {
             activeTurnId: null,
             lastError: session.lastError ?? null,
             updatedAt: session.updatedAt,
+            ...(hasRuntimeActionCapabilities(capabilities.runtimeExtensions)
+              ? { runtimeCapabilities: capabilities.runtimeExtensions }
+              : {}),
           },
           createdAt,
         });
@@ -1081,6 +1109,20 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    const inFlightKey = String(event.payload.threadId);
+    if (inFlightTurnStartThreads.has(inFlightKey)) {
+      yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.start.failed",
+        summary: "Provider turn start rejected",
+        detail: `Thread '${event.payload.threadId}' already has an authoritative turn start in flight.`,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+      return;
+    }
+    inFlightTurnStartThreads.add(inFlightKey);
+
     const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
     if (!message || message.role !== "user") {
       yield* appendProviderFailureActivity({
@@ -1091,6 +1133,7 @@ const make = Effect.gen(function* () {
         turnId: null,
         createdAt: event.payload.createdAt,
       });
+      inFlightTurnStartThreads.delete(inFlightKey);
       return;
     }
 
@@ -1130,6 +1173,7 @@ const make = Effect.gen(function* () {
         return Effect.void;
       }
       const detail = formatFailureDetail(cause);
+      inFlightTurnStartThreads.delete(String(event.payload.threadId));
       return setThreadSessionErrorOnTurnStartFailure({
         threadId: event.payload.threadId,
         detail,
@@ -1176,12 +1220,100 @@ const make = Effect.gen(function* () {
     );
 
     if (Option.isNone(sendTurnRequest)) {
+      inFlightTurnStartThreads.delete(inFlightKey);
       return;
     }
 
     yield* providerService
       .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+      .pipe(
+        Effect.catchCause(recoverTurnStartFailure),
+        Effect.ensuring(Effect.sync(() => inFlightTurnStartThreads.delete(inFlightKey))),
+        Effect.forkScoped,
+      );
+  });
+
+  const processRuntimeActionRequested = Effect.fn("processRuntimeActionRequested")(function* (
+    event: Extract<
+      ProviderIntentEvent,
+      { type: "thread.steer-add-requested" | "thread.follow-up-add-requested" }
+    >,
+  ) {
+    // One-time consumption is deliberately before every provider or failure path.
+    // After restart the ephemeral value is absent, so the durable intent fails closed.
+    const commandId = event.commandId;
+    const text = commandId
+      ? yield* orchestrationEngine.takeRuntimeActionText(commandId)
+      : undefined;
+    if (text === undefined) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.runtime-action.failed",
+        summary: "Runtime action failed",
+        detail: "Runtime action expired before it could be delivered; please retry.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+    const thread = yield* resolveThread(event.payload.threadId);
+    // Do not optimistically project or log native text. Only the provider's next
+    // session_action_update snapshot may change the visible queue.
+    if (
+      !thread?.session ||
+      thread.session.status !== "running" ||
+      thread.session.activeTurnId === null
+    ) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.runtime-action.failed",
+        summary: "Runtime action failed",
+        detail: "No active running provider turn is bound to this thread.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+    const rawActionId =
+      event.type === "thread.steer-add-requested"
+        ? event.payload.steerId
+        : event.payload.followUpId;
+    if (!isFollowUpId(rawActionId)) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.runtime-action.failed",
+        summary: "Runtime action failed",
+        detail: "The runtime action identifier is invalid.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+    const operation: ProviderRuntimeOperation =
+      event.type === "thread.steer-add-requested"
+        ? {
+            type: "steer.add" as const,
+            commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`),
+            threadId: event.payload.threadId,
+            steerId: rawActionId,
+            text,
+          }
+        : {
+            type: "follow-up.add" as const,
+            commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`),
+            threadId: event.payload.threadId,
+            followUpId: rawActionId,
+            text,
+          };
+    yield* providerService.executeRuntimeOperation(operation).pipe(
+      Effect.catchCause(() =>
+        appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.runtime-action.failed",
+          summary: "Runtime action failed",
+          detail: "The provider did not accept this runtime action.",
+          turnId: null,
+          createdAt: event.payload.createdAt,
+        }),
+      ),
+    );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
@@ -1204,7 +1336,18 @@ const make = Effect.gen(function* () {
     }
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
+    // A failure intentionally preserves the current action snapshot.
     yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    yield* setThreadSession({
+      threadId: event.payload.threadId,
+      session: {
+        ...thread.session,
+        // Remain running until the terminal runtime event arrives.
+        actionState: { queuedCount: 0, steering: [], followUps: [] },
+        updatedAt: event.payload.createdAt,
+      },
+      createdAt: event.payload.createdAt,
+    });
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
@@ -1357,6 +1500,10 @@ const make = Effect.gen(function* () {
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
+      case "thread.steer-add-requested":
+      case "thread.follow-up-add-requested":
+        yield* processRuntimeActionRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1405,6 +1552,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
+        event.type === "thread.steer-add-requested" ||
+        event.type === "thread.follow-up-add-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"

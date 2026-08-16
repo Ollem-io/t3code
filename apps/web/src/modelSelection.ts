@@ -69,6 +69,23 @@ function readInstanceCustomModels(
   return legacyProviders[driverKind]?.customModels ?? [];
 }
 
+/** Returns whether an instance-scoped model is currently offered by the instance.
+ * Identity is the pair (instanceId, model), never the driver kind alone.
+ */
+export function isModelSelectionAvailable(
+  settings: UnifiedSettings,
+  providers: ReadonlyArray<ServerProvider>,
+  selection: Pick<ModelSelection, "instanceId" | "model">,
+): boolean {
+  const entry = deriveProviderInstanceEntries(providers).find(
+    (candidate) => candidate.instanceId === selection.instanceId,
+  );
+  if (!entry || !entry.enabled || !entry.isAvailable || entry.status !== "ready") return false;
+  const nativeModel = entry.models.find((model) => model.slug === selection.model);
+  if (nativeModel?.availability === "stale" || nativeModel?.availability === "unavailable") return false;
+  return getAppModelOptionsForInstance(settings, entry).some((option) => option.slug === selection.model);
+}
+
 export interface AppModelOption {
   slug: string;
   name: string;
@@ -275,6 +292,35 @@ export function getCustomModelOptionsByInstance(
     out.set(entry.instanceId, getAppModelOptionsForInstance(settings, entry));
   }
   return out;
+}
+
+export interface BoundModelSelectionState {
+  selection: ModelSelection;
+  isAvailable: boolean;
+  sendDisabledReason: string | null;
+}
+
+/** Resolve a selection for dispatch without silently changing an explicit thread binding. */
+export function resolveBoundModelSelectionState(
+  settings: UnifiedSettings,
+  providers: ReadonlyArray<ServerProvider>,
+  selection: ModelSelection | null | undefined,
+): BoundModelSelectionState {
+  if (!selection) {
+    return {
+      selection: resolveAppModelSelectionState(settings, providers),
+      isAvailable: true,
+      sendDisabledReason: null,
+    };
+  }
+  const available = isModelSelectionAvailable(settings, providers, selection);
+  if (available) return { selection, isAvailable: true, sendDisabledReason: null };
+  return {
+    // Keep the exact instance/model pair visible and bound to this thread.
+    selection,
+    isAvailable: false,
+    sendDisabledReason: `The selected model "${selection.model}" is no longer available on this provider. Open the model picker and re-select an available provider/model to continue.`,
+  };
 }
 
 export function resolveAppModelSelectionState(

@@ -176,7 +176,7 @@ import {
   nextProjectScriptId,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
-import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
+import { newDraftId, newMessageId, newThreadId, randomUUID } from "~/lib/utils";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
@@ -187,7 +187,10 @@ import {
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import {
+  resolveAppModelSelectionForInstance,
+  resolveBoundModelSelectionState,
+} from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { preventRepeatedTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
@@ -1226,6 +1229,8 @@ function ChatViewContent(props: ChatViewProps) {
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const steerThread = useAtomCommand(threadEnvironment.steer, { reportFailure: false });
+  const addThreadFollowUp = useAtomCommand(threadEnvironment.addFollowUp, { reportFailure: false });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -4824,8 +4829,8 @@ function ChatViewContent(props: ChatViewProps) {
       }
       const confirmed = await localApi.dialogs.confirm(
         [
-          `Revert this thread to checkpoint ${turnCount}?`,
-          "This will discard newer messages and turn diffs in this thread.",
+          `Restore workspace checkpoint ${turnCount}?`,
+          "This restores T3-owned workspace files. Thread messages and provider conversation history are retained unless the provider explicitly supports rewind.",
           "This action cannot be undone.",
         ].join("\n"),
         { variant: "destructive" },
@@ -5334,6 +5339,43 @@ function ChatViewContent(props: ChatViewProps) {
     }
   };
 
+  const onRuntimeAction = useCallback(
+    async (mode: "steer" | "followUp", text: string): Promise<boolean> => {
+      if (!activeThread || !text.trim()) return false;
+      // Prefixed to satisfy the FollowUpId brand's leading-letter pattern.
+      const id = `${mode}-${randomUUID()}`;
+      const result =
+        mode === "steer"
+          ? await steerThread({
+              environmentId,
+              input: { threadId: activeThread.id, steerId: id, text: text.trim() },
+            })
+          : await addThreadFollowUp({
+              environmentId,
+              input: { threadId: activeThread.id, followUpId: id, text: text.trim() },
+            });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Runtime action failed.",
+        );
+        return false;
+      }
+      clearComposerDraftContent(composerDraftTarget);
+      return true;
+    },
+    [
+      activeThread,
+      addThreadFollowUp,
+      clearComposerDraftContent,
+      composerDraftTarget,
+      environmentId,
+      setThreadError,
+      steerThread,
+    ],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -5823,6 +5865,12 @@ function ChatViewContent(props: ChatViewProps) {
       if (!activeThread) {
         return null;
       }
+      const targetProvider = providerStatuses.find(
+        (snapshot) => snapshot.instanceId === instanceId,
+      );
+      if (!targetProvider) {
+        return "This provider is no longer available. Open the model picker and re-select an available provider/model.";
+      }
       const reason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
         hasStartedSession: activeThread.session !== null,
@@ -5842,7 +5890,16 @@ function ChatViewContent(props: ChatViewProps) {
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
       const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-      const resolvedDriverKind = entry?.driver ?? null;
+      if (!entry) {
+        toastManager.add({
+          type: "warning",
+          title: "Provider unavailable",
+          description: "Open the model picker and re-select an available provider/model.",
+        });
+        scheduleComposerFocus();
+        return;
+      }
+      const resolvedDriverKind = entry.driver;
       if (
         lockedProvider !== null &&
         resolvedDriverKind !== null &&
@@ -6349,7 +6406,17 @@ function ChatViewContent(props: ChatViewProps) {
                             phase={phase}
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
-                            sendDisabledReason={threadDetailLoading ? "Messages loading" : null}
+                            sendDisabledReason={
+                              threadDetailLoading
+                                ? "Messages loading"
+                                : activeThread?.modelSelection
+                                  ? resolveBoundModelSelectionState(
+                                      settings,
+                                      providerStatuses as ServerProvider[],
+                                      activeThread.modelSelection,
+                                    ).sendDisabledReason
+                                  : null
+                            }
                             isPreparingWorktree={isPreparingWorktree}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}
@@ -6383,6 +6450,7 @@ function ChatViewContent(props: ChatViewProps) {
                             composerElementContextsRef={composerElementContextsRef}
                             onSend={onSend}
                             onInterrupt={onInterrupt}
+                            onRuntimeAction={onRuntimeAction}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}
                             onSelectActivePendingUserInputOption={

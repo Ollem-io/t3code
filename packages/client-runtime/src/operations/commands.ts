@@ -47,6 +47,8 @@ export type SetThreadRuntimeModeInput = CommandInput<"thread.runtime-mode.set">;
 export type SetThreadInteractionModeInput = CommandInput<"thread.interaction-mode.set">;
 export type StartThreadTurnInput = CommandInput<"thread.turn.start">;
 export type InterruptThreadTurnInput = CommandInput<"thread.turn.interrupt">;
+export type SteerThreadInput = CommandInput<"thread.steer.add">;
+export type AddThreadFollowUpInput = CommandInput<"thread.follow-up.add">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
@@ -273,6 +275,15 @@ export const startThreadTurn: (input: StartThreadTurnInput) => CommandEffect = E
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });
+});
+
+export const steerThread: (input: SteerThreadInput) => CommandEffect = Effect.fn("EnvironmentCommands.steerThread")(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({ ...input, type: "thread.steer.add", commandId: metadata.commandId, createdAt: metadata.createdAt });
+});
+export const addThreadFollowUp: (input: AddThreadFollowUpInput) => CommandEffect = Effect.fn("EnvironmentCommands.addThreadFollowUp")(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({ ...input, type: "thread.follow-up.add", commandId: metadata.commandId, createdAt: metadata.createdAt });
 });
 
 export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEffect = Effect.fn(

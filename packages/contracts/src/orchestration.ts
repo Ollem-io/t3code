@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Struct from "effect/Struct";
-import { ProviderOptionSelections } from "./model.ts";
+import { NativeModelIdentity, ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
   ApprovalRequestId,
@@ -65,7 +65,10 @@ export type ProviderSandboxMode = typeof ProviderSandboxMode.Type;
  */
 const ModelSelectionWire = Schema.Struct({
   instanceId: ProviderInstanceId,
+  // Readable legacy slug. Prime additionally carries nativeIdentity so an
+  // upstream provider/model pair is never reconstructed by splitting it.
   model: TrimmedNonEmptyString,
+  nativeIdentity: Schema.optionalKey(NativeModelIdentity),
   options: Schema.optionalKey(ProviderOptionSelections),
 });
 
@@ -77,6 +80,7 @@ const ModelSelectionSource = Schema.Struct({
   provider: Schema.optional(Schema.Unknown),
   instanceId: Schema.optional(Schema.Unknown),
   model: Schema.Unknown,
+  nativeIdentity: Schema.optional(Schema.Unknown),
   options: Schema.optional(Schema.Unknown),
 });
 
@@ -100,6 +104,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           instanceId: instanceIdSource,
           model: raw.model,
         };
+        if (raw.nativeIdentity !== undefined) base.nativeIdentity = raw.nativeIdentity;
         if (raw.options !== undefined) base.options = raw.options;
         return Effect.succeed(base as typeof ModelSelectionWire.Encoded);
       },
@@ -108,6 +113,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           model: value.model,
           instanceId: value.instanceId,
         };
+        if (value.nativeIdentity !== undefined) base.nativeIdentity = value.nativeIdentity;
         if (value.options !== undefined) base.options = value.options;
         return Effect.succeed(base as typeof ModelSelectionSource.Encoded);
       },
@@ -164,6 +170,20 @@ export const ChatImageAttachment = Schema.Struct({
   sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)),
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
+export const PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES = 1 * 1024 * 1024;
+export const ChatTextAttachment = Schema.Struct({
+  type: Schema.Literal("text"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(100),
+    Schema.isPattern(/^(?:text\/|application\/(?:json|xml|javascript|x-yaml)$)/i),
+  ),
+  sizeBytes: NonNegativeInt.check(
+    Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES),
+  ),
+});
+export type ChatTextAttachment = typeof ChatTextAttachment.Type;
 
 const UploadChatImageAttachment = Schema.Struct({
   type: Schema.Literal("image"),
@@ -175,10 +195,25 @@ const UploadChatImageAttachment = Schema.Struct({
   ),
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
+const UploadChatTextAttachment = Schema.Struct({
+  type: Schema.Literal("text"),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(100),
+    Schema.isPattern(/^(?:text\/|application\/(?:json|xml|javascript|x-yaml)$)/i),
+  ),
+  sizeBytes: NonNegativeInt.check(
+    Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES),
+  ),
+  dataUrl: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(Math.ceil(PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES * 1.5)),
+  ),
+});
+export type UploadChatTextAttachment = typeof UploadChatTextAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment]);
+export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatTextAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
-const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+const UploadChatAttachment = Schema.Union([UploadChatImageAttachment, UploadChatTextAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -271,6 +306,19 @@ const SourceProposedPlanReference = Schema.Struct({
   planId: OrchestrationProposedPlanId,
 });
 
+export const OrchestrationSessionActionState = Schema.Struct({
+  queuedCount: NonNegativeInt.check(Schema.isLessThanOrEqualTo(32)),
+  steering: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(Schema.isMaxLength(32)),
+  followUps: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(Schema.isMaxLength(32)),
+  active: Schema.optional(Schema.Struct({
+    kind: Schema.Literals(["turn", "session_command"]),
+    phase: Schema.Literals(["preparing", "committing", "running"]),
+    label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))),
+  })),
+});
+export type OrchestrationSessionActionState = typeof OrchestrationSessionActionState.Type;
+export const EMPTY_ORCHESTRATION_SESSION_ACTION_STATE: OrchestrationSessionActionState = Object.freeze({ queuedCount: 0, steering: Object.freeze([]), followUps: Object.freeze([]) });
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -291,6 +339,9 @@ export const OrchestrationSession = Schema.Struct({
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
+  /** Native authoritative action snapshot; absent means this runtime has not supplied one. */
+  actionState: Schema.optional(OrchestrationSessionActionState),
+  runtimeCapabilities: Schema.optional(Schema.Struct({ steer: Schema.optional(Schema.Boolean), followUps: Schema.optional(Schema.Boolean), followUpCancel: Schema.optional(Schema.Boolean) })),
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
 
@@ -848,6 +899,14 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadSteerAddCommand = Schema.Struct({
+  type: Schema.Literal("thread.steer.add"), commandId: CommandId, threadId: ThreadId,
+  steerId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime,
+});
+const ThreadFollowUpAddCommand = Schema.Struct({
+  type: Schema.Literal("thread.follow-up.add"), commandId: CommandId, threadId: ThreadId,
+  followUpId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime,
+});
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -914,6 +973,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadSteerAddCommand,
+  ThreadFollowUpAddCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -942,6 +1003,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ThreadSteerAddCommand,
+  ThreadFollowUpAddCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1062,6 +1125,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.message-sent",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
+  "thread.steer-add-requested",
+  "thread.follow-up-add-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1249,6 +1314,9 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadSteerAddRequestedPayload = Schema.Struct({ threadId: ThreadId, steerId: TrimmedNonEmptyString, createdAt: IsoDateTime });
+export const ThreadFollowUpAddRequestedPayload = Schema.Struct({ threadId: ThreadId, followUpId: TrimmedNonEmptyString, createdAt: IsoDateTime });
+
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
@@ -1427,6 +1495,8 @@ export const OrchestrationEvent = Schema.Union([
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
   }),
+  Schema.Struct({ ...EventBaseFields, type: Schema.Literal("thread.steer-add-requested"), payload: ThreadSteerAddRequestedPayload }),
+  Schema.Struct({ ...EventBaseFields, type: Schema.Literal("thread.follow-up-add-requested"), payload: ThreadFollowUpAddRequestedPayload }),
   Schema.Struct({
     ...EventBaseFields,
     type: Schema.Literal("thread.approval-response-requested"),

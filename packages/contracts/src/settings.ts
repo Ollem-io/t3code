@@ -10,7 +10,15 @@ import {
   ProviderOptionSelections,
 } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
-import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  bootstrapPrimeAgentInstance,
+  ProviderInstanceConfig,
+  ProviderInstanceId,
+} from "./providerInstance.ts";
+
+// Re-export the Prime instance schema from the settings surface. The envelope
+// remains provider-neutral; only this built-in config is typed.
+export { DEFAULT_PRIME_AGENT_SETTINGS, PrimeAgentSettings } from "./providerInstance.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -471,6 +479,18 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
+/**
+ * Adds the stable, disabled Prime default to settings written before provider
+ * instances existed. The function is pure and idempotent so persistence may
+ * safely retry it during startup without replacing an existing instance.
+ */
+export function bootstrapPrimeAgentServerSettings(settings: ServerSettings): ServerSettings {
+  const providerInstances = bootstrapPrimeAgentInstance(settings.providerInstances);
+  return providerInstances === settings.providerInstances
+    ? settings
+    : { ...settings, providerInstances };
+}
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -663,6 +683,9 @@ export const DEFAULT_UNIFIED_SETTINGS: UnifiedSettings = {
 const ModelSelectionPatch = Schema.Struct({
   instanceId: Schema.optionalKey(ProviderInstanceId),
   model: Schema.optionalKey(TrimmedNonEmptyString),
+  nativeIdentity: Schema.optionalKey(
+    Schema.Struct({ provider: TrimmedNonEmptyString, modelId: TrimmedNonEmptyString }),
+  ),
   options: Schema.optionalKey(ProviderOptionSelections),
 });
 

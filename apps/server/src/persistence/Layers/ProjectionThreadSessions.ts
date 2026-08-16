@@ -2,6 +2,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 
@@ -12,6 +15,17 @@ import {
   DeleteProjectionThreadSessionInput,
   GetProjectionThreadSessionInput,
 } from "../Services/ProjectionThreadSessions.ts";
+
+const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(
+  Struct.assign({
+    actionState: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.actionState)),
+    ),
+    runtimeCapabilities: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.runtimeCapabilities)),
+    ),
+  }),
+);
 
 const makeProjectionThreadSessionRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -28,7 +42,9 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           runtime_mode,
           active_turn_id,
           last_error,
-          updated_at
+          updated_at,
+          action_state_json,
+          runtime_capabilities_json
         )
         VALUES (
           ${row.threadId},
@@ -38,7 +54,9 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.runtimeMode},
           ${row.activeTurnId},
           ${row.lastError},
-          ${row.updatedAt}
+          ${row.updatedAt},
+          ${row.actionState === undefined ? null : JSON.stringify(row.actionState)},
+          ${row.runtimeCapabilities === undefined ? null : JSON.stringify(row.runtimeCapabilities)}
         )
         ON CONFLICT (thread_id)
         DO UPDATE SET
@@ -48,13 +66,15 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           runtime_mode = excluded.runtime_mode,
           active_turn_id = excluded.active_turn_id,
           last_error = excluded.last_error,
-          updated_at = excluded.updated_at
+          updated_at = excluded.updated_at,
+          action_state_json = excluded.action_state_json,
+          runtime_capabilities_json = excluded.runtime_capabilities_json
       `,
   });
 
   const getProjectionThreadSessionRow = SqlSchema.findOneOption({
     Request: GetProjectionThreadSessionInput,
-    Result: ProjectionThreadSession,
+    Result: ProjectionThreadSessionDbRow,
     execute: ({ threadId }) =>
       sql`
         SELECT
@@ -65,7 +85,9 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
-          updated_at AS "updatedAt"
+          updated_at AS "updatedAt",
+          action_state_json AS "actionState",
+          runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
       `,
@@ -87,6 +109,15 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
 
   const getByThreadId: ProjectionThreadSessionRepositoryShape["getByThreadId"] = (input) =>
     getProjectionThreadSessionRow(input).pipe(
+      // SQL NULL decodes to null; the repository contract models absence as
+      // an omitted optional field.
+      Effect.map(
+        Option.map(({ actionState, runtimeCapabilities, ...rest }) => ({
+          ...rest,
+          ...(actionState != null ? { actionState } : {}),
+          ...(runtimeCapabilities != null ? { runtimeCapabilities } : {}),
+        })),
+      ),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadSessionRepository.getByThreadId:query"),
       ),
