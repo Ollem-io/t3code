@@ -53,8 +53,9 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-A03    | Context usage, compaction, retry, bounded status UI                | Done — `f8218111` |
 | PA-A04    | Prime commands, skills, prompt templates                           | Done — `44c23c2c` |
 | PA-A05    | Rich extension UI and transient status integration                 | Done — `251b823c` |
+| PA-A06    | Subagents, observation, Agents-surface controls                    | Done — `2e6c1d3e` |
 
-Completed total: **22 of 31 milestones** (PA-A02.1 added to the original 30).
+Completed total: **23 of 31 milestones** (PA-A02.1 added to the original 30).
 
 Note on "merged to main": the run's milestone merges advance the run `main`
 lineage descending from public `origin/main` commit `9e201941a`. By maintainer
@@ -238,12 +239,19 @@ Delivered: bounded per-session extension notice board (migration 044, 8-entry ca
 
 Accepted non-blockers to carry forward: answer-vs-timeout race can double-send an `extension_ui_response` for one correlation id; notice-board updates are deduplicated but not rate-limited; the client liveness gate (`running`/`ready`) is narrower than the server's (anything but `stopped`), hiding boards published between turns; visual evidence still pending UI-launch permission.
 
+## PA-A06 (merged)
+
+**PA-A06 — Subagents, observation, Agents-surface controls** was dual-approved on exact SHA `a5d1c0fc` (two workflow rounds: round 1 rejected by the black-box product review because the promised "versions without observation show disabled explanation" was unreachable — both clients hid the section entirely when `tasks` was absent while the shipped doc claimed otherwise — repaired; final round dual APPROVE with zero blockers, Luna-verified watch passes) and merged to `main` at `2e6c1d3e` on 2026-08-16.
+
+Delivered: runtime-owned subagent roster (migration 045, 16-row bound, clamped strings), reversible observe/unobserve with double-enforced roster-as-authorization, subagent output kept out of the transcript, web Agents-panel section and mobile composer block with truthful capability-absent explanations, no per-agent cancel mapped onto turn-wide abort; runnable artifact `packages/contracts/fixtures/pa-a06-prime-agents-transcript.mjs`.
+
+Accepted non-blocker to carry forward: the roster title fallback can exceed the 120-char contract cap for 121–128-char task ids with no title, causing roster updates for that thread to roll back until the agent disappears (one-line clamp fix); visual evidence still pending UI-launch permission.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A06    | Subagents, observation, Agents-surface controls                  | Next                            |
-| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Pending                         |
+| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Next                            |
 | PA-A08    | Session naming/forking and Alpha integration/docs                | Pending                         |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                         |
 | PA-B03    | Server-side single-writer arbitration and conflict receipts      | Pending after B01; precedes B02 |
