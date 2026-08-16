@@ -1219,7 +1219,11 @@ export const makePrimeAdapter = (
               // create truthfully. If even the stop fails, the handle is
               // adopted anyway so residency stays disclosed and cleanup can
               // still prove it by raw id.
-              if (created.heartbeatId !== undefined && !isPrimeRenderableId(created.heartbeatId)) {
+              if (
+                created.heartbeatId !== undefined &&
+                isPrimeOwnableHeartbeatId(created.heartbeatId) &&
+                !isPrimeRenderableId(created.heartbeatId)
+              ) {
                 try {
                   await expectSuccess(context, {
                     type: "heartbeat_stop",
@@ -1227,8 +1231,7 @@ export const makePrimeAdapter = (
                   });
                   await heartbeatSnapshot(context, { type: "heartbeat_get" });
                 } catch {
-                  if (isPrimeOwnableHeartbeatId(created.heartbeatId))
-                    context.ownedHeartbeats.add(created.heartbeatId);
+                  context.ownedHeartbeats.add(created.heartbeatId);
                 }
                 await persistHeartbeatOwnership(context);
                 await publishGoals(context);
