@@ -2,6 +2,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import * as Schema from "effect/Schema";
 
 /**
  * Source-derived PA-A04 command/prompt/skill discovery transcript.
@@ -28,6 +29,7 @@ const { normalizePrimeCommands, sanitizePrimeCommandLocation, PRIME_GET_COMMANDS
 const { resolvePrimeCommandInvocation } = await load(
   "apps/web/src/components/chat/primeCommands.ts",
 );
+const { ClientOrchestrationCommand } = await load("packages/contracts/src/orchestration.ts");
 
 /**
  * Creates an isolated fixture tree under a disposable temp directory. Nothing is
@@ -220,13 +222,54 @@ export function verifyReachable() {
   link("apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts", [
     'command_catalog_json AS "commandCatalog"',
   ]);
-  link("apps/web/src/components/CommandPalette.tsx", ["buildPrimeCommandItems"]);
-  link("apps/mobile/src/features/threads/ThreadComposer.tsx", ["resolvePrimeCommandInvocation"]);
+  link("apps/web/src/components/CommandPalette.tsx", [
+    "buildPrimeCommandItems",
+    "threadEnvironment.refreshCommands",
+  ]);
+  link("apps/mobile/src/features/threads/ThreadComposer.tsx", [
+    "resolvePrimeCommandInvocation",
+    "onRefreshCommands",
+  ]);
+  link("apps/mobile/src/features/threads/ThreadRouteScreen.tsx", [
+    "threadEnvironment.refreshCommands",
+  ]);
+  link("apps/server/src/orchestration/decider.ts", ['"thread.command-refresh-requested"']);
+  link("apps/server/src/orchestration/Layers/ProviderCommandReactor.ts", [
+    "processCommandRefreshRequested",
+    '"command.discover"',
+  ]);
+  return true;
+}
+
+/**
+ * Refresh must be reachable from a client, not just implemented in the adapter:
+ * the wire contract is executed here, so a catalog that went stale on the host
+ * can actually be re-read and a deleted command can actually disappear.
+ */
+export function verifyRefreshReachable() {
+  const decode = Schema.decodeUnknownSync(ClientOrchestrationCommand);
+  const command = decode({
+    type: "thread.commands.refresh",
+    commandId: "cmd-refresh-1",
+    threadId: "thread-1",
+    requestId: "commands-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  if (command.type !== "thread.commands.refresh")
+    throw new Error("the refresh command is not carried by the client wire contract");
+  // The failure path is only real if the resolver is asked about the newest
+  // catalog rather than the list a surface rendered from.
+  const rendered = [{ name: "review", kind: "prompt", source: "project" }];
+  const afterRefresh = { commands: [] };
+  const decision = invoke(afterRefresh, rendered[0].name);
+  if (decision.ok || !decision.reason.includes("no longer offered"))
+    throw new Error("a command removed by a refresh did not fail actionably");
   return true;
 }
 
 export function verifyTranscript() {
   verifyReachable();
+  verifyRefreshReachable();
   verifyDerivedFromSource();
   const catalog = verifyDiscovery();
   verifyInvocation(catalog);

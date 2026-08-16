@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   PRIME_COMMAND_ORIGIN,
+  appendPrimeCommandToDraft,
   hasPrimeCommandSurface,
   primeCommandOriginLabel,
   primeCommandPrompt,
@@ -51,6 +52,29 @@ describe("prime command sheet", () => {
       reason: "/gone is no longer offered by this runtime.",
     });
     expect(resolvePrimeCommandInvocation(undefined, "gone").ok).toBe(false);
+  });
+
+  // PA-A04 round-3 blocker regression: the sheet used to resolve against the
+  // array its rows were rendered from, which can never miss. It now reads the
+  // live catalog ref, so a command dropped by a refresh fails with a reason.
+  it("resolves against the newest catalog rather than the rendered rows", () => {
+    const rendered = commands;
+    const live = { current: [commands[1]!] as ReadonlyArray<PrimeCommandEntry> };
+    expect(rendered.map((entry) => entry.name)).toContain("review");
+    expect(resolvePrimeCommandInvocation(live.current, "review")).toEqual({
+      ok: false,
+      reason: "/review is no longer offered by this runtime.",
+    });
+    expect(resolvePrimeCommandInvocation(live.current, "deploy").ok).toBe(true);
+  });
+
+  // PA-A04 round-3: picking a command used to replace the whole draft.
+  it("appends the invocation to the draft the user already typed", () => {
+    expect(appendPrimeCommandToDraft("please be careful with", "/review")).toBe(
+      "please be careful with /review",
+    );
+    expect(appendPrimeCommandToDraft("", "/review")).toBe("/review");
+    expect(appendPrimeCommandToDraft("draft   ", "/review")).toBe("draft /review");
   });
 
   it("never carries a host path, because the catalog cannot express one", () => {

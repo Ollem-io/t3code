@@ -173,6 +173,12 @@ export function buildPrimeCommandItems(input: {
   providerName: string | null | undefined;
   capabilities: PrimeCommandCapabilities | undefined;
   commands: ReadonlyArray<PrimeCommandEntry> | undefined;
+  /**
+   * The newest catalog at click time. Resolving against the rendered array
+   * could never fail, so a command deleted on the host would be inserted as
+   * prose; this reads live session state instead.
+   */
+  getCommands?: () => ReadonlyArray<PrimeCommandEntry> | undefined;
   icon: ReactNode;
   insert: (prompt: string) => void;
   onUnavailable?: (reason: string) => void;
@@ -196,7 +202,10 @@ export function buildPrimeCommandItems(input: {
         : `${primeCommandOriginLabel(entry)} — ${entry.description}`,
     icon: input.icon,
     run: async () => {
-      const decision = resolvePrimeCommandInvocation(input.commands, entry.name);
+      const decision = resolvePrimeCommandInvocation(
+        input.getCommands === undefined ? input.commands : input.getCommands(),
+        entry.name,
+      );
       if (!decision.ok) {
         input.onUnavailable?.(decision.reason);
         return;
@@ -337,19 +346,24 @@ export function filterCommandPaletteGroups(input: {
   threadSearchItems: ReadonlyArray<CommandPaletteActionItem>;
 }): CommandPaletteGroup[] {
   const isActionsFilter = input.query.startsWith(">");
+  // The ">" prefix means "actions only". Prime commands are actions too, just
+  // runtime-supplied ones, so they stay visible instead of vanishing for anyone
+  // who habitually prefixes their search.
+  const isActionsGroup = (group: CommandPaletteGroup) =>
+    group.value === "actions" || group.value === "prime-commands";
   const searchQuery = isActionsFilter ? input.query.slice(1) : input.query;
   const normalizedQuery = normalizeSearchText(searchQuery);
 
   if (normalizedQuery.length === 0) {
     if (isActionsFilter) {
-      return input.activeGroups.filter((group) => group.value === "actions");
+      return input.activeGroups.filter(isActionsGroup);
     }
     return [...input.activeGroups];
   }
 
   let baseGroups = [...input.activeGroups];
   if (isActionsFilter) {
-    baseGroups = baseGroups.filter((group) => group.value === "actions");
+    baseGroups = baseGroups.filter(isActionsGroup);
   } else if (!input.isInSubmenu) {
     baseGroups = baseGroups.filter((group) => group.value !== "recent-threads");
   }

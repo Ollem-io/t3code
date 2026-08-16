@@ -75,6 +75,43 @@ describe("prime command discovery", () => {
     expect(serialized).not.toContain("C:\\");
   });
 
+  // PA-A04 round-3: a single-segment absolute path used to survive because the
+  // pattern demanded a second separator.
+  it("scrubs single-segment absolute paths without eating command mentions", () => {
+    const described = Object.fromEntries(
+      normalizePrimeCommands({
+        commands: [
+          { name: "rootleak", description: "Reads /etc then stops" },
+          { name: "homeleak", description: "home ~/private" },
+          { name: "userleak", description: "Under /Users first" },
+          { name: "winleak", description: "root C:\\Secrets" },
+          { name: "mention", description: "Run /review, then /deploy-now" },
+        ],
+      }).commands.map((entry) => [entry.name, entry.description]),
+    );
+    expect(described.rootleak).toBe("Reads etc then stops");
+    expect(described.homeleak).toBe("home private");
+    expect(described.userleak).toBe("Under Users first");
+    expect(described.winleak).toBe("root Secrets");
+    // A slash-command mention is not a path and must read exactly as authored.
+    expect(described.mention).toBe("Run /review, then /deploy-now");
+  });
+
+  // PA-A04 round-3: `logout` was denied while `log-out` was published.
+  it("denies unsafe names regardless of separator spelling", () => {
+    const catalog = normalizePrimeCommands({
+      commands: [
+        { name: "log-out" },
+        { name: "log_out" },
+        { name: "sign-in" },
+        { name: "new-session" },
+        { name: "shut-down" },
+        { name: "review" },
+      ],
+    });
+    expect(catalog.commands.map((entry) => entry.name)).toEqual(["review"]);
+  });
+
   it("drops TUI-only entries so they can never be offered", () => {
     const catalog = normalizePrimeCommands({
       commands: [

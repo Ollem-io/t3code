@@ -1007,6 +1007,14 @@ const ThreadUsageRefreshCommand = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
+/** Explicit, bounded re-read of the runtime's command catalog; never polled. */
+const ThreadCommandRefreshCommand = Schema.Struct({
+  type: Schema.Literal("thread.commands.refresh"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -1077,6 +1085,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadFollowUpAddCommand,
   ThreadCompactionRequestCommand,
   ThreadUsageRefreshCommand,
+  ThreadCommandRefreshCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1109,6 +1118,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadFollowUpAddCommand,
   ThreadCompactionRequestCommand,
   ThreadUsageRefreshCommand,
+  ThreadCommandRefreshCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1233,6 +1243,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.follow-up-add-requested",
   "thread.compaction-requested",
   "thread.usage-refresh-requested",
+  "thread.command-refresh-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1440,6 +1451,11 @@ export const ThreadUsageRefreshRequestedPayload = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
+export const ThreadCommandRefreshRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
 
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -1638,6 +1654,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.usage-refresh-requested"),
     payload: ThreadUsageRefreshRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.command-refresh-requested"),
+    payload: ThreadCommandRefreshRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

@@ -80,9 +80,20 @@ export function searchPrimeCommands(
 }
 
 /**
+ * Appends an invocation to whatever the user already typed. Picking a command
+ * is an insertion, never a replacement: a draft in progress is the user's work
+ * and no picker may discard it.
+ */
+export function appendPrimeCommandToDraft(draft: string, prompt: string): string {
+  const base = draft.replace(/\s+$/u, "");
+  return base.length === 0 ? prompt : `${base} ${prompt}`;
+}
+
+/**
  * Resolves an invocation against the current catalog. A command deleted on the
  * host between render and click fails with an actionable reason instead of
- * sending a prompt the runtime will reject.
+ * sending a prompt the runtime will reject, so callers must pass the newest
+ * catalog they hold rather than the array the item was rendered from.
  */
 export function resolvePrimeCommandInvocation(
   entries: ReadonlyArray<PrimeCommandEntry> | undefined,

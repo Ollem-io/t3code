@@ -1098,6 +1098,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.commands.refresh": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null) {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Refreshing the runtime command catalog requires a bound provider session.",
+          }),
+        );
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.command-refresh-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          requestId: command.requestId,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.turn.interrupt": {
       yield* requireThread({
         readModel,

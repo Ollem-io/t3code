@@ -222,6 +222,10 @@ function ThreadRouteContent(
     "thread compaction",
   );
   const refreshThreadUsage = useAtomCommand(threadEnvironment.refreshUsage, "thread usage refresh");
+  const refreshThreadCommands = useAtomCommand(
+    threadEnvironment.refreshCommands,
+    "thread command refresh",
+  );
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -549,6 +553,20 @@ function ThreadRouteContent(
     return result._tag !== "Failure";
   }, [refreshThreadUsage, selectedThread]);
 
+  // Opening the command list is the only moment it is read, so it is the only
+  // moment it is refreshed: bounded, explicit, and never polled.
+  const handleRefreshCommands = useCallback(async (): Promise<boolean> => {
+    if (!selectedThread) return false;
+    const result = await refreshThreadCommands({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        requestId: `commands-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+      },
+    });
+    return result._tag !== "Failure";
+  }, [refreshThreadCommands, selectedThread]);
+
   const handleStopThread = useCallback(() => {
     if (!selectedThread) return;
     return stopThreadSession({
@@ -863,6 +881,7 @@ function ThreadRouteContent(
           onRuntimeAction={handleRuntimeAction}
           onRequestCompaction={handleRequestCompaction}
           onRefreshUsage={handleRefreshUsage}
+          onRefreshCommands={handleRefreshCommands}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

@@ -73,9 +73,16 @@ for that session, and publishes it as the provider-neutral `session.commands.upd
 - **Bounded and cached.** At most 128 entries, deduplicated by name with the first definition
   winning; discovery re-runs only on an explicit `command.discover`, and a byte-identical catalog
   produces neither a durable event nor a projection write. The cache dies with its session.
+- **Refreshed on open, never polled.** Opening the command palette on web, or the command list in
+  the mobile composer, requests one bounded refresh (`thread.commands.refresh`), which invalidates
+  the session cache and re-reads the host. Nothing polls, and a runtime that does not advertise
+  discovery refuses the request.
 - **Snapshots replace.** A command deleted on the host disappears on every attached client, and an
   entry that vanished between render and click fails with a stated reason instead of a prompt the
-  runtime would reject.
+  runtime would reject: both surfaces resolve the click against the newest catalog, not the list
+  they rendered from.
+- **Insertion, never replacement.** Picking an entry appends its prompt to the draft already in the
+  composer; the user's typed text is never discarded, and sending stays the user's decision.
 
 `packages/contracts/fixtures/pa-a04-prime-commands-transcript.mjs` builds a disposable
 extension/prompt/skill tree and runs it through the shipped `normalizePrimeCommands` and the shipped

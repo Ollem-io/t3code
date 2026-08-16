@@ -11,6 +11,7 @@ import {
   type AddThreadFollowUpInput,
   type RequestThreadCompactionInput,
   type RefreshThreadUsageInput,
+  type RefreshThreadCommandsInput,
   type RespondToThreadApprovalInput,
   type RespondToThreadUserInputInput,
   type RevertThreadCheckpointInput,
@@ -35,6 +36,7 @@ import {
   addThreadFollowUp,
   requestThreadCompaction,
   refreshThreadUsage,
+  refreshThreadCommands,
   respondToThreadApproval,
   respondToThreadUserInput,
   revertThreadCheckpoint,
@@ -208,6 +210,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     refreshUsage: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:refresh-usage",
       execute: (input: RefreshThreadUsageInput) => refreshThreadUsage(input),
+      scheduler,
+      concurrency,
+    }),
+    refreshCommands: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:refresh-commands",
+      execute: (input: RefreshThreadCommandsInput) => refreshThreadCommands(input),
       scheduler,
       concurrency,
     }),

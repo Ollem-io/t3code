@@ -90,6 +90,7 @@ type ProviderIntentEvent = Extract<
       | "thread.follow-up-add-requested"
       | "thread.compaction-requested"
       | "thread.usage-refresh-requested"
+      | "thread.command-refresh-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -386,7 +387,8 @@ const make = Effect.gen(function* () {
       | "provider.session.stop.failed"
       | "provider.runtime-action.failed"
       | "provider.compaction.failed"
-      | "provider.usage-refresh.failed";
+      | "provider.usage-refresh.failed"
+      | "provider.command-refresh.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -1480,6 +1482,44 @@ const make = Effect.gen(function* () {
       .pipe(Effect.catchCause(() => fail("The provider did not accept this context action.")));
   });
 
+  const processCommandRefreshRequested = Effect.fn("processCommandRefreshRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.command-refresh-requested" }>,
+  ) {
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.command-refresh.failed",
+        summary: "Command refresh failed",
+        detail,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread?.session) {
+      return yield* fail("No provider session is bound to this thread.");
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      return yield* fail("This provider session cannot refresh commands.");
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    if (capabilities?.runtimeExtensions?.commandDiscovery !== true) {
+      return yield* fail("This runtime does not support command discovery.");
+    }
+    if (!isRuntimeRequestId(event.payload.requestId)) {
+      return yield* fail("The command refresh identifier is invalid.");
+    }
+    yield* providerService
+      .executeRuntimeOperation({
+        type: "command.discover",
+        commandId: event.commandId ?? CommandId.make(`provider-command-refresh:${event.eventId}`),
+        threadId: event.payload.threadId,
+      })
+      .pipe(Effect.catchCause(() => fail("The provider did not accept this command refresh.")));
+  });
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1678,6 +1718,9 @@ const make = Effect.gen(function* () {
       case "thread.usage-refresh-requested":
         yield* processContextActionRequested(event);
         return;
+      case "thread.command-refresh-requested":
+        yield* processCommandRefreshRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1730,6 +1773,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.follow-up-add-requested" ||
         event.type === "thread.compaction-requested" ||
         event.type === "thread.usage-refresh-requested" ||
+        event.type === "thread.command-refresh-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"

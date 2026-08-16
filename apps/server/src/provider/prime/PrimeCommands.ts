@@ -54,6 +54,12 @@ const UNSAFE_NAMES = new Set([
   "clear",
 ]);
 
+/**
+ * The same deny list with every separator removed, so `log-out`, `log_out`, and
+ * `logout` are one entry: spelling must never decide whether an entry is safe.
+ */
+const UNSAFE_COLLAPSED = new Set([...UNSAFE_NAMES].map((name) => name.replace(/-/gu, "")));
+
 const KINDS = new Set(["command", "prompt", "skill"]);
 const SOURCES = new Set(["builtin", "user", "project", "extension"]);
 
@@ -61,9 +67,23 @@ const SOURCES = new Set(["builtin", "user", "project", "extension"]);
  * Absolute host paths anywhere in free text. Unix, home-relative, and Windows
  * drive/UNC forms are all covered; a match is replaced by its bare file name so
  * the sentence still reads while the host layout never leaves the host.
+ *
+ * Home-relative, drive, and UNC forms are paths from their first segment on. A
+ * bare `/name` is ambiguous — it is far more often a slash-command mention than
+ * a path — so a single-segment unix path is only treated as one when it names a
+ * real filesystem root; anything deeper matches on its second separator.
  */
-const HOST_PATH_PATTERN =
-  /(?<![\w.~])(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)[^\s"'`;)\]}]*[\\/][^\s"'`,;)\]}]*/gu;
+const UNIX_ROOTS =
+  "etc|usr|var|home|root|tmp|opt|srv|mnt|proc|dev|bin|sbin|lib|users|applications|library|volumes|private|system";
+// Characters that end a path inside a sentence. The backtick is spelled as an
+// escape so the class stays readable and the unicode flag stays happy.
+const PATH_STOP = "\\s\"'\\u0060,;)\\]}";
+const HOST_PATH_PATTERN = new RegExp(
+  String.raw`(?<![\w.~])(?:(?:[A-Za-z]:[\\/]|\\\\|~[\\/])[^${PATH_STOP}]*` +
+    String.raw`|\/(?:${UNIX_ROOTS})(?![\w-])[^${PATH_STOP}]*` +
+    String.raw`|\/[^${PATH_STOP}]*[\\/][^${PATH_STOP}]*)`,
+  "giu",
+);
 
 const redactHostPaths = (text: string): string =>
   text.replace(HOST_PATH_PATTERN, (match) => {
@@ -116,12 +136,12 @@ function mapEntry(value: unknown): ProviderSessionCommandEntry | undefined {
   const raw = value as Record<string, unknown>;
   if (isTuiOnly(raw)) return undefined;
   const name = cleanText(raw.name, 64)?.replace(/^\//u, "").toLowerCase();
-  // Separators are normalized before the deny check so `new_session` cannot
-  // slip past an entry spelled `new-session`.
+  // Separators are stripped before the deny check so neither `new_session` nor
+  // `log-out` can slip past an entry spelled `new-session` or `logout`.
   if (
     name === undefined ||
     !NAME_PATTERN.test(name) ||
-    UNSAFE_NAMES.has(name.replace(/[_:]/gu, "-"))
+    UNSAFE_COLLAPSED.has(name.replace(/[-_:]/gu, ""))
   )
     return undefined;
   const kind = typeof raw.kind === "string" && KINDS.has(raw.kind) ? raw.kind : "command";

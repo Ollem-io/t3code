@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildPrimeCommandItems } from "./CommandPalette.logic";
+import { buildPrimeCommandItems, filterCommandPaletteGroups } from "./CommandPalette.logic";
 import {
+  appendPrimeCommandToDraft,
   hasPrimeCommandSurface,
   primeCommandOriginLabel,
   primeCommandPrompt,
@@ -70,27 +71,68 @@ describe("prime command palette entries", () => {
     expect(primeCommandPrompt("review", " the auth diff ")).toBe("/review the auth diff");
   });
 
+  // PA-A04 round-3 blocker regression: resolving against the array the item was
+  // rendered from could never fail, so a command deleted on the host was
+  // inserted as prose. Click time consults the live catalog instead.
   it("fails actionably when the command was removed since the list rendered", async () => {
     const reasons: string[] = [];
     const inserted: string[] = [];
+    let live: ReadonlyArray<PrimeCommandEntry> = commands;
     const items = buildPrimeCommandItems({
       providerName: "prime-agent",
       capabilities: { commandDiscovery: true },
-      commands: [commands[0]!],
+      commands,
+      getCommands: () => live,
       icon: null,
       insert: (prompt) => inserted.push(prompt),
       onUnavailable: (reason) => reasons.push(reason),
     });
-    // The catalog the item closed over is the one consulted at click time, so a
-    // stale entry cannot send a prompt the runtime would reject.
-    const stale = resolvePrimeCommandInvocation([], "review");
-    expect(stale).toEqual({
+    expect(resolvePrimeCommandInvocation([], "review")).toEqual({
       ok: false,
       reason: "/review is no longer offered by this runtime.",
     });
+    // A refresh lands between render and click and drops `review`.
+    live = [commands[1]!];
     await items[0]!.run();
-    expect(inserted).toEqual(["/review"]);
-    expect(reasons).toEqual([]);
+    expect(inserted).toEqual([]);
+    expect(reasons).toEqual(["/review is no longer offered by this runtime."]);
+    // The entry that survived the refresh still invokes normally.
+    await items[1]!.run();
+    expect(inserted).toEqual(["/deploy"]);
+  });
+
+  it("keeps Prime commands visible under the '>' actions filter", () => {
+    const primeGroup = {
+      value: "prime-commands",
+      label: "Prime commands",
+      items: buildPrimeCommandItems({
+        providerName: "prime-agent",
+        capabilities: { commandDiscovery: true },
+        commands,
+        icon: null,
+        insert: () => {},
+      }),
+    };
+    const filtered = filterCommandPaletteGroups({
+      activeGroups: [
+        { value: "actions", label: "Actions", items: [] },
+        { value: "recent-threads", label: "Recent", items: [] },
+        primeGroup,
+      ],
+      query: ">",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: [],
+    });
+    expect(filtered.map((group) => group.value)).toEqual(["actions", "prime-commands"]);
+  });
+
+  it("appends an invocation to the draft instead of replacing the user's text", () => {
+    expect(appendPrimeCommandToDraft("please be careful with", "/review")).toBe(
+      "please be careful with /review",
+    );
+    expect(appendPrimeCommandToDraft("", "/review")).toBe("/review");
+    expect(appendPrimeCommandToDraft("draft   ", "/review")).toBe("draft /review");
   });
 
   // The web/mobile byte-identity of `primeCommands.ts` is asserted by the mobile
