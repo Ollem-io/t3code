@@ -236,7 +236,14 @@ export type PrimeResumeEvent =
    * carrying thread A's refusal into thread B would show a false banner and
    * block a composer that has nothing to recover.
    */
-  | { readonly type: "thread" };
+  | { readonly type: "thread" }
+  /**
+   * A dispatched choice settled without a published resume state — the fork
+   * case, whose answer is a new thread rather than a state for this one. The
+   * caller reports settlement so the buttons come back without ever having
+   * allowed a second dispatch while the first was in flight.
+   */
+  | { readonly type: "settled" };
 
 export function primeResumeReduce(
   model: PrimeResumeModel,
@@ -254,14 +261,14 @@ export function primeResumeReduce(
       // state, so even a refusal that repeats itself unchanged lands here as a
       // `state` event and clears `pending`.
       //
-      // A fork is the exception, and deliberately not pending: it publishes no
-      // resume state for *this* thread (it creates another one), so recording a
-      // wait for an answer that will never come would leave this thread's
-      // recovery buttons inert forever.
+      // A fork is pending too — one click must never become two forked
+      // threads — but its answer is a new thread rather than a resume state
+      // for this one, so the caller clears it with a `settled` event when the
+      // fork command resolves instead of waiting for a state that never comes.
       return {
         state: event.intent.kind === "retry" ? { status: "reconnecting" } : model.state,
         stalled: false,
-        pending: event.intent.kind === "fork" ? model.pending : event.intent,
+        pending: event.intent,
       };
     case "sessionStatus":
       // Only a terminal session status can settle a reconnect that never got
@@ -279,6 +286,8 @@ export function primeResumeReduce(
         : model;
     case "thread":
       return initialPrimeResumeModel;
+    case "settled":
+      return model.pending === undefined ? model : { ...model, pending: undefined };
   }
 }
 

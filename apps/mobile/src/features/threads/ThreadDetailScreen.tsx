@@ -572,7 +572,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       primeResume.noteChoice(intent);
       const route = primeResumeRecoveryRoute(intent);
       if (route.kind === "fork") {
-        void props.onForkSession?.(undefined);
+        // A fork publishes no resume state for this thread, so its pending
+        // marker is cleared when the command settles: the buttons stay inert
+        // for the whole round trip (one tap cannot become two forked threads)
+        // and come back afterwards.
+        void Promise.resolve(props.onForkSession?.(undefined)).finally(() => {
+          primeResume.noteSettled();
+        });
         return;
       }
       void props.onRecoverPrimeResume?.(

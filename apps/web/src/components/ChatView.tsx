@@ -5580,7 +5580,13 @@ function ChatViewContent(props: ChatViewProps) {
       // history in a new thread.
       const route = primeResumeRecoveryRoute(intent);
       if (route.kind === "fork") {
-        void onForkSession(undefined);
+        // A fork publishes no resume state for this thread, so its pending
+        // marker is cleared when the command settles: the buttons stay inert
+        // for the whole round trip (one click cannot become two forked
+        // threads) and come back afterwards.
+        void Promise.resolve(onForkSession(undefined)).finally(() => {
+          primeResume.noteSettled();
+        });
         return;
       }
       void recoverPrimeResumeCommand({

@@ -156,6 +156,23 @@ describe("prime resume client model", () => {
     expect(surface.choices.map((choice) => choice.kind)).toEqual(["retry", "fork", "fresh"]);
   });
 
+  // PA-B04 regression: one fork click must never become two forked threads.
+  // The fork is pending while its command runs, and the caller clears it with
+  // `settled` when the command resolves — its answer is a new thread, not a
+  // resume state for this one.
+  it("guards a fork in flight and re-arms the buttons once it settles", () => {
+    const refused = primeResumeReduce(model(), {
+      type: "state",
+      state: { status: "unavailable", reason: "conflict" },
+    });
+    const forking = primeResumeReduce(refused, { type: "choice", intent: { kind: "fork" } });
+    expect(primeResumeAwaitingChoice(forking)).toBe(true);
+    const settled = primeResumeReduce(forking, { type: "settled" });
+    expect(primeResumeAwaitingChoice(settled)).toBe(false);
+    // The refusal (and its choices) survives the round trip untouched.
+    expect(primeResumeSurface("prime-agent", settled).kind).toBe("conflict");
+  });
+
   // PA-B04 regression: the retry that answers with the *same* refusal.
   // The host publishes `reconnecting` before it revalidates, so a refusal that
   // repeats itself still arrives as a transition; without it the client sat on
@@ -208,16 +225,19 @@ describe("prime resume client model", () => {
     expect(primeResumeBlocksComposer("prime-agent", settled)).toBe(false);
   });
 
-  // A fork publishes no resume state for *this* thread, so waiting on one would
-  // leave the originating thread's buttons inert for good.
-  it("does not wait on an answer for a fork", () => {
+  // A fork publishes no resume state for *this* thread, so the caller settles
+  // the pending marker when the fork command resolves; the marker still exists
+  // while the command runs so one click cannot fork twice.
+  it("waits on the fork command, not on a resume state that never comes", () => {
     const refused = primeResumeReduce(model(), {
       type: "state",
       state: { status: "unavailable", reason: "conflict" },
     });
     const forked = primeResumeReduce(refused, { type: "choice", intent: { kind: "fork" } });
-    expect(primeResumeAwaitingChoice(forked)).toBe(false);
-    expect(primeResumeSurface("prime-agent", forked).kind).toBe("conflict");
+    expect(primeResumeAwaitingChoice(forked)).toBe(true);
+    const settled = primeResumeReduce(forked, { type: "settled" });
+    expect(primeResumeAwaitingChoice(settled)).toBe(false);
+    expect(primeResumeSurface("prime-agent", settled).kind).toBe("conflict");
   });
 
   it("keeps the composer shut between a retry and the host's answer", () => {

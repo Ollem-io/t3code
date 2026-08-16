@@ -188,12 +188,18 @@ check("a confirmed fresh start ends the block instead of leaving the refusal", (
   NodeAssert.equal(primeResumeAwaitingChoice(settled), false);
 });
 
-check("forking never leaves the originating thread's buttons inert", () => {
+check("one fork click cannot become two, and settling brings the buttons back", () => {
   const forked = [
     { type: "state", state: { status: "unavailable", reason: "conflict" } },
     { type: "choice", intent: { kind: "fork" } },
   ].reduce(primeResumeReduce, initialPrimeResumeModel);
-  NodeAssert.equal(primeResumeAwaitingChoice(forked), false);
+  // In flight: every button is inert, so a double click dispatches nothing.
+  NodeAssert.equal(primeResumeAwaitingChoice(forked), true);
+  // The fork command settles (it answers with a new thread, not a resume state
+  // for this one), and the caller reports that so recovery stays reachable.
+  const settledAgain = primeResumeReduce(forked, { type: "settled" });
+  NodeAssert.equal(primeResumeAwaitingChoice(settledAgain), false);
+  NodeAssert.equal(primeResumeSurface("prime-agent", settledAgain).kind, "conflict");
 });
 
 check("a retry keeps the composer shut until the host answers", () => {

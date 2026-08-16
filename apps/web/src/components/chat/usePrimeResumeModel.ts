@@ -27,6 +27,8 @@ export function usePrimeResumeModel(input: {
 }): {
   readonly model: PrimeResumeModel;
   readonly noteChoice: (intent: PrimeResumeIntent) => void;
+  /** Reports that a choice with no published answer (fork) settled. */
+  readonly noteSettled: () => void;
 } {
   const [model, dispatch] = useReducer(primeResumeReduce, initialPrimeResumeModel);
 
@@ -57,6 +59,9 @@ export function usePrimeResumeModel(input: {
     model,
     noteChoice: (intent) => {
       dispatch({ type: "choice", intent });
+    },
+    noteSettled: () => {
+      dispatch({ type: "settled" });
     },
   };
 }
