@@ -57,6 +57,10 @@ import {
 import { provePrimeProcess, stopProvenPrimeProcess } from "../prime/PrimeProcessOwnership.ts";
 import { PrimeEventNormalizer } from "../prime/PrimeEventNormalizer.ts";
 import {
+  PrimeSessionLeaseConflictError,
+  type PrimeSessionWriteGate,
+} from "../prime/PrimeSessionLease.ts";
+import {
   PRIME_COMPACT_COMMAND,
   PRIME_SESSION_STATS_COMMAND,
   normalizePrimeSessionStats,
@@ -193,7 +197,30 @@ export interface PrimeAdapterOptions {
   readonly attachmentsDir?: string;
   readonly handshakeTimeoutMs?: number;
   readonly launch?: typeof spawnPrimeRpcTransport;
+  /**
+   * PA-B03 single-writer gate. When present, no session may be activated and
+   * no turn may be sent without a valid lease, and stop/teardown releases it.
+   * Absent (today's default, until PA-B02 wires a resume coordinator) the
+   * adapter behaves exactly as before.
+   */
+  readonly writeGate?: PrimeSessionWriteGate;
 }
+
+/**
+ * A lease refusal is a validation failure, not a process failure: nothing was
+ * started, nothing was sent, and the caller may retry after the authoritative
+ * writer finishes. The typed receipt travels as the cause so an arbitration-
+ * aware caller can read it, while the message names no owner.
+ */
+const asAdapterConflict = (cause: unknown, operation: string) =>
+  cause instanceof PrimeSessionLeaseConflictError
+    ? new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation,
+        issue: "Another writer is authoritative for this Prime Agent session.",
+        cause,
+      })
+    : undefined;
 
 const startKey = (input: ProviderSessionStartInput, cwd: string) =>
   JSON.stringify({
@@ -921,6 +948,12 @@ export const makePrimeAdapter = (
           Effect.tryPromise({
             try: async () => {
               const cwd = await validateStart(input);
+              // Arbitration precedes activation: a second client cannot even
+              // reach the launch path for a thread another writer owns.
+              await options.writeGate?.acquire({
+                threadId: String(input.threadId),
+                operation: "activate",
+              });
               const key = startKey(input, cwd);
               const live = sessions.get(input.threadId);
               if (live) {
@@ -953,12 +986,13 @@ export const makePrimeAdapter = (
               cause instanceof ProviderAdapterValidationError ||
               cause instanceof ProviderAdapterProcessError
                 ? cause
-                : new ProviderAdapterProcessError({
+                : (asAdapterConflict(cause, "startSession") ??
+                  new ProviderAdapterProcessError({
                     provider: PROVIDER,
                     threadId: input.threadId,
                     detail: "Prime Agent RPC process could not be started.",
                     cause,
-                  }),
+                  })),
           }),
         ),
       );
@@ -967,6 +1001,10 @@ export const makePrimeAdapter = (
       Effect.tryPromise({
         try: async () => {
           await pending.get(threadId)?.promise.catch(() => undefined);
+          // Stopping is non-destructive but it does hand back write authority,
+          // so the lease is released even when there is no live session left
+          // (an activation that crashed still holds one).
+          await options.writeGate?.release({ threadId: String(threadId) });
           const context = sessions.get(threadId);
           if (!context) return;
           sessions.delete(threadId);
@@ -1204,6 +1242,13 @@ export const makePrimeAdapter = (
       Effect.tryPromise({
         try: async () => {
           const context = requireContext(input.threadId);
+          // Re-proved on every turn, not just at activation: a lease that was
+          // taken over or expired while this session sat idle must fence the
+          // write instead of letting a second writer reach the model.
+          await options.writeGate?.authorizeWrite({
+            threadId: String(input.threadId),
+            operation: "send",
+          });
           const resolved = await resolveTurnInput(input, context);
           if (
             !context.selectedModel ||
@@ -1243,12 +1288,13 @@ export const makePrimeAdapter = (
           cause instanceof ProviderAdapterValidationError ||
           cause instanceof ProviderAdapterSessionNotFoundError
             ? cause
-            : new ProviderAdapterProcessError({
+            : (asAdapterConflict(cause, "sendTurn") ??
+              new ProviderAdapterProcessError({
                 provider: PROVIDER,
                 threadId: input.threadId,
                 detail: "Prime Agent turn input failed.",
                 cause,
-              }),
+              })),
       });
 
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (threadId) =>
@@ -1661,6 +1707,11 @@ export const makePrimeAdapter = (
           );
           const contexts = Array.from(sessions.values());
           sessions.clear();
+          // Provider-instance removal and process teardown give up every lease
+          // this adapter held; anything it fails to release simply expires.
+          for (const context of contexts) {
+            await options.writeGate?.release({ threadId: String(context.session.threadId) });
+          }
           await Promise.all(contexts.map(closeContext));
           await Promise.all(contexts.map((context) => context.eventDrain));
           for (const context of contexts) {
