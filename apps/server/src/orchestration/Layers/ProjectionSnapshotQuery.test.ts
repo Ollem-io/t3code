@@ -1295,6 +1295,124 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  // getThreadShellById backs every thread-upserted shell refetch, and the
+  // client replaces the stored thread wholesale, so a shell that drops fork
+  // ancestry erases the fork banner and its way back to the source thread.
+  it.effect("carries fork ancestry through the targeted thread shell read", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_turns`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-1',
+          'Project 1',
+          '/tmp/project-1',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-08-16T00:00:00.000Z',
+          '2026-08-16T00:00:01.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          forked_from_json,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES
+          (
+            'thread-source',
+            'project-1',
+            'Source thread',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            NULL,
+            '2026-08-16T00:00:02.000Z',
+            '2026-08-16T00:00:03.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            'thread-forked',
+            'project-1',
+            'Forked thread',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '{"threadId":"thread-source","forkPointLabel":"Adapter drafted","checkpointId":"checkpoint-9","forkedAt":"2026-08-16T09:00:00.000Z"}',
+            '2026-08-16T00:00:04.000Z',
+            '2026-08-16T00:00:05.000Z',
+            NULL,
+            NULL
+          )
+      `;
+
+      const forkedShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-forked"));
+      assert.equal(forkedShell._tag, "Some");
+      if (forkedShell._tag === "Some") {
+        assert.deepEqual(forkedShell.value.forkedFrom, {
+          threadId: ThreadId.make("thread-source"),
+          forkPointLabel: "Adapter drafted",
+          checkpointId: "checkpoint-9",
+          forkedAt: "2026-08-16T09:00:00.000Z",
+        });
+      }
+
+      const sourceShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-source"));
+      assert.equal(sourceShell._tag, "Some");
+      if (sourceShell._tag === "Some") {
+        assert.equal(sourceShell.value.forkedFrom, null);
+      }
+    }),
+  );
+
   it.effect("uses projection_threads.latest_turn_id for bulk command and shell snapshots", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

@@ -5,8 +5,11 @@ import type { PrimeRpcForkMessage } from "./PrimeRpcProtocol.ts";
  * Session naming and fork-point mapping for Prime 0.7.2.
  *
  * Prime owns the session identity and the ordering of its messages. T3 carries
- * only the bounded name and enough identity to ask Prime for a fork; message
- * previews are labels for that choice, never transcript copied into a thread.
+ * only the bounded name and enough identity to ask Prime for a fork. Message
+ * previews are labels for that choice, not a transcript copy: a single bounded,
+ * control-char-stripped line per fork point. The chosen label does travel into
+ * the forked thread's recorded ancestry (forkedFrom.forkPointLabel), where it
+ * names the fork point for the same viewers who already see that history.
  */
 export const MAX_PRIME_SESSION_NAME = 120;
 export const MAX_PRIME_FORK_POINTS = 20;
