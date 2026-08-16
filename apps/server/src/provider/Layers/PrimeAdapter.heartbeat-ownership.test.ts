@@ -267,10 +267,21 @@ describe("PrimeAdapter owned-heartbeat handles across sessions", () => {
         const f = yield* fixture;
         const adapter = yield* make(f);
         yield* adapter.startSession(makeInput(f.cwd));
-        // Two of the eight come back with an interval T3 refuses to state, so
-        // the board holds six rows while eight handles are owned.
-        for (let i = 0; i < 6; i += 1) yield* create(adapter, `ok-${i}`);
-        for (let i = 0; i < 2; i += 1) yield* create(adapter, `bad-${i}`);
+        // A schedule the runtime reports back with an interval T3 refuses to
+        // state is stopped at creation rather than kept as an owned row the
+        // board cannot render, so it never counts against the cap.
+        const diverged = yield* Effect.exit(create(adapter, "bad-divergent"));
+        assert.strictEqual(diverged._tag, "Failure", "unrenderable creation must be refused");
+        assert.deepStrictEqual(yield* ownedIds(f.root), []);
+        const divergedStore = JSON.parse(
+          yield* Effect.promise(() => readFile(f.store, "utf8")),
+        ) as { heartbeats: ReadonlyArray<{ heartbeatId: string }> };
+        assert.deepStrictEqual(
+          divergedStore.heartbeats.map((h) => h.heartbeatId),
+          ["hb-sentinel"],
+          "the divergent schedule must be stopped, the unowned sentinel untouched",
+        );
+        for (let i = 0; i < 8; i += 1) yield* create(adapter, `ok-${i}`);
         const owned = yield* ownedIds(f.root);
         assert.strictEqual(owned.length, 8);
         const before = JSON.parse(yield* Effect.promise(() => readFile(f.store, "utf8"))) as {

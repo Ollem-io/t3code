@@ -76,10 +76,10 @@ import {
 } from "../prime/PrimeObservation.ts";
 import {
   EMPTY_PRIME_GOAL_BOARD,
-  isPrimeRenderableId,
   MAX_PRIME_HEARTBEATS,
   PRIME_GOAL_MUTATION_REFUSAL,
   primeGoalBoard,
+  primeOwnedHeartbeats,
   primeGoalBoardFingerprint,
   primeHeartbeatCreateDecision,
   primeHeartbeatDecision,
@@ -1213,41 +1213,44 @@ export const makePrimeAdapter = (
                 title: operation.title,
                 intervalSeconds: operation.intervalSeconds,
               });
-              // An id the wire contract cannot brand could never be listed or
-              // reversed by any client, so a schedule under such an id must not
-              // be left running: stop it by its exact raw id and refuse the
-              // create truthfully. If even the stop fails, the handle is
-              // adopted anyway so residency stays disclosed and cleanup can
-              // still prove it by raw id.
-              if (
-                created.heartbeatId !== undefined &&
-                isPrimeOwnableHeartbeatId(created.heartbeatId) &&
-                !isPrimeRenderableId(created.heartbeatId)
-              ) {
-                try {
-                  await expectSuccess(context, {
-                    type: "heartbeat_stop",
-                    heartbeatId: created.heartbeatId,
-                  });
-                  await heartbeatSnapshot(context, { type: "heartbeat_get" });
-                } catch {
-                  context.ownedHeartbeats.add(created.heartbeatId);
-                }
-                await persistHeartbeatOwnership(context);
-                await publishGoals(context);
-                throw new ProviderAdapterValidationError({
-                  provider: PROVIDER,
-                  operation: "executeRuntimeOperation",
-                  issue:
-                    "Prime Agent issued a heartbeat identity T3 cannot represent exactly; the schedule was not kept.",
-                });
-              }
               // An id the ownership record could not hold is not adopted: the
               // write would throw after the heartbeat already exists, which is
               // the one outcome that leaves a real T3-created schedule running
               // with no handle at all.
-              if (isPrimeOwnableHeartbeatId(created.heartbeatId))
+              if (isPrimeOwnableHeartbeatId(created.heartbeatId)) {
                 context.ownedHeartbeats.add(created.heartbeatId);
+                // Adoption and rendering must agree: a schedule the runtime
+                // created but reported back in a form the board cannot state
+                // exactly (unbrandable id, out-of-range interval, blank title)
+                // would be owned, resident, and unreachable by every reverse
+                // control. Stop exactly that id and refuse the create. If even
+                // the stop fails, the handle stays adopted so residency stays
+                // disclosed and cleanup can still prove it by raw id.
+                const renderable = primeOwnedHeartbeats(
+                  context.nativeHeartbeats,
+                  context.ownedHeartbeats,
+                ).some((heartbeat) => heartbeat.heartbeatId === created.heartbeatId);
+                if (!renderable) {
+                  try {
+                    await expectSuccess(context, {
+                      type: "heartbeat_stop",
+                      heartbeatId: created.heartbeatId,
+                    });
+                    context.ownedHeartbeats.delete(created.heartbeatId);
+                    await heartbeatSnapshot(context, { type: "heartbeat_get" });
+                  } catch {
+                    // Handle retained on purpose; see comment above.
+                  }
+                  await persistHeartbeatOwnership(context);
+                  await publishGoals(context);
+                  throw new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "executeRuntimeOperation",
+                    issue:
+                      "Prime Agent created this schedule in a form T3 cannot represent exactly; it was not kept.",
+                  });
+                }
+              }
               await persistHeartbeatOwnership(context);
               await publishGoals(context);
             });
