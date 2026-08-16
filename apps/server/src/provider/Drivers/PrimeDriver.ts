@@ -16,6 +16,7 @@ import { makePrimeTextGeneration } from "../../textGeneration/PrimeTextGeneratio
 import { ProviderDriverError } from "../Errors.ts";
 import { makePrimeAdapter } from "../Layers/PrimeAdapter.ts";
 import { primeProbeToSnapshot, probePrimeProvider } from "../Layers/PrimeProvider.ts";
+import { makePrimeServerWriteGate } from "../prime/PrimeSessionLeaseRuntime.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -28,7 +29,6 @@ const DRIVER_KIND = ProviderDriverKind.make("prime-agent");
 const decodeSettings = Schema.decodeSync(PrimeAgentSettings);
 
 export type PrimeDriverEnv = ServerConfig | ServerEnvironment;
-
 
 export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
   driverKind: DRIVER_KIND,
@@ -45,6 +45,15 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
         driverKind: DRIVER_KIND,
         instanceId,
       });
+      // PA-B03: every Prime session this instance activates or writes to goes
+      // through the single-writer lease. Constructed here, not in the adapter,
+      // because arbitration is per environment/instance and needs the shared
+      // database the adapter deliberately knows nothing about.
+      const writeGate = yield* makePrimeServerWriteGate({
+        environmentId,
+        instanceId: String(instanceId),
+        home: serverConfig.stateDir,
+      });
       const adapter = yield* makePrimeAdapter(config, {
         instanceId,
         environmentId,
@@ -52,13 +61,20 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
         attachmentsDir: serverConfig.attachmentsDir,
         enabled,
         environment: processEnv,
+        writeGate,
       });
       const checkedAt = DateTime.formatIso(yield* DateTime.now);
       const initialDraft = primeProbeToSnapshot({
         enabled,
         checkedAt,
         probe: enabled
-          ? { version: null, compatibility: "unknown", readiness: "checking", models: [], message: "Checking Prime Agent readiness." }
+          ? {
+              version: null,
+              compatibility: "unknown",
+              readiness: "checking",
+              models: [],
+              message: "Checking Prime Agent readiness.",
+            }
           : { version: null, compatibility: "unknown", readiness: "disabled", models: [] },
       });
       const stamp = (draft: typeof initialDraft): ServerProvider => ({
@@ -70,19 +86,27 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
         continuation: { groupKey: continuationIdentity.continuationKey },
       });
       const snapshotRef = yield* Ref.make(stamp(initialDraft));
-      const refresh = Effect.promise(() => probePrimeProvider({
-        settings: config,
-        enabled,
-        environment: processEnv,
-      })).pipe(
-        Effect.flatMap((probe) => DateTime.now.pipe(
-          Effect.map(DateTime.formatIso),
-          Effect.map((nextCheckedAt) => stamp(primeProbeToSnapshot({
-            enabled,
-            checkedAt: nextCheckedAt,
-            probe,
-          }))),
-        )),
+      const refresh = Effect.promise(() =>
+        probePrimeProvider({
+          settings: config,
+          enabled,
+          environment: processEnv,
+        }),
+      ).pipe(
+        Effect.flatMap((probe) =>
+          DateTime.now.pipe(
+            Effect.map(DateTime.formatIso),
+            Effect.map((nextCheckedAt) =>
+              stamp(
+                primeProbeToSnapshot({
+                  enabled,
+                  checkedAt: nextCheckedAt,
+                  probe,
+                }),
+              ),
+            ),
+          ),
+        ),
         Effect.tap((snapshot) => Ref.set(snapshotRef, snapshot)),
       );
       return {
@@ -102,7 +126,10 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
           streamChanges: Stream.empty,
         },
         adapter,
-        textGeneration: yield* makePrimeTextGeneration(config, { instanceId, environment: processEnv }),
+        textGeneration: yield* makePrimeTextGeneration(config, {
+          instanceId,
+          environment: processEnv,
+        }),
       } satisfies ProviderInstance;
     }),
 };

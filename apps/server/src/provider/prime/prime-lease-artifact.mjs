@@ -35180,7 +35180,7 @@ const makeInMemoryPrimeSessionLeaseStore = () => {
   };
 };
 const primeSessionWriterToken = (writer) =>
-  `pw-${createHash("sha256").update(`${writer.clientToken} ${writer.processToken}`).digest("hex").slice(0, 32)}`;
+  `pw-${createHash("sha256").update(`${writer.clientToken}\u0000${writer.processToken}`).digest("hex").slice(0, 32)}`;
 /** Opaque, non-reversible name for the contested scope. Safe for receipts. */
 const primeLeaseScopeDigest = (scope) =>
   createHash("sha256").update(primeResumeScopeKey(scope)).digest("hex").slice(0, 12);
@@ -35369,20 +35369,27 @@ const makePrimeSessionLeaseService = (options) => {
 };
 const makePrimeSessionWriteGate = (input) => {
   const handles = /* @__PURE__ */ new Map();
-  const requestFor = (threadId, operation) => ({
-    scope: input.scopeForThread(threadId),
+  const serviceFor = async (threadId) => {
+    if (input.service !== void 0) return input.service;
+    if (input.serviceForThread === void 0)
+      throw new Error("Prime write gate needs either a service or a per-thread service factory");
+    return await input.serviceForThread(threadId);
+  };
+  const requestFor = async (threadId, operation) => ({
+    scope: await input.scopeForThread(threadId),
     writer: input.writer,
     operation,
   });
+  const acquire = async ({ threadId, operation }) => {
+    const request = await requestFor(threadId, operation);
+    const outcome = await (await serviceFor(threadId)).acquire(request);
+    if (outcome.status === "conflict") throw new PrimeSessionLeaseConflictError(outcome.receipt);
+    handles.set(threadId, outcome.handle);
+  };
   return {
-    acquire: async ({ threadId, operation }) => {
-      const request = requestFor(threadId, operation);
-      const outcome = await input.service.acquire(request);
-      if (outcome.status === "conflict") throw new PrimeSessionLeaseConflictError(outcome.receipt);
-      handles.set(threadId, outcome.handle);
-    },
+    acquire,
     authorizeWrite: async ({ threadId, operation }) => {
-      const request = requestFor(threadId, operation);
+      const request = await requestFor(threadId, operation);
       const handle = handles.get(threadId);
       if (handle === void 0)
         throw new PrimeSessionLeaseConflictError(
@@ -35393,9 +35400,16 @@ const makePrimeSessionWriteGate = (input) => {
             occurredAt: primeLeaseIso(input.now()),
           }),
         );
-      const outcome = await input.service.authorizeWrite(handle, request);
+      const outcome = await (await serviceFor(threadId)).authorizeWrite(handle, request);
       if (outcome.status === "conflict") {
         handles.delete(threadId);
+        if (outcome.receipt.reason === "expired") {
+          await acquire({
+            threadId,
+            operation,
+          });
+          return;
+        }
         throw new PrimeSessionLeaseConflictError(outcome.receipt);
       }
       handles.set(threadId, outcome.handle);
@@ -35404,7 +35418,9 @@ const makePrimeSessionWriteGate = (input) => {
       const handle = handles.get(threadId);
       if (handle === void 0) return;
       handles.delete(threadId);
-      await input.service.release(handle, requestFor(threadId, "release")).catch(() => void 0);
+      await serviceFor(threadId)
+        .then(async (service) => service.release(handle, await requestFor(threadId, "release")))
+        .catch(() => void 0);
     },
   };
 };
@@ -35757,6 +35773,69 @@ check(
   "the gate's message must not name the owner",
 );
 line("adapter gate: activation refused with a redacted typed receipt");
+const lapsedStore = makeInMemoryPrimeSessionLeaseStore();
+let lapsedTime = 1e3;
+const lapsedService = () =>
+  makePrimeSessionLeaseService({
+    store: lapsedStore,
+    now: () => lapsedTime,
+    authorize: () => true,
+  });
+const soleWriter = makePrimeSessionWriteGate({
+  service: lapsedService(),
+  writer: clientA,
+  scopeForThread: (threadId) => scopeFor({ threadId }),
+  now: () => lapsedTime,
+});
+const rivalWriter = makePrimeSessionWriteGate({
+  service: lapsedService(),
+  writer: clientB,
+  scopeForThread: (threadId) => scopeFor({ threadId }),
+  now: () => lapsedTime,
+});
+await soleWriter.acquire({
+  threadId: "thread-lapsed",
+  operation: "activate",
+});
+lapsedTime += 30001;
+let lapsedRefusal;
+try {
+  await soleWriter.authorizeWrite({
+    threadId: "thread-lapsed",
+    operation: "send",
+  });
+} catch (error) {
+  lapsedRefusal = error;
+}
+check(lapsedRefusal === void 0, "a writer must be able to retake its own lapsed lease");
+check(
+  (await lapsedService().inspect(scopeFor({ threadId: "thread-lapsed" }))).status === "held",
+  "retaking a lapsed lease must leave the scope held again",
+);
+lapsedTime += 30001;
+await rivalWriter.acquire({
+  threadId: "thread-lapsed",
+  operation: "activate",
+});
+let supersededRefusal;
+try {
+  await soleWriter.authorizeWrite({
+    threadId: "thread-lapsed",
+    operation: "send",
+  });
+} catch (error) {
+  supersededRefusal = error;
+}
+check(
+  supersededRefusal instanceof PrimeSessionLeaseConflictError,
+  "a superseded writer must never retake a lease another writer claimed",
+);
+check(
+  supersededRefusal instanceof PrimeSessionLeaseConflictError &&
+    findSessionWriterReceiptViolation(supersededRefusal.receipt) === void 0,
+  "the superseded writer's receipt must be redacted",
+);
+line("adapter gate: own lapsed lease retaken, superseded lease never retaken");
 const slot = migrationManifest.filter(([, name]) => name === "PrimeResumeCursors");
 check(slot.length === 1, "the lease columns must live in exactly one migration");
 check(slot[0][0] === 48, "the lease columns belong to slot 48");

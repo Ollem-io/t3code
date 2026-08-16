@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalDate:off
 // @effect-diagnostics instanceOfSchema:off
 // @effect-diagnostics preferSchemaOverJson:off
 import { assert, describe, it } from "@effect/vitest";
@@ -9,10 +10,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
   ProviderDriverKind,
   ProviderInstanceId,
+  EnvironmentId,
   ThreadId,
   primeResumeScopeKey,
   type PrimeResumeCursorScope,
@@ -31,6 +34,10 @@ import {
 } from "../src/provider/prime/PrimeSessionLease.ts";
 import { makePrimeSessionLeaseSqlStore } from "../src/provider/prime/PrimeSessionLeaseSql.ts";
 import { ProviderAdapterValidationError } from "../src/provider/Errors.ts";
+import { PrimeDriver } from "../src/provider/Drivers/PrimeDriver.ts";
+import { primeHomeFingerprint } from "../src/provider/prime/PrimeResourceLayout.ts";
+import * as ServerConfig from "../src/config.ts";
+import * as ServerEnvironment from "../src/environment/ServerEnvironment.ts";
 
 /**
  * PA-B03 — two clients and two processes contending for one durable Prime
@@ -46,6 +53,7 @@ import { ProviderAdapterValidationError } from "../src/provider/Errors.ts";
 const PROVIDER = ProviderDriverKind.make("prime-agent");
 const INSTANCE = ProviderInstanceId.make("prime-agent");
 const THREAD = "thread-race";
+const DRIVER_ENVIRONMENT = "env-driver";
 
 const scope: PrimeResumeCursorScope = {
   environmentId: "env-a",
@@ -62,6 +70,20 @@ const clientB = { clientToken: "session-b", processToken: "process-2" };
 const fakeBinary = `#!/usr/bin/env node
 import { appendFileSync } from "node:fs"; import { createInterface } from "node:readline";
 createInterface({input:process.stdin}).on("line",line=>{const c=JSON.parse(line);appendFileSync(process.env.MARKER,JSON.stringify(c)+"\\n");const data=c.type==="get_available_models"?{models:[{id:"m",name:"M",api:"x",provider:"alpha",baseUrl:"",reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:1,maxTokens:1}]}:{state:"idle"};process.stdout.write(JSON.stringify({type:"response",id:c.id,command:c.type,success:true,data})+"\\n")});`;
+
+/**
+ * A fake Prime binary that also records its own exit, so a test can prove the
+ * process was gone *before* the lease that authorized it was handed back.
+ */
+const fakeBinaryRecordingExit = `#!/usr/bin/env node
+import { appendFileSync } from "node:fs"; import { createInterface } from "node:readline";
+process.on("exit",()=>{try{appendFileSync(process.env.MARKER,JSON.stringify({type:"EXIT"})+"\\n")}catch{}});
+createInterface({input:process.stdin}).on("line",line=>{const c=JSON.parse(line);appendFileSync(process.env.MARKER,JSON.stringify(c)+"\\n");const data=c.type==="get_available_models"?{models:[{id:"m",name:"M",api:"x",provider:"alpha",baseUrl:"",reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:1,maxTokens:1}]}:{state:"idle"};process.stdout.write(JSON.stringify({type:"response",id:c.id,command:c.type,success:true,data})+"\\n")});`;
+
+/** Same bootstrap answers, but usable when the adapter sanitizes MARKER away. */
+const fakeBinaryQuiet = `#!/usr/bin/env node
+import { createInterface } from "node:readline";
+createInterface({input:process.stdin}).on("line",line=>{const c=JSON.parse(line);const data=c.type==="get_available_models"?{models:[{id:"m",name:"M",api:"x",provider:"alpha",baseUrl:"",reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:1,maxTokens:1}]}:{state:"idle"};process.stdout.write(JSON.stringify({type:"response",id:c.id,command:c.type,success:true,data})+"\\n")});`;
 
 const withDatabases = <A, E>(
   use: (input: {
@@ -313,6 +335,32 @@ describe("PA-B03 Prime durable session arbitration race", () => {
             (yield* marker()).includes('"prompt"'),
             "the authoritative writer must still be able to send",
           );
+
+          // Every other durable mutation is gated too: compaction rewrites the
+          // transcript, an abort ends the turn, and a dialog answer commits
+          // work — a fenced writer may do none of them.
+          const compact = yield* Effect.flip(
+            adapterA.executeRuntimeOperation!({
+              threadId: start.threadId,
+              type: "compaction.request",
+            } as never),
+          );
+          assert.ok(compact instanceof ProviderAdapterValidationError);
+          assert.ok(compact.cause instanceof PrimeSessionLeaseConflictError);
+          const interrupted = yield* Effect.flip(adapterA.interruptTurn(start.threadId));
+          assert.ok(interrupted instanceof ProviderAdapterValidationError);
+          assert.ok(interrupted.cause instanceof PrimeSessionLeaseConflictError);
+          const afterFenced = yield* marker();
+          assert.equal(
+            afterFenced.includes('"compact"'),
+            false,
+            "a fenced writer must never compact the durable session",
+          );
+          assert.equal(
+            afterFenced.includes('"abort"'),
+            false,
+            "a fenced writer must never abort the durable session",
+          );
         }),
       ),
     ),
@@ -350,5 +398,182 @@ describe("PA-B03 Prime durable session arbitration race", () => {
       // The stored holder token is opaque: nothing about the client survives.
       assert.equal(rows[0]!.lease_holder_token?.includes(clientA.clientToken), false);
     }).pipe(Effect.provide(NodeSqliteClient.layerMemory()), Effect.orDie),
+  );
+  it.effect("hands the lease back only after the process it authorized is gone", () =>
+    Effect.scoped(
+      withDatabases(({ root, stores: [storeA] }) =>
+        Effect.gen(function* () {
+          const fixture = yield* Effect.promise(async () => {
+            const cwd = join(root, "workspace");
+            const binary = join(root, "fake-exit.mjs");
+            await mkdir(cwd, { recursive: true });
+            await writeFile(binary, fakeBinaryRecordingExit);
+            await chmod(binary, 0o755);
+            return { cwd, binary, marker: join(root, "marker-release") };
+          });
+          // The barrier is the release compare-and-set itself: whatever is
+          // true at that instant is what a second writer would find if it
+          // acquired the freed lease right then.
+          let processAlive = false;
+          let aliveAtRelease: boolean | undefined;
+          const watched: PrimeSessionLeaseStore = {
+            read: storeA.read,
+            compareAndSet: async (input) => {
+              if (input.next?.expiresAtMs === 0 && aliveAtRelease === undefined)
+                aliveAtRelease = processAlive;
+              return storeA.compareAndSet(input);
+            },
+          };
+          const gate = makePrimeSessionWriteGate({
+            service: makePrimeSessionLeaseService({
+              store: watched,
+              now: () => 1_000,
+              authorize: () => true,
+            }),
+            writer: clientA,
+            scopeForThread: (threadId) => ({ ...scope, threadId }) as PrimeResumeCursorScope,
+            now: () => 1_000,
+          });
+          const adapter = yield* makePrimeAdapter({ binaryPath: fixture.binary }, {
+            instanceId: INSTANCE,
+            environmentId: "env-a",
+            home: join(root, "home-release"),
+            enabled: true,
+            writeGate: gate,
+            launch: (
+              command: string,
+              args: ReadonlyArray<string>,
+              o?: { readonly env?: NodeJS.ProcessEnv },
+            ) => {
+              const transport = spawnPrimeRpcTransport(command, args, {
+                ...(o ?? {}),
+                env: { ...(o?.env ?? {}), MARKER: fixture.marker },
+              });
+              processAlive = true;
+              void transport.terminal
+                .catch(() => undefined)
+                .finally(() => {
+                  processAlive = false;
+                });
+              return transport;
+            },
+          } as never);
+          const start = {
+            threadId: ThreadId.make(THREAD),
+            provider: PROVIDER,
+            providerInstanceId: INSTANCE,
+            cwd: fixture.cwd,
+            runtimeMode: "approval-required" as const,
+          };
+          yield* adapter.startSession(start);
+          assert.equal(processAlive, true);
+          yield* adapter.stopSession(start.threadId);
+          assert.ok(
+            aliveAtRelease !== undefined,
+            "stopping must release the lease it acquired on activation",
+          );
+          assert.equal(
+            aliveAtRelease,
+            false,
+            "the native process must be gone before the lease is handed back, or a second writer could launch a second process for the same durable thread",
+          );
+        }),
+      ),
+    ),
+  );
+
+  it.effect("the shipped PrimeDriver arbitrates: activation takes a durable lease", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() =>
+          mkdtemp(join(tmpdir(), "pa-b03-driver-")).then((made) => realpath(made)),
+        );
+        const cwd = join(root, "workspace");
+        const binary = join(root, "fake.mjs");
+        yield* Effect.promise(async () => {
+          await mkdir(cwd, { recursive: true });
+          await writeFile(binary, fakeBinaryQuiet);
+          await chmod(binary, 0o755);
+        });
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations();
+        // The durable scope is read from the projection, never invented.
+        yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at)
+          VALUES (${THREAD}, 'project-driver', 'race', '2026-08-16T00:00:00.000Z', '2026-08-16T00:00:00.000Z')`;
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const instance = yield* PrimeDriver.create({
+          instanceId: INSTANCE,
+          enabled: true,
+          config: { binaryPath: binary },
+        } as never).pipe(Effect.orDie);
+        yield* instance.adapter
+          .startSession({
+            threadId: ThreadId.make(THREAD),
+            provider: PROVIDER,
+            providerInstanceId: INSTANCE,
+            cwd,
+            runtimeMode: "approval-required" as const,
+          })
+          .pipe(Effect.orDie);
+        const rows = yield* sql<{
+          readonly lease_holder_token: string | null;
+          readonly project_id: string;
+        }>`SELECT lease_holder_token, project_id FROM prime_resume_cursors WHERE thread_id = ${THREAD}`;
+        // Without production wiring this table stays empty: the shipped server
+        // would activate with no arbitration at all.
+        assert.equal(rows.length, 1, "the shipped driver must arbitrate, not just the fixtures");
+        assert.ok(rows[0]!.lease_holder_token?.startsWith("pw-"));
+        assert.equal(rows[0]!.project_id, "project-driver");
+
+        // A second T3 process over the same home and thread is refused.
+        const driverScope = {
+          environmentId: DRIVER_ENVIRONMENT,
+          providerInstanceId: INSTANCE,
+          projectId: "project-driver",
+          threadId: THREAD,
+          homeFingerprint: primeHomeFingerprint(serverConfig.stateDir),
+        } as PrimeResumeCursorScope;
+        const otherProcess = makePrimeSessionLeaseService({
+          store: yield* makePrimeSessionLeaseSqlStore({
+            scope: driverScope,
+            nowIso: () => new Date().toISOString(),
+          }),
+          now: () => Date.now(),
+          authorize: () => true,
+        });
+        const refused = yield* Effect.promise(() =>
+          otherProcess.acquire({
+            scope: driverScope,
+            writer: { clientToken: "other", processToken: "other-process" },
+            operation: "activate",
+          }),
+        );
+        assert.equal(refused.status, "conflict");
+        assert.equal(
+          refused.status === "conflict" && refused.receipt.reason,
+          "heldByAnotherWriter",
+        );
+        yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeSqliteClient.layerMemory(),
+          Layer.succeed(ServerEnvironment.ServerEnvironment, {
+            getEnvironmentId: Effect.succeed(EnvironmentId.make(DRIVER_ENVIRONMENT)),
+            getDescriptor: Effect.die("unused"),
+          }),
+          // A real (realpath'd) home: the Prime ownership proof refuses to
+          // walk a symlinked ancestor such as macOS's /var.
+          Layer.unwrap(
+            Effect.promise(async () => {
+              const base = await realpath(await mkdtemp(join(tmpdir(), "pa-b03-home-")));
+              return ServerConfig.layerTest(base, base);
+            }),
+          ).pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+      Effect.orDie,
+    ),
   );
 });

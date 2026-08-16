@@ -390,4 +390,42 @@ describe("PrimeSessionLease", () => {
     await gateA.release({ threadId: "thread-a" });
     assert.equal((await leaseB.inspect(scopeForThread("thread-a"))).status, "held");
   });
+  it("retakes its own lapsed lease, but never one another writer claimed", async () => {
+    const time = clock();
+    const store = makeInMemoryPrimeSessionLeaseStore();
+    const scopeForThread = (threadId: string) =>
+      scope({ threadId } as Partial<PrimeResumeCursorScope>);
+    const gateA = makePrimeSessionWriteGate({
+      service: service(store, time.now),
+      writer: clientA,
+      scopeForThread,
+      now: time.now,
+    });
+    const gateB = makePrimeSessionWriteGate({
+      service: service(store, time.now),
+      writer: clientB,
+      scopeForThread,
+      now: time.now,
+    });
+    await gateA.acquire({ threadId: "thread-a", operation: "activate" });
+    // A session that sat idle past the TTL is still this writer's session: a
+    // gate that refused here would leave the user unable to send, interrupt or
+    // stop a live Prime process it alone owns.
+    time.advance(PRIME_SESSION_LEASE_TTL_MS + 1);
+    await gateA.authorizeWrite({ threadId: "thread-a", operation: "send" });
+    assert.equal(
+      (await service(store, time.now).inspect(scopeForThread("thread-a"))).status,
+      "held",
+    );
+    // But once another writer has claimed the lapsed scope, the retry is a
+    // refusal, not a takeover.
+    time.advance(PRIME_SESSION_LEASE_TTL_MS + 1);
+    await gateB.acquire({ threadId: "thread-a", operation: "activate" });
+    const refused = await gateA
+      .authorizeWrite({ threadId: "thread-a", operation: "send" })
+      .then(() => undefined)
+      .catch((error: unknown) => error);
+    assert.ok(refused instanceof PrimeSessionLeaseConflictError);
+    assert.equal(refused.receipt.retryable, true);
+  });
 });

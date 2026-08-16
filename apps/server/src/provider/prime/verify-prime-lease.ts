@@ -350,6 +350,62 @@ check(
 );
 line("adapter gate: activation refused with a redacted typed receipt");
 
+// 7b. A gate whose own lease merely lapsed retakes it; a gate whose lease was
+// taken over never does. Without the first half, gating every durable mutation
+// would strand a live session the moment it idled past the TTL; without the
+// second, the retry would be the takeover this milestone forbids.
+const lapsedStore = makeInMemoryPrimeSessionLeaseStore();
+let lapsedTime = 1_000;
+const lapsedService = () =>
+  makePrimeSessionLeaseService({
+    store: lapsedStore,
+    now: () => lapsedTime,
+    authorize: () => true,
+  });
+const soleWriter = makePrimeSessionWriteGate({
+  service: lapsedService(),
+  writer: clientA,
+  scopeForThread: (threadId) => scopeFor({ threadId }),
+  now: () => lapsedTime,
+});
+const rivalWriter = makePrimeSessionWriteGate({
+  service: lapsedService(),
+  writer: clientB,
+  scopeForThread: (threadId) => scopeFor({ threadId }),
+  now: () => lapsedTime,
+});
+await soleWriter.acquire({ threadId: "thread-lapsed", operation: "activate" });
+lapsedTime += PRIME_SESSION_LEASE_TTL_MS + 1;
+let lapsedRefusal: unknown;
+try {
+  await soleWriter.authorizeWrite({ threadId: "thread-lapsed", operation: "send" });
+} catch (error) {
+  lapsedRefusal = error;
+}
+check(lapsedRefusal === undefined, "a writer must be able to retake its own lapsed lease");
+check(
+  (await lapsedService().inspect(scopeFor({ threadId: "thread-lapsed" }))).status === "held",
+  "retaking a lapsed lease must leave the scope held again",
+);
+lapsedTime += PRIME_SESSION_LEASE_TTL_MS + 1;
+await rivalWriter.acquire({ threadId: "thread-lapsed", operation: "activate" });
+let supersededRefusal: unknown;
+try {
+  await soleWriter.authorizeWrite({ threadId: "thread-lapsed", operation: "send" });
+} catch (error) {
+  supersededRefusal = error;
+}
+check(
+  supersededRefusal instanceof PrimeSessionLeaseConflictError,
+  "a superseded writer must never retake a lease another writer claimed",
+);
+check(
+  supersededRefusal instanceof PrimeSessionLeaseConflictError &&
+    findSessionWriterReceiptViolation(supersededRefusal.receipt) === undefined,
+  "the superseded writer's receipt must be redacted",
+);
+line("adapter gate: own lapsed lease retaken, superseded lease never retaken");
+
 // 8. The arbitration schema is the one PA-B01 registered; B03 adds no slot.
 const slot = migrationManifest.filter(([, name]) => name === "PrimeResumeCursors");
 check(slot.length === 1, "the lease columns must live in exactly one migration");

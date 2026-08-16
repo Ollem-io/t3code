@@ -317,11 +317,15 @@ then open the forked thread and screenshot the fork-origin banner and its "Open 
 control; mobile: `test-t3-mobile` against the same server and screenshot the composer identity block
 with `namingAndForking` on and off, plus the fork-origin row on the forked thread.
 
+PA-B03 (server-side single-writer arbitration) has landed: `PrimeDriver` constructs the
+lease gate for every Prime instance, so activation, sends, aborts, compaction, runtime
+actions and dialog answers all prove the lease in the shipped server, and stop/teardown
+release it only once the process it authorized is gone.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                 |
 | --------- | ---------------------------------------------------------------- | --------------------- |
-| PA-B03    | Server-side single-writer arbitration and conflict receipts      | Next; precedes B02    |
 | PA-B02    | Exact adoption/resume state machine and compatibility validation | Pending after B01/B03 |
 | PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Pending               |
 | PA-B05    | Durable cleanup, retention, migrations, rollback safety          | Pending               |
