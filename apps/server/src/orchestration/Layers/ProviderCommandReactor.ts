@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  FollowUpId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -9,6 +10,7 @@ import {
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
+  type ProviderRuntimeOperation,
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
@@ -47,6 +49,7 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+const isFollowUpId = Schema.is(FollowUpId);
 const hasRuntimeActionCapabilities = (
   capabilities:
     | {
@@ -359,7 +362,8 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
-      | "provider.session.stop.failed";
+      | "provider.session.stop.failed"
+      | "provider.runtime-action.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -1268,36 +1272,48 @@ const make = Effect.gen(function* () {
         createdAt: event.payload.createdAt,
       });
     }
-    const operation =
+    const rawActionId =
+      event.type === "thread.steer-add-requested"
+        ? event.payload.steerId
+        : event.payload.followUpId;
+    if (!isFollowUpId(rawActionId)) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.runtime-action.failed",
+        summary: "Runtime action failed",
+        detail: "The runtime action identifier is invalid.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+    const operation: ProviderRuntimeOperation =
       event.type === "thread.steer-add-requested"
         ? {
             type: "steer.add" as const,
             commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`),
             threadId: event.payload.threadId,
-            steerId: event.payload.steerId,
+            steerId: rawActionId,
             text,
           }
         : {
             type: "follow-up.add" as const,
             commandId: commandId ?? CommandId.make(`provider-runtime-action:${event.eventId}`),
             threadId: event.payload.threadId,
-            followUpId: event.payload.followUpId,
+            followUpId: rawActionId,
             text,
           };
-    yield* providerService
-      .executeRuntimeOperation(operation)
-      .pipe(
-        Effect.catchCause(() =>
-          appendProviderFailureActivity({
-            threadId: event.payload.threadId,
-            kind: "provider.runtime-action.failed",
-            summary: "Runtime action failed",
-            detail: "The provider did not accept this runtime action.",
-            turnId: null,
-            createdAt: event.payload.createdAt,
-          }),
-        ),
-      );
+    yield* providerService.executeRuntimeOperation(operation).pipe(
+      Effect.catchCause(() =>
+        appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.runtime-action.failed",
+          summary: "Runtime action failed",
+          detail: "The provider did not accept this runtime action.",
+          turnId: null,
+          createdAt: event.payload.createdAt,
+        }),
+      ),
+    );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (

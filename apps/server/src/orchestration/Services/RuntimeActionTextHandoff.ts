@@ -7,8 +7,14 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
 export interface RuntimeActionTextHandoffShape {
-  readonly put: (input: { readonly commandId: string; readonly text: string }) => Effect.Effect<boolean>;
+  readonly put: (input: {
+    readonly commandId: string;
+    readonly text: string;
+  }) => Effect.Effect<boolean>;
   readonly take: (commandId: string) => Effect.Effect<string | undefined>;
   readonly discard: (commandId: string) => Effect.Effect<void>;
 }
-export class RuntimeActionTextHandoff extends Context.Service<RuntimeActionTextHandoff, RuntimeActionTextHandoffShape>()("t3/orchestration/RuntimeActionTextHandoff") {}
+export class RuntimeActionTextHandoff extends Context.Service<
+  RuntimeActionTextHandoff,
+  RuntimeActionTextHandoffShape
+>()("t3/orchestration/Services/RuntimeActionTextHandoff") {}

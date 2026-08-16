@@ -21,6 +21,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import { attachmentBelongsToThread, resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -49,6 +50,7 @@ const cleanNative = (value: string, fallback = ""): string => {
   return text.slice(0, MAX_NATIVE_STRING) || fallback;
 };
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 
 type SessionContext = {
   readonly key: string;
@@ -61,7 +63,14 @@ type SessionContext = {
   readonly ownershipPath: string;
   readonly processIdentity: { readonly pid: number; readonly startToken: string } | undefined;
   eventDrain: Promise<void> | undefined;
-  readonly pendingRequests: Map<string, { readonly method: "select" | "confirm" | "input" | "editor"; readonly title: string; readonly options: ReadonlyArray<string> }>;
+  readonly pendingRequests: Map<
+    string,
+    {
+      readonly method: "select" | "confirm" | "input" | "editor";
+      readonly title: string;
+      readonly options: ReadonlyArray<string>;
+    }
+  >;
 };
 type PendingStart = { readonly key: string; readonly promise: Promise<ProviderSession> };
 
@@ -130,23 +139,39 @@ export const makePrimeAdapter = (
     // Startup recovery is proof-before-action. The adapter has no authority to
     // guess identities; only transports that expose an exact identity may be
     // used for destructive cleanup below.
-    const ownershipRoot = primeResourceLayout({ home: options.home, environmentId: options.environmentId, instanceId: options.instanceId, threadId: "__startup__" }).root;
+    const ownershipRoot = primeResourceLayout({
+      home: options.home,
+      environmentId: options.environmentId,
+      instanceId: options.instanceId,
+      threadId: "__startup__",
+    }).root;
     yield* Effect.promise(() => NodeFSP.mkdir(ownershipRoot, { recursive: true, mode: 0o700 }));
-    const recoveryActions = yield* Effect.promise(() => recoverPrimeInstanceOwnership(ownershipRoot, { environmentId: options.environmentId, instanceId: String(options.instanceId) }, {
-      processMatches: provePrimeProcess,
-      rpcSessionMatches: async () => false,
-      daemonSessionMatches: async () => false,
-    }, {
-      stopProcess: async (handle) => { if (!(await stopProvenPrimeProcess(handle))) throw new Error("process identity changed or unavailable"); },
-      // Platform storage owns filesystem deletion. Until an anchored native implementation is available,
-      // retain records/resources while still safely stopping proven processes.
-      removeOwnedResource: async () => "retained",
-    }));
+    const recoveryActions = yield* Effect.promise(() =>
+      recoverPrimeInstanceOwnership(
+        ownershipRoot,
+        { environmentId: options.environmentId, instanceId: String(options.instanceId) },
+        {
+          processMatches: provePrimeProcess,
+          rpcSessionMatches: async () => false,
+          daemonSessionMatches: async () => false,
+        },
+        {
+          stopProcess: async (handle) => {
+            if (!(await stopProvenPrimeProcess(handle)))
+              throw new Error("process identity changed or unavailable");
+          },
+          // Platform storage owns filesystem deletion. Until an anchored native implementation is available,
+          // retain records/resources while still safely stopping proven processes.
+          removeOwnedResource: async () => "retained",
+        },
+      ),
+    );
     for (const action of recoveryActions) {
-      if (action.kind === "warning") yield* Effect.logWarning("prime.ownership.recovery-retained", {
-        homeFingerprint: primeHomeFingerprint(options.home),
-        reasonClass: "proof-or-storage-unavailable",
-      });
+      if (action.kind === "warning")
+        yield* Effect.logWarning("prime.ownership.recovery-retained", {
+          homeFingerprint: primeHomeFingerprint(options.home),
+          reasonClass: "proof-or-storage-unavailable",
+        });
     }
 
     const closeContext = async (context: SessionContext) => {
@@ -155,8 +180,12 @@ export const makePrimeAdapter = (
       await context.transport.terminal.catch(() => undefined);
       if (context.processIdentity) {
         await writePrimeOwnership(context.ownershipPath, {
-          version: 1, environmentId: options.environmentId, instanceId: String(options.instanceId),
-          threadId: String(context.session.threadId), kind: "thread", process: context.processIdentity,
+          version: 1,
+          environmentId: options.environmentId,
+          instanceId: String(options.instanceId),
+          threadId: String(context.session.threadId),
+          kind: "thread",
+          process: context.processIdentity,
           processStopped: true,
         }).catch(() => undefined);
       }
@@ -194,7 +223,14 @@ export const makePrimeAdapter = (
       });
       const processIdentity = await transport.processIdentityReady?.catch(() => undefined);
       if (processIdentity) {
-        await writePrimeOwnership(layout.ownership, { version: 1, environmentId: options.environmentId, instanceId: String(options.instanceId), threadId: String(input.threadId), kind: "thread", process: processIdentity });
+        await writePrimeOwnership(layout.ownership, {
+          version: 1,
+          environmentId: options.environmentId,
+          instanceId: String(options.instanceId),
+          threadId: String(input.threadId),
+          kind: "thread",
+          process: processIdentity,
+        });
       }
       try {
         const response = await client.command({ type: "get_state" });
@@ -234,23 +270,47 @@ export const makePrimeAdapter = (
             let canonicalEnvelope = true;
             if (envelope._tag === "known-event" && envelope.value.type === "extension_ui_request") {
               const request = envelope.value;
-              const supported = request.method === "select" || request.method === "confirm" || request.method === "input" || request.method === "editor";
+              const supported =
+                request.method === "select" ||
+                request.method === "confirm" ||
+                request.method === "input" ||
+                request.method === "editor";
               if (context.pendingRequests.has(request.id)) {
                 // A duplicate native correlation id is malformed protocol state: cancelling it could
                 // accidentally resolve the original request. Fail this exact session closed instead.
                 canonicalEnvelope = false;
                 client.close();
                 await Promise.resolve(transport.close?.()).catch(() => undefined);
-                for (const event of normalizer.cancelled(request.id, "Prime Agent interactive request reused an active correlation id; the session was closed.")) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+                for (const event of normalizer.cancelled(
+                  request.id,
+                  "Prime Agent interactive request reused an active correlation id; the session was closed.",
+                ))
+                  await Effect.runPromise(Queue.offer(runtimeEvents, event));
               } else if (!supported || context.pendingRequests.size >= MAX_PENDING_REQUESTS) {
                 canonicalEnvelope = false;
-                await client.command({ type: "extension_ui_response", cancelled: true }, { requestId: request.id }).catch(() => undefined);
-                for (const event of normalizer.cancelled(request.id, !supported ? "Prime Agent interactive request was cancelled because this method is unsupported." : "Prime Agent interactive request was cancelled because the request limit was reached.")) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+                await client
+                  .command(
+                    { type: "extension_ui_response", cancelled: true },
+                    { requestId: request.id },
+                  )
+                  .catch(() => undefined);
+                for (const event of normalizer.cancelled(
+                  request.id,
+                  !supported
+                    ? "Prime Agent interactive request was cancelled because this method is unsupported."
+                    : "Prime Agent interactive request was cancelled because the request limit was reached.",
+                ))
+                  await Effect.runPromise(Queue.offer(runtimeEvents, event));
               } else {
                 context.pendingRequests.set(request.id, {
                   method: request.method,
                   title: cleanNative(request.title, "Prime Agent request"),
-                  options: request.method === "select" ? request.options.slice(0, MAX_SELECT_OPTIONS).map((x) => cleanNative(x, "Option")) : [],
+                  options:
+                    request.method === "select"
+                      ? request.options
+                          .slice(0, MAX_SELECT_OPTIONS)
+                          .map((x) => cleanNative(x, "Option"))
+                      : [],
                 });
               }
             }
@@ -265,10 +325,16 @@ export const makePrimeAdapter = (
           if (sessions.get(input.threadId) !== context) return;
           sessions.delete(input.threadId);
           context.pendingRequests.clear();
-          if (context.processIdentity) await writePrimeOwnership(context.ownershipPath, {
-            version: 1, environmentId: options.environmentId, instanceId: String(options.instanceId),
-            threadId: String(input.threadId), kind: "thread", process: context.processIdentity, processStopped: true,
-          }).catch(() => undefined);
+          if (context.processIdentity)
+            await writePrimeOwnership(context.ownershipPath, {
+              version: 1,
+              environmentId: options.environmentId,
+              instanceId: String(options.instanceId),
+              threadId: String(input.threadId),
+              kind: "thread",
+              process: context.processIdentity,
+              processStopped: true,
+            }).catch(() => undefined);
           const graceful = terminal.kind === "exit" && terminal.code === 0;
           const reason =
             terminal.kind === "exit" && terminal.code !== null
@@ -616,58 +682,124 @@ export const makePrimeAdapter = (
         try: async () => {
           const context = requireContext(threadId);
           await expectSuccess(context, { type: "abort" });
-          for (const event of context.normalizer.abort("Prime Agent turn was interrupted.")) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+          for (const event of context.normalizer.abort("Prime Agent turn was interrupted."))
+            await Effect.runPromise(Queue.offer(runtimeEvents, event));
         },
-        catch: (cause) => new ProviderAdapterProcessError({ provider: PROVIDER, threadId, detail: "Prime Agent interrupt failed.", cause }),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: "Prime Agent interrupt failed.",
+            cause,
+          }),
       });
 
     // Prime 0.7.2 exposes only `{ type: "steer"|"follow_up", message, images? }`.
     // `session_action_update` supplies lane text/count but deliberately no action ids,
     // therefore follow-up cancellation remains false rather than guessing an RPC.
-    const executeRuntimeOperation: NonNullable<ProviderAdapterShape<ProviderAdapterError>["executeRuntimeOperation"]> = (operation) =>
+    const executeRuntimeOperation: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["executeRuntimeOperation"]
+    > = (operation) =>
       Effect.tryPromise({
         try: async () => {
           const context = requireContext(operation.threadId);
           if (operation.type !== "steer.add" && operation.type !== "follow-up.add")
-            throw new ProviderAdapterValidationError({ provider: PROVIDER, operation: "executeRuntimeOperation", issue: "Prime Agent does not expose an exact native action command for this operation." });
+            throw new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "executeRuntimeOperation",
+              issue:
+                "Prime Agent does not expose an exact native action command for this operation.",
+            });
           await expectSuccess(context, {
             type: operation.type === "steer.add" ? "steer" : "follow_up",
             message: operation.text,
           });
         },
-        catch: (cause) => cause instanceof ProviderAdapterValidationError
-          ? cause
-          : new ProviderAdapterProcessError({ provider: PROVIDER, threadId: operation.threadId, detail: "Prime Agent runtime action failed.", cause }),
+        catch: (cause) =>
+          isProviderAdapterValidationError(cause)
+            ? cause
+            : new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: operation.threadId,
+                detail: "Prime Agent runtime action failed.",
+                cause,
+              }),
       });
 
-    const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (threadId, requestId, decision) =>
+    const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (
+      threadId,
+      requestId,
+      decision,
+    ) =>
       Effect.tryPromise({
         try: async () => {
-          const context = requireContext(threadId); const id = String(requestId); const pending = context.pendingRequests.get(id);
-          if (!pending || pending.method !== "confirm") throw new Error("Interactive request is not a confirmation.");
+          const context = requireContext(threadId);
+          const id = String(requestId);
+          const pending = context.pendingRequests.get(id);
+          if (!pending || pending.method !== "confirm")
+            throw new Error("Interactive request is not a confirmation.");
           const value = decision === "accept" || decision === "acceptForSession";
-          await expectSuccess(context, value ? { type: "extension_ui_response", confirmed: true } : { type: "extension_ui_response", cancelled: true }, { requestId: id });
+          await expectSuccess(
+            context,
+            value
+              ? { type: "extension_ui_response", confirmed: true }
+              : { type: "extension_ui_response", cancelled: true },
+            { requestId: id },
+          );
           context.pendingRequests.delete(id);
-          for (const event of context.normalizer.resolved(id, "request", { decision: value ? decision : "cancel" })) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+          for (const event of context.normalizer.resolved(id, "request", {
+            decision: value ? decision : "cancel",
+          }))
+            await Effect.runPromise(Queue.offer(runtimeEvents, event));
         },
-        catch: (cause) => new ProviderAdapterProcessError({ provider: PROVIDER, threadId, detail: "Prime Agent approval response failed.", cause }),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: "Prime Agent approval response failed.",
+            cause,
+          }),
       });
 
-    const respondToUserInput: ProviderAdapterShape<ProviderAdapterError>["respondToUserInput"] = (threadId, requestId, answers) =>
+    const respondToUserInput: ProviderAdapterShape<ProviderAdapterError>["respondToUserInput"] = (
+      threadId,
+      requestId,
+      answers,
+    ) =>
       Effect.tryPromise({
         try: async () => {
-          const context = requireContext(threadId); const id = String(requestId); const pending = context.pendingRequests.get(id);
-          if (!pending || pending.method === "confirm") throw new Error("Interactive request is not user input.");
-          if (!Object.prototype.hasOwnProperty.call(answers, id)) throw new Error("Prime Agent input response must name the request id.");
+          const context = requireContext(threadId);
+          const id = String(requestId);
+          const pending = context.pendingRequests.get(id);
+          if (!pending || pending.method === "confirm")
+            throw new Error("Interactive request is not user input.");
+          if (!Object.prototype.hasOwnProperty.call(answers, id))
+            throw new Error("Prime Agent input response must name the request id.");
           const raw = answers[id];
           const value = Array.isArray(raw) ? raw[0] : raw;
-          if (typeof value !== "string" || value.length > MAX_NATIVE_STRING) throw new Error("Prime Agent input response must be a bounded string.");
-          const clean = cleanNative(value); if (pending.method === "select" && !pending.options.includes(clean)) throw new Error("Prime Agent select answer is invalid.");
-          await expectSuccess(context, { type: "extension_ui_response", value: clean }, { requestId: id });
+          if (typeof value !== "string" || value.length > MAX_NATIVE_STRING)
+            throw new Error("Prime Agent input response must be a bounded string.");
+          const clean = cleanNative(value);
+          if (pending.method === "select" && !pending.options.includes(clean))
+            throw new Error("Prime Agent select answer is invalid.");
+          await expectSuccess(
+            context,
+            { type: "extension_ui_response", value: clean },
+            { requestId: id },
+          );
           context.pendingRequests.delete(id);
-          for (const event of context.normalizer.resolved(id, "user-input", { answers: { [id]: clean } })) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+          for (const event of context.normalizer.resolved(id, "user-input", {
+            answers: { [id]: clean },
+          }))
+            await Effect.runPromise(Queue.offer(runtimeEvents, event));
         },
-        catch: (cause) => new ProviderAdapterProcessError({ provider: PROVIDER, threadId, detail: "Prime Agent user input response failed.", cause }),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: "Prime Agent user input response failed.",
+            cause,
+          }),
       });
 
     const unsupported = (operation: string) =>
@@ -711,7 +843,11 @@ export const makePrimeAdapter = (
       // declaration-verified 0.7.2 command baseline, whose exact `steer` and
       // `follow_up` commands are available after that probe; it never infers
       // cancellation from the enqueue acknowledgement.
-      capabilities: { sessionModelSwitch: "in-session", conversationRollback: "unsupported", runtimeExtensions: { steer: true, followUps: true, followUpCancel: false } },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        conversationRollback: "unsupported",
+        runtimeExtensions: { steer: true, followUps: true, followUpCancel: false },
+      },
       startSession,
       sendTurn,
       interruptTurn,

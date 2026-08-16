@@ -3178,7 +3178,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   disabled={isSendBusy || isSendDisabled || prompt.trim().length === 0}
                   onClick={() => submitComposer()}
                 >
-                  {primeActionMode === "followUp" ? "Queue follow-up" : "Send steering"}
+                  {primeActionMode === "followUp"
+                    ? "Queue follow-up"
+                    : primeActionMode === "steer"
+                      ? "Send steering"
+                      : "Send runtime action"}
                 </Button>
               </div>
               <p className="mt-1 text-muted-foreground">

@@ -42,6 +42,7 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
+import type { ProviderAdapterCapabilities } from "../../provider/Services/ProviderAdapter.ts";
 import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
 import { TextGeneration, type TextGenerationShape } from "../../textGeneration/TextGeneration.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
@@ -149,9 +150,9 @@ describe("ProviderCommandReactor", () => {
     readonly sessionModelSwitch?: "unsupported" | "in-session";
     readonly runtimeExtensions?:
       | {
-          readonly steer?: boolean | undefined;
-          readonly followUps?: boolean | undefined;
-          readonly followUpCancel?: boolean | undefined;
+          readonly steer?: boolean;
+          readonly followUps?: boolean;
+          readonly followUpCancel?: boolean;
         }
       | undefined;
     readonly requiresNewThreadForModelChange?: boolean;
@@ -334,8 +335,9 @@ describe("ProviderCommandReactor", () => {
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (_provider) =>
-        Effect.succeed({
+        Effect.succeed<ProviderAdapterCapabilities>({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
+          conversationRollback: "unsupported",
           ...(input?.runtimeExtensions !== undefined
             ? { runtimeExtensions: input.runtimeExtensions }
             : {}),
@@ -578,7 +580,10 @@ describe("ProviderCommandReactor", () => {
     // Replayed durable events contain only identifiers; provider text stays in
     // the one-shot process-local handoff and is not persisted for restart.
     const durableEvents = await harness.runEffect(
-      harness.engine.readEvents(0, 10_000).pipe(Stream.runCollect, Effect.map(Array.from)),
+      harness.engine.readEvents(0, 10_000).pipe(
+        Stream.runCollect,
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
     );
     const runtimeIntents = durableEvents.filter(
       (event) =>
@@ -608,9 +613,7 @@ describe("ProviderCommandReactor", () => {
     const thread = (await harness.readModel()).threads.find(
       (entry) => entry.id === ThreadId.make("thread-1"),
     );
-    expect(thread?.activities.some((activity) => activity.detail?.includes("provider only"))).toBe(
-      false,
-    );
+    expect(JSON.stringify(thread?.activities)).not.toContain("provider only");
     expect(thread?.messages.some((message) => message.text.includes("provider only"))).toBe(false);
 
     harness.executeRuntimeOperation.mockReturnValue(
@@ -3272,7 +3275,9 @@ describe("ProviderCommandReactor", () => {
       thread?.activities.some(
         (activity) =>
           activity.kind === "provider.turn.start.failed" &&
-          String(activity.payload.detail).includes("authoritative turn start in flight"),
+          String((activity.payload as { readonly detail?: string }).detail).includes(
+            "authoritative turn start in flight",
+          ),
       ),
     ).toBe(true);
   });

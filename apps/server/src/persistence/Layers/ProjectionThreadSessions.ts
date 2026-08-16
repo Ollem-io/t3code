@@ -2,6 +2,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
@@ -15,10 +16,16 @@ import {
   GetProjectionThreadSessionInput,
 } from "../Services/ProjectionThreadSessions.ts";
 
-const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(Struct.assign({
-  actionState: Schema.optional(Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.actionState))),
-  runtimeCapabilities: Schema.optional(Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.runtimeCapabilities))),
-}));
+const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(
+  Struct.assign({
+    actionState: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.actionState)),
+    ),
+    runtimeCapabilities: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.runtimeCapabilities)),
+    ),
+  }),
+);
 
 const makeProjectionThreadSessionRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -102,6 +109,15 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
 
   const getByThreadId: ProjectionThreadSessionRepositoryShape["getByThreadId"] = (input) =>
     getProjectionThreadSessionRow(input).pipe(
+      // SQL NULL decodes to null; the repository contract models absence as
+      // an omitted optional field.
+      Effect.map(
+        Option.map(({ actionState, runtimeCapabilities, ...rest }) => ({
+          ...rest,
+          ...(actionState != null ? { actionState } : {}),
+          ...(runtimeCapabilities != null ? { runtimeCapabilities } : {}),
+        })),
+      ),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadSessionRepository.getByThreadId:query"),
       ),

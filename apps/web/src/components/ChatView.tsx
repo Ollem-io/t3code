@@ -176,7 +176,7 @@ import {
   nextProjectScriptId,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
-import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
+import { newDraftId, newMessageId, newThreadId, randomUUID } from "~/lib/utils";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
@@ -5342,7 +5342,8 @@ function ChatViewContent(props: ChatViewProps) {
   const onRuntimeAction = useCallback(
     async (mode: "steer" | "followUp", text: string): Promise<boolean> => {
       if (!activeThread || !text.trim()) return false;
-      const id = globalThis.crypto.randomUUID();
+      // Prefixed to satisfy the FollowUpId brand's leading-letter pattern.
+      const id = `${mode}-${randomUUID()}`;
       const result =
         mode === "steer"
           ? await steerThread({

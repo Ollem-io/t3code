@@ -1,6 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { assert, describe, it } from "@effect/vitest";
-import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  FollowUpId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -231,23 +237,55 @@ describe("PrimeAdapter session bootstrap", () => {
     ));
 });
 
-
 describe("PrimeAdapter runtime action RPC", () => {
   it("uses only the exact 0.7.2 steer/follow_up commands and rejects cancellation", () =>
-    Effect.scoped(Effect.gen(function* () {
-      const f = yield* fixture;
-      const adapter = yield* make(f);
-      const input = makeInput("runtime-actions", f.cwd);
-      yield* adapter.startSession(input);
-      if (!adapter.executeRuntimeOperation) throw new Error("runtime actions missing");
-      yield* adapter.executeRuntimeOperation({ type: "steer.add", commandId: "command-steer", threadId: input.threadId, steerId: "local-steer", text: "steer now" });
-      yield* adapter.executeRuntimeOperation({ type: "follow-up.add", commandId: "command-follow", threadId: input.threadId, followUpId: "local-follow", text: "queue next" });
-      const cancelled = yield* Effect.exit(adapter.executeRuntimeOperation({ type: "follow-up.cancel", commandId: "command-cancel", threadId: input.threadId, followUpId: "local-follow" }));
-      assert.strictEqual(cancelled._tag, "Failure");
-      const commands = (yield* records(f.marker)).filter((record) => record.event === "command").map((record) => record.command);
-      assert.ok(commands.some((command) => command.type === "steer" && command.message === "steer now"));
-      assert.ok(commands.some((command) => command.type === "follow_up" && command.message === "queue next"));
-      assert.ok(!commands.some((command) => /cancel|remove|delete/.test(command.type)));
-      assert.ok(!commands.some((command) => "actionId" in command || "steerId" in command || "followUpId" in command));
-    })));
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        const adapter = yield* make(f);
+        const input = makeInput("runtime-actions", f.cwd);
+        yield* adapter.startSession(input);
+        if (!adapter.executeRuntimeOperation) throw new Error("runtime actions missing");
+        yield* adapter.executeRuntimeOperation({
+          type: "steer.add",
+          commandId: CommandId.make("command-steer"),
+          threadId: input.threadId,
+          steerId: FollowUpId.make("local-steer"),
+          text: "steer now",
+        });
+        yield* adapter.executeRuntimeOperation({
+          type: "follow-up.add",
+          commandId: CommandId.make("command-follow"),
+          threadId: input.threadId,
+          followUpId: FollowUpId.make("local-follow"),
+          text: "queue next",
+        });
+        const cancelled = yield* Effect.exit(
+          adapter.executeRuntimeOperation({
+            type: "follow-up.cancel",
+            commandId: CommandId.make("command-cancel"),
+            threadId: input.threadId,
+            followUpId: FollowUpId.make("local-follow"),
+          }),
+        );
+        assert.strictEqual(cancelled._tag, "Failure");
+        const commands = (yield* records(f.marker))
+          .filter((record) => record.event === "command")
+          .map((record) => record.command);
+        assert.ok(
+          commands.some((command) => command.type === "steer" && command.message === "steer now"),
+        );
+        assert.ok(
+          commands.some(
+            (command) => command.type === "follow_up" && command.message === "queue next",
+          ),
+        );
+        assert.ok(!commands.some((command) => /cancel|remove|delete/.test(command.type)));
+        assert.ok(
+          !commands.some(
+            (command) => "actionId" in command || "steerId" in command || "followUpId" in command,
+          ),
+        );
+      }),
+    ));
 });
