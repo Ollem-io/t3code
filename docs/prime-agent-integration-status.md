@@ -49,8 +49,9 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-M16    | Isolated real-binary gate and MVP documentation graduation         | Done — `074f18a9` |
 | PA-A01    | Capability negotiation and provider-neutral Alpha contracts        | Done — `c9659346` |
 | PA-A02    | Steering and queued follow-up with visible cancellation            | Done — `962c80b7` |
+| PA-A02.1  | PA-A02 review-debt cleanup                                         | Done — `2d8772c1` |
 
-Completed total: **18 of 30 milestones**.
+Completed total: **19 of 31 milestones** (PA-A02.1 added to the original 30).
 
 Note on "merged to main": the run's milestone merges advance the run `main`
 lineage descending from public `origin/main` commit `9e201941a`. By maintainer
@@ -91,10 +92,11 @@ Visual evidence remains truthfully not captured across all rounds because UI-lau
 
 Accepted non-blocker debt carried into **PA-A02.1** (see `docs/prime-agent-remaining-execution-plan.md`): falsifiable artifact convergence assertion; genuine two-client convergence evidence; capability-derived cancellation copy; inline send-decision reason on web; mobile disabled-button styling; rendering `PrimeActionState.active`; snapshot coalescing; crash-restart stale action-state display; a regression test for the invalid-ID fail-closed path; documenting the interrupt handler's optimistic action-state clear as an explicit invariant exception; a guard or warning comment on the writer-less orchestration log stream; and visual evidence capture.
 
-## PA-A02.1 (implemented, awaiting review)
+## PA-A02.1 (merged)
 
-Every accepted non-blocker from the PA-A02 rounds is now closed on
-`dev/prime-agent-perfect-integration-20260813/pa-a02.1`:
+**PA-A02.1 — PA-A02 review-debt cleanup** was dual-approved on exact SHA `c270b138` (single round: Luna-verified watch pass, independent code/security and black-box product APPROVE) and merged to `main` at `2d8772c1` on 2026-08-16. Non-blockers accepted at approval: a bounded, self-healing startup-sweep race that can transiently blank a freshly reconnected queue until the next authoritative snapshot; the read-model two-client assertion is determinism evidence (the artifact carries the falsifiable convergence proof); and the `followUpCancel: true` cancellation copy would promise per-item cancel controls that no client renders — unreachable today (`PrimeAdapter` pins it false) but must be closed before any runtime advertises the capability.
+
+Every accepted non-blocker from the PA-A02 rounds is closed:
 
 1. Cancellation copy is derived from the negotiated `followUpCancel` capability
    (`primeCancellationCopy`) on web and mobile instead of hard-coded text.
@@ -138,8 +140,7 @@ Every accepted non-blocker from the PA-A02 rounds is now closed on
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A02.1  | Review-debt cleanup batch from PA-A02 rounds                     | Next                            |
-| PA-A03    | Context usage, compaction, retry, bounded status UI              | Pending after A02.1             |
+| PA-A03    | Context usage, compaction, retry, bounded status UI              | Next                            |
 | PA-A04    | Prime commands, skills, prompt templates                         | Pending                         |
 | PA-A05    | Rich extension UI and transient status integration               | Pending                         |
 | PA-A06    | Subagents, observation, Agents-surface controls                  | Pending                         |
@@ -154,7 +155,7 @@ Every accepted non-blocker from the PA-A02 rounds is now closed on
 
 ## Immediate next steps
 
-1. Implement `PA-A02.1` (review-debt batch above, including visual evidence once UI-launch permission is granted) through the `pa-milestone` workflow with the standard dual-review gate.
+1. Capture the still-pending PA-A02/PA-A02.1 visual evidence when UI-launch permission is granted (exact steps recorded above).
 2. Implement and review `PA-A03`–`PA-A08` sequentially.
 3. Implement Beta in the dependency order above.
 4. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.
