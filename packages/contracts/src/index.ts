@@ -33,3 +33,4 @@ export * from "./usage.ts";
 export * from "./rpc.ts";
 
 export * from "./providerCapabilities.ts";
+export * from "./primeResume.ts";

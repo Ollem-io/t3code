@@ -42,6 +42,8 @@ export type PrimeResourceLocation = {
   readonly thread: string;
   readonly session: string;
   readonly config: string;
+  readonly resumeCursor: string;
+  readonly resumeCursorBackup: string;
   readonly daemon: string;
   readonly ownershipDirectory: string;
   readonly ownership: string;
@@ -67,6 +69,8 @@ export const primeResourceLayout = (input: {
     thread,
     session: join(thread, "session"),
     config: join(thread, "config.json"),
+    resumeCursor: join(thread, "resume-cursor.json"),
+    resumeCursorBackup: join(thread, "resume-cursor.json.bak"),
     daemon: join(instance, "daemon"),
     ownershipDirectory,
     ownership: join(ownershipDirectory, `${primePathComponent(input.threadId)}.json`),
