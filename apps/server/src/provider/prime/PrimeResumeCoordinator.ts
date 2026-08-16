@@ -16,6 +16,7 @@ import {
 
 import { classifyPrimeCompatibility } from "./PrimeCompatibility.ts";
 import {
+  discardPrimeResumeCursor,
   encodePrimeResumeCursor,
   makePrimeResumeCursor,
   readPrimeResumeCursor,
@@ -122,6 +123,13 @@ export interface PrimeResumeCoordinator {
     readonly threadId: string;
     readonly mode?: PrimeResumeMode;
   }) => Promise<void>;
+  /**
+   * PA-B04 — honours an explicitly confirmed fresh start by deleting this
+   * thread's own resume cursor, and only after proving the file is one for this
+   * exact scope. Answers whether a cursor was actually discarded. Durable
+   * session data, thread history and checkpoints are never touched.
+   */
+  readonly discardCursor: (threadId: string) => Promise<boolean>;
   /** Forgets memoized state for a thread whose session is gone. */
   readonly forget: (threadId: string) => void;
 }
@@ -280,7 +288,21 @@ export const makePrimeResumeCoordinator = (
     if (mode !== undefined) publish(threadId, { status: "resumed", mode });
   };
 
-  return { resume, recordSession, forget: (threadId) => inFlight.delete(threadId) };
+  const discardCursor: PrimeResumeCoordinator["discardCursor"] = async (threadId) => {
+    const scope = await deps.scopeForThread(threadId);
+    const discarded = await discardPrimeResumeCursor(deps.cursorPath(threadId), scope);
+    // A memoized refusal must not outlive the cursor that caused it, or the
+    // very next start would replay the decision the user just resolved.
+    inFlight.delete(threadId);
+    return discarded;
+  };
+
+  return {
+    resume,
+    recordSession,
+    discardCursor,
+    forget: (threadId) => inFlight.delete(threadId),
+  };
 };
 
 /** Explains a refusal without naming anything the client may not know. */

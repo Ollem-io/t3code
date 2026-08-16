@@ -18,6 +18,14 @@ import {
  * own is "there was nothing to resume".
  */
 
+/**
+ * The Prime Agent *driver kind*, which is what the session read model reports
+ * as `providerName`. Deliberately not an instance id: a second configured Prime
+ * instance is still Prime Agent, and a resume that refused there has to surface
+ * exactly the same way rather than silently going hidden.
+ */
+export const PRIME_RESUME_DRIVER_KIND = "prime-agent";
+
 /** What a client may ask for once a resume did not land exactly. */
 export type PrimeResumeChoiceKind = "retry" | "fork" | "fresh";
 
@@ -156,7 +164,13 @@ export function primeResumeFailureSurface(reason: PrimeResumeFailureReason): Pri
       // Coarse by construction: the host tells us only that someone else is
       // authoritative, never who or where, and this copy may not imply more.
       "Another client is currently the writer for this Prime Agent session. This thread's history is intact and stays read-only until that writer finishes. Nothing here was lost.",
-      [RETRY],
+      // Retry first, because a conflict usually clears on its own once the
+      // other writer finishes. Fork is offered too: a writer that never
+      // finishes must not be a dead end, and forking takes nothing away from
+      // whoever holds the session. A fresh start is deliberately not offered —
+      // discarding the cursor while someone else is authoritative would fight
+      // over a session this client cannot see the state of.
+      [RETRY, FORK],
     );
   if (INCOMPATIBLE_REASONS.has(reason))
     return refusal(
@@ -260,10 +274,10 @@ export function primeResumeReduce(
  * UI it has no reason to show.
  */
 export function primeResumeSurface(
-  providerName: string | null | undefined,
+  providerDriverKind: string | null | undefined,
   model: PrimeResumeModel,
 ): PrimeResumeSurface {
-  if (providerName !== "prime-agent") return hidden;
+  if (providerDriverKind !== PRIME_RESUME_DRIVER_KIND) return hidden;
   const state = model.state;
   if (state === undefined) return hidden;
   if (state.status === "unavailable") return primeResumeFailureSurface(state.reason);
@@ -302,10 +316,51 @@ export function primeResumeSurface(
 
 /** The composer gate, so no surface has to re-derive it. */
 export function primeResumeBlocksComposer(
-  providerName: string | null | undefined,
+  providerDriverKind: string | null | undefined,
   model: PrimeResumeModel,
 ): boolean {
-  return primeResumeSurface(providerName, model).composerBlocked;
+  return primeResumeSurface(providerDriverKind, model).composerBlocked;
+}
+
+/**
+ * The reason a blocked composer reports. One string for every client, so the
+ * gate and the banner cannot disagree about why sending is paused.
+ */
+export const PRIME_RESUME_COMPOSER_BLOCKED_REASON = "Prime Agent resume unresolved";
+
+/**
+ * Where a chosen recovery is dispatched.
+ *
+ * Fork is deliberately not a resume command: forking a thread already exists
+ * end to end and it leaves the refused session exactly where it is, so routing
+ * it anywhere else would duplicate a durable operation. Retry and fresh are the
+ * only two the host must arbitrate as resume, which is why the recover command
+ * carries just those two.
+ */
+export function primeResumeRecoveryRoute(
+  intent: PrimeResumeIntent,
+):
+  | { readonly kind: "fork" }
+  | {
+      readonly kind: "recover";
+      readonly intent: "retry" | "fresh";
+      readonly discardCursor: boolean;
+    } {
+  if (intent.kind === "fork") return { kind: "fork" };
+  return intent.kind === "fresh"
+    ? { kind: "recover", intent: "fresh", discardCursor: intent.discardCursor }
+    : // A retry never discards anything: it re-runs the same validation, and a
+      // refusal that survives it must survive it with the cursor intact.
+      { kind: "recover", intent: "retry", discardCursor: false };
+}
+
+/**
+ * Whether a dispatched choice is still waiting on the host's answer. Every
+ * surface uses it to disable its own buttons, so one click cannot become two
+ * forks or two discarded cursors.
+ */
+export function primeResumeAwaitingChoice(model: PrimeResumeModel): boolean {
+  return model.pending !== undefined;
 }
 
 /** The intent a chosen recovery dispatches, or `undefined` if it is not offered. */
@@ -322,10 +377,10 @@ export function primeResumeIntentFor(
 
 /** Lines every attached client derives from one published state. */
 export function renderPrimeResume(
-  providerName: string | null | undefined,
+  providerDriverKind: string | null | undefined,
   model: PrimeResumeModel,
 ): ReadonlyArray<string> {
-  const surface = primeResumeSurface(providerName, model);
+  const surface = primeResumeSurface(providerDriverKind, model);
   if (surface.kind === "hidden") return [];
   return [surface.title, surface.detail, ...surface.choices.map((choice) => choice.label)];
 }

@@ -77,6 +77,13 @@ import {
   ThreadComposer,
 } from "./ThreadComposer";
 import type { PrimeThreadForkOrigin } from "./primeFork";
+import { PrimeResumeBanner } from "./PrimeResumeBanner";
+import { usePrimeResumeModel } from "./usePrimeResumeModel";
+import {
+  primeResumeBlocksComposer,
+  primeResumeRecoveryRoute,
+  type PrimeResumeIntent,
+} from "@t3tools/client-runtime/prime-resume";
 import { ThreadFeed } from "./ThreadFeed";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 
@@ -134,6 +141,16 @@ export interface ThreadDetailScreenProps {
   ) => Promise<boolean>;
   readonly onRenameSession?: (name: string) => Promise<boolean>;
   readonly onForkSession?: (forkPointId: string | undefined) => Promise<boolean>;
+  /**
+   * PA-B04 — dispatches a retry or a confirmed fresh start for a Prime Agent
+   * resume that refused. Forking is routed through `onForkSession`, which
+   * already exists and already keeps the refused session untouched.
+   */
+  readonly onRecoverPrimeResume?: (
+    intent:
+      | { readonly kind: "retry" }
+      | { readonly kind: "fresh"; readonly discardCursor: boolean },
+  ) => Promise<boolean>;
   /** Thread ancestry and the way back to the thread this one was forked from. */
   readonly forkOrigin?: PrimeThreadForkOrigin | null | undefined;
   readonly onOpenSourceThread?: (threadId: string) => void;
@@ -538,7 +555,40 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     selectedThreadKey,
   ]);
 
+  // PA-B04 — the durable resume outcome for this thread and the recovery it
+  // offers, derived from the same shared model the web banner uses.
+  const primeResume = usePrimeResumeModel({
+    state: props.selectedThread?.session?.resumeState,
+    sessionStatus: props.selectedThread?.session?.status,
+    connected: props.connectionStateLabel === "connected",
+  });
+  const primeResumeComposerBlocked = primeResumeBlocksComposer(
+    props.selectedThread?.session?.providerName,
+    primeResume.model,
+  );
+  const handlePrimeResumeRecover = useCallback(
+    (intent: PrimeResumeIntent) => {
+      primeResume.noteChoice(intent);
+      const route = primeResumeRecoveryRoute(intent);
+      if (route.kind === "fork") {
+        void props.onForkSession?.(undefined);
+        return;
+      }
+      void props.onRecoverPrimeResume?.(
+        route.intent === "fresh"
+          ? { kind: "fresh", discardCursor: route.discardCursor }
+          : { kind: "retry" },
+      );
+    },
+    [primeResume, props.onForkSession, props.onRecoverPrimeResume],
+  );
+
   const handleSendMessage = useCallback(async () => {
+    // The composer gate, enforced on the send path rather than only drawn on
+    // it: a thread whose exact Prime Agent session refused to reopen must not
+    // accept a prompt, because that prompt is what would silently start a new
+    // session in its place.
+    if (primeResumeComposerBlocked) return null;
     const targetThreadKey = selectedThreadKey;
     const messageId = await props.onSendMessage();
     if (messageId === null || selectedThreadKeyRef.current !== targetThreadKey) {
@@ -548,7 +598,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     setAnchorMessageId(messageId);
     composerEditorRef.current?.blur();
     return messageId;
-  }, [props.onSendMessage, selectedThreadKey]);
+  }, [primeResumeComposerBlocked, props.onSendMessage, selectedThreadKey]);
 
   const collapseComposer = useCallback(() => {
     composerEditorRef.current?.blur();
@@ -735,6 +785,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
 
             {/* Hidden (not unmounted) while a user-input request owns the
                 composer slot, so composer drafts and editor state survive. */}
+            <PrimeResumeBanner
+              providerName={props.selectedThread?.session?.providerName}
+              model={primeResume.model}
+              onRecover={handlePrimeResumeRecover}
+            />
             <View style={activeUserInputRequestId !== null ? { display: "none" } : undefined}>
               <ThreadComposer
                 editorRef={composerEditorRef}

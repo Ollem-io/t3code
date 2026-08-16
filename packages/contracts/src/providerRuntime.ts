@@ -15,6 +15,7 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { GoalId, HeartbeatId, RuntimeExtensionId } from "./providerCapabilities.ts";
+import { PrimeResumeState } from "./primeResume.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -203,6 +204,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "session.agents.updated",
   "session.goals.updated",
   "session.identity.updated",
+  "session.resume.updated",
 ]);
 export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 
@@ -262,6 +264,7 @@ const SessionNoticesUpdatedType = Schema.Literal("session.notices.updated");
 const SessionAgentsUpdatedType = Schema.Literal("session.agents.updated");
 const SessionGoalsUpdatedType = Schema.Literal("session.goals.updated");
 const SessionIdentityUpdatedType = Schema.Literal("session.identity.updated");
+const SessionResumeUpdatedType = Schema.Literal("session.resume.updated");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
@@ -1661,6 +1664,28 @@ const ProviderRuntimeSessionGoalsUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionGoalsUpdatedEvent =
   typeof ProviderRuntimeSessionGoalsUpdatedEvent.Type;
 
+/**
+ * PA-B04 — the coarse durable-resume outcome for this thread's session.
+ *
+ * The payload is the closed PA-B02 state, nothing more: a status and, for a
+ * refusal, a reason code. It carries no path, no owner, no native session id
+ * and no device, so publishing it to every attached client leaks nothing about
+ * the host. It exists so a client can *see* that an exact session refused to
+ * reopen instead of silently getting a new one.
+ */
+const SessionResumeUpdatedPayload = Schema.Struct({
+  resume: PrimeResumeState,
+});
+export type SessionResumeUpdatedPayload = typeof SessionResumeUpdatedPayload.Type;
+
+const ProviderRuntimeSessionResumeUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionResumeUpdatedType,
+  payload: SessionResumeUpdatedPayload,
+});
+export type ProviderRuntimeSessionResumeUpdatedEvent =
+  typeof ProviderRuntimeSessionResumeUpdatedEvent.Type;
+
 const ProviderRuntimeSessionIdentityUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionIdentityUpdatedType,
@@ -1726,6 +1751,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionAgentsUpdatedEvent,
   ProviderRuntimeSessionGoalsUpdatedEvent,
   ProviderRuntimeSessionIdentityUpdatedEvent,
+  ProviderRuntimeSessionResumeUpdatedEvent,
 ]);
 export type ProviderRuntimeEventV2 = typeof ProviderRuntimeEventV2.Type;
 

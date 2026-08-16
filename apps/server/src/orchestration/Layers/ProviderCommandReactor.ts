@@ -106,6 +106,7 @@ type ProviderIntentEvent = Extract<
       | "thread.heartbeat-action-requested"
       | "thread.session-rename-requested"
       | "thread.session-fork-requested"
+      | "thread.prime-resume-recover-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -709,6 +710,12 @@ const make = Effect.gen(function* () {
           });
         }
         const capabilities = yield* providerService.getCapabilities(session.providerInstanceId);
+        // `thread` was read before the start ran, and the durable resume
+        // outcome is published *during* it. Re-reading is what keeps a
+        // "resumed" or a refusal from being erased by the wholesale session
+        // replacement below — the banner would otherwise vanish the instant the
+        // session it describes came up.
+        const bound = yield* resolveThread(threadId);
         yield* setThreadSession({
           threadId,
           session: {
@@ -727,6 +734,7 @@ const make = Effect.gen(function* () {
             ...(hasRuntimeActionCapabilities(capabilities.runtimeExtensions)
               ? { runtimeCapabilities: capabilities.runtimeExtensions }
               : {}),
+            ...(bound?.session?.resumeState ? { resumeState: bound.session.resumeState } : {}),
           },
           createdAt,
         });
@@ -1831,6 +1839,58 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /**
+   * PA-B04 — carries out the user's answer to a durable resume that refused.
+   *
+   * `retry` re-runs the same validation; `fresh` additionally tells the runtime
+   * that this thread's own resume cursor may be discarded first, which is the
+   * only thing that can unstick a cursor whose refusal would otherwise repeat
+   * forever. Either way the work is a session start, so the outcome is
+   * published by the same coordinator that published the refusal: this handler
+   * never writes a resume state of its own and so can never claim a recovery
+   * that did not happen. A start that fails again leaves the refusal standing
+   * and the composer shut, which is the correct, non-destructive end state.
+   */
+  const processPrimeResumeRecoverRequested = Effect.fn("processPrimeResumeRecoverRequested")(
+    function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.prime-resume-recover-requested" }>,
+    ) {
+      const thread = yield* resolveThread(event.payload.threadId);
+      if (!thread) return;
+      const project = yield* resolveProject(thread.projectId);
+      const cwd = resolveThreadWorkspaceCwd({ thread, projects: project ? [project] : [] });
+      const instanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+      yield* providerService
+        .startSession(thread.id, {
+          threadId: thread.id,
+          providerInstanceId: instanceId,
+          ...(cwd ? { cwd } : {}),
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          // A discard the decider did not authorize never reaches the runtime.
+          resumeRecovery:
+            event.payload.intent === "fresh" && event.payload.discardCursor === true
+              ? "fresh"
+              : "retry",
+        })
+        .pipe(
+          Effect.catchCause(() =>
+            appendProviderFailureActivity({
+              threadId: event.payload.threadId,
+              kind: "provider.turn.start.failed",
+              summary: "Prime Agent session recovery failed",
+              // Reason codes travel on the published resume state, which is
+              // what the banner reads. This activity says only that the attempt
+              // was made and did not land, so no host detail rides along.
+              detail: "The Prime Agent session could not be recovered. Nothing was replaced.",
+              turnId: null,
+              createdAt: event.payload.createdAt,
+            }),
+          ),
+        );
+    },
+  );
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1985,6 +2045,10 @@ const make = Effect.gen(function* () {
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,
+        // Stopping is not deletion and not a resume outcome. Dropping the
+        // published resume state here would quietly retract a refusal the user
+        // still has to answer.
+        ...(thread.session?.resumeState ? { resumeState: thread.session.resumeState } : {}),
       },
       createdAt: now,
     });
@@ -2047,6 +2111,9 @@ const make = Effect.gen(function* () {
       case "thread.session-fork-requested":
         yield* processSessionForkRequested(event);
         return;
+      case "thread.prime-resume-recover-requested":
+        yield* processPrimeResumeRecoverRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -2105,6 +2172,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.heartbeat-action-requested" ||
         event.type === "thread.session-rename-requested" ||
         event.type === "thread.session-fork-requested" ||
+        event.type === "thread.prime-resume-recover-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"

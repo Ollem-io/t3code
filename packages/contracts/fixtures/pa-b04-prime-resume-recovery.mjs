@@ -119,8 +119,11 @@ check("a two-device conflict names no device, no path and no owner", () => {
     NodeAssert.equal(surface.kind, "conflict");
     NodeAssert.deepEqual(
       surface.choices.map((choice) => choice.kind),
-      ["retry"],
+      // Fork is the escape hatch for a writer that never finishes; a fresh
+      // start stays refused while someone else is authoritative.
+      ["retry", "fork"],
     );
+    NodeAssert.equal(primeResumeIntentFor(surface, "fresh"), undefined);
     const text = `${surface.title} ${surface.detail}`.toLowerCase();
     for (const leak of ["/", "pid", "device", "host", "session id"])
       NodeAssert.ok(!text.includes(leak), `${reason} leaked ${leak}`);
@@ -203,6 +206,62 @@ check("both clients render the shared surface rather than local copy", () => {
     NodeAssert.ok(source.includes('from "@t3tools/client-runtime/prime-resume"'), path);
     NodeAssert.ok(source.includes("primeResumeSurface(props.providerName, props.model)"), path);
   }
+});
+
+// The round-one review's blockers, as executable facts: the state has a wire,
+// the choice has a command, the composer has a gate, and the cursor has a
+// deletion. Each is read from the shipped source rather than described.
+check("the resume state has a transport clients actually receive", () => {
+  const runtime = read("packages/contracts/src/providerRuntime.ts");
+  NodeAssert.ok(runtime.includes('"session.resume.updated"'), "canonical runtime event");
+  NodeAssert.ok(runtime.includes("ProviderRuntimeSessionResumeUpdatedEvent"), "event in the union");
+  NodeAssert.ok(
+    read("packages/contracts/src/orchestration.ts").includes(
+      "resumeState: Schema.optional(PrimeResumeState)",
+    ),
+    "the session read model every client renders carries it",
+  );
+  NodeAssert.ok(
+    read("apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts").includes(
+      'event.type === "session.resume.updated"',
+    ),
+    "ingestion projects it onto the thread session",
+  );
+  NodeAssert.ok(
+    read("apps/server/src/provider/Layers/PrimeAdapter.ts").includes("publishResumeState"),
+    "the adapter publishes it without needing an optional caller",
+  );
+});
+
+check("every recovery choice reaches a host that can act on it", () => {
+  NodeAssert.ok(
+    read("packages/contracts/src/orchestration.ts").includes('"thread.prime-resume.recover"'),
+    "recover command exists on the wire",
+  );
+  NodeAssert.ok(
+    read("apps/server/src/orchestration/Layers/ProviderCommandReactor.ts").includes(
+      "processPrimeResumeRecoverRequested",
+    ),
+    "a reactor handles it",
+  );
+  NodeAssert.ok(
+    read("apps/server/src/provider/prime/PrimeResumeCursor.ts").includes(
+      "export const discardPrimeResumeCursor",
+    ),
+    "a confirmed fresh start can delete the cursor that keeps refusing",
+  );
+});
+
+check("both clients mount the banner and gate their own send path", () => {
+  const web = read("apps/web/src/components/ChatView.tsx");
+  NodeAssert.ok(web.includes("<PrimeResumeBanner"), "web mounts the banner");
+  NodeAssert.ok(web.includes("resolveSendDisabledReason({"), "web gates the composer");
+  const mobile = read("apps/mobile/src/features/threads/ThreadDetailScreen.tsx");
+  NodeAssert.ok(mobile.includes("<PrimeResumeBanner"), "mobile mounts the banner");
+  NodeAssert.ok(
+    mobile.includes("if (primeResumeComposerBlocked) return null;"),
+    "mobile gates its send funnel",
+  );
 });
 
 say("");

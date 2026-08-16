@@ -88,9 +88,12 @@ describe("prime resume client model", () => {
     for (const reason of ["conflict", "unauthorized"] as const) {
       const surface = primeResumeFailureSurface(reason);
       expect(surface.kind).toBe("conflict");
-      // Retry only: fighting the authoritative writer with a fresh session is
-      // precisely the two-writer outcome PA-B03 exists to prevent.
-      expect(surface.choices.map((choice) => choice.kind)).toEqual(["retry"]);
+      // Retry, plus fork as the escape hatch for a writer that never finishes.
+      // A fresh start is still refused: fighting the authoritative writer for
+      // the session is precisely the two-writer outcome PA-B03 exists to
+      // prevent, and forking takes nothing away from whoever holds it.
+      expect(surface.choices.map((choice) => choice.kind)).toEqual(["retry", "fork"]);
+      expect(primeResumeIntentFor(surface, "fresh")).toBeUndefined();
       const text = `${surface.title} ${surface.detail}`;
       for (const leak of ["device", "/", "session id", "pid", "user", "host"])
         expect(text.toLowerCase().includes(leak)).toBe(false);
@@ -158,6 +161,7 @@ describe("prime resume client model", () => {
       "Another writer has this session",
       "Another client is currently the writer for this Prime Agent session. This thread's history is intact and stays read-only until that writer finishes. Nothing here was lost.",
       "Try reconnecting again",
+      "Fork into a new thread",
     ]);
   });
 });

@@ -3,6 +3,7 @@ import { useState } from "react";
 import {
   PRIME_RESUME_ARCHIVE_NOTE,
   PRIME_RESUME_STOP_NOTE,
+  primeResumeAwaitingChoice,
   primeResumeSurface,
   type PrimeResumeIntent,
   type PrimeResumeModel,
@@ -28,6 +29,10 @@ export interface PrimeResumeBannerProps {
 export function PrimeResumeBanner(props: PrimeResumeBannerProps) {
   const [confirming, setConfirming] = useState(false);
   const surface = primeResumeSurface(props.providerName, props.model);
+  // A dispatched choice is in flight until the host publishes its answer.
+  // Leaving the buttons live would let one impatient click become two forks or
+  // two discarded cursors, so every choice is disabled until then.
+  const awaiting = primeResumeAwaitingChoice(props.model);
   if (surface.kind === "hidden") return null;
 
   return (
@@ -49,8 +54,9 @@ export function PrimeResumeBanner(props: PrimeResumeBannerProps) {
           <button
             key={choice.kind}
             type="button"
-            className="rounded-md border px-2 py-0.5"
+            className="rounded-md border px-2 py-0.5 disabled:opacity-50"
             data-testid={`prime-resume-${choice.kind}`}
+            disabled={awaiting}
             onClick={() => {
               if (choice.kind === "fresh") {
                 setConfirming(true);
@@ -71,7 +77,9 @@ export function PrimeResumeBanner(props: PrimeResumeBannerProps) {
             <span data-testid="prime-resume-archive-note">{PRIME_RESUME_ARCHIVE_NOTE}</span>
             <button
               type="button"
-              className="rounded-md border px-2 py-0.5"
+              className="rounded-md border px-2 py-0.5 disabled:opacity-50"
+              data-testid="prime-resume-fresh-confirm-accept"
+              disabled={awaiting}
               onClick={() => {
                 setConfirming(false);
                 props.onRecover({ kind: "fresh", discardCursor: choice.discardCursor });

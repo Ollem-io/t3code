@@ -4,6 +4,7 @@ import { Pressable, Text, View } from "react-native";
 import {
   PRIME_RESUME_ARCHIVE_NOTE,
   PRIME_RESUME_STOP_NOTE,
+  primeResumeAwaitingChoice,
   primeResumeSurface,
   type PrimeResumeIntent,
   type PrimeResumeModel,
@@ -26,6 +27,9 @@ export interface PrimeResumeBannerProps {
 export function PrimeResumeBanner(props: PrimeResumeBannerProps) {
   const [confirming, setConfirming] = useState(false);
   const surface = primeResumeSurface(props.providerName, props.model);
+  // Same in-flight rule as the web banner: a dispatched choice disables every
+  // choice until the host answers, so a double tap cannot fork twice.
+  const awaiting = primeResumeAwaitingChoice(props.model);
   if (surface.kind === "hidden") return null;
   const freshChoice = surface.choices.find((choice) => choice.kind === "fresh");
 
@@ -46,6 +50,7 @@ export function PrimeResumeBanner(props: PrimeResumeBannerProps) {
             accessibilityRole="button"
             accessibilityLabel={choice.label}
             className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"
+            disabled={awaiting}
             onPress={() => {
               if (choice.kind === "fresh") {
                 setConfirming(true);
@@ -67,6 +72,7 @@ export function PrimeResumeBanner(props: PrimeResumeBannerProps) {
             accessibilityRole="button"
             accessibilityLabel="Confirm new Prime Agent session"
             className="mt-1 rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"
+            disabled={awaiting}
             onPress={() => {
               setConfirming(false);
               props.onRecover({ kind: "fresh", discardCursor: freshChoice.discardCursor });

@@ -30,6 +30,7 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  type PrimeResumeState,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -195,6 +196,10 @@ function sameIdentityCard(
   current: OrchestrationSessionIdentityCard | undefined,
   next: OrchestrationSessionIdentityCard,
 ): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+function sameResumeState(current: PrimeResumeState | undefined, next: PrimeResumeState): boolean {
   return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
 }
 
@@ -1891,6 +1896,7 @@ const make = Effect.gen(function* () {
                       : {}),
                     ...(thread.session?.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
                   }),
+              ...(thread.session?.resumeState ? { resumeState: thread.session.resumeState } : {}),
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -1953,6 +1959,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
               ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2046,6 +2053,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
               ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2105,6 +2113,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
               ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2159,6 +2168,7 @@ const make = Effect.gen(function* () {
                 ? { commandCatalog: thread.session.commandCatalog }
                 : {}),
               noticeBoard: nextNoticeBoard,
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2215,6 +2225,7 @@ const make = Effect.gen(function* () {
               agentRoster: nextAgentRoster,
               ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
               ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2283,6 +2294,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               goalBoard: nextGoalBoard,
               ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2339,6 +2351,54 @@ const make = Effect.gen(function* () {
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
               identityCard: nextIdentityCard,
+              ...(thread.session.resumeState ? { resumeState: thread.session.resumeState } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Resume state is authoritative even when no provider session came up.
+      // In particular, a refusal on a stopped session must reach clients so
+      // they do not silently continue as a fresh conversation.
+      if (
+        event.type === "session.resume.updated" &&
+        thread.session &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextResumeState = event.payload.resume;
+        if (!sameResumeState(thread.session.resumeState, nextResumeState)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-resume-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              resumeState: nextResumeState,
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2605,6 +2665,7 @@ const make = Effect.gen(function* () {
               ...(thread.session?.identityCard
                 ? { identityCard: thread.session.identityCard }
                 : {}),
+              ...(thread.session?.resumeState ? { resumeState: thread.session.resumeState } : {}),
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),

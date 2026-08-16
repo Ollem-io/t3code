@@ -60,6 +60,7 @@ export type ResumeThreadHeartbeatInput = CommandInput<"thread.heartbeat.resume">
 export type DeleteThreadHeartbeatInput = CommandInput<"thread.heartbeat.delete">;
 export type RenameThreadSessionInput = CommandInput<"thread.session.rename">;
 export type ForkThreadSessionInput = CommandInput<"thread.session.fork">;
+export type RecoverPrimeResumeInput = CommandInput<"thread.prime-resume.recover">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
@@ -444,6 +445,23 @@ export const forkThreadSession: (input: ForkThreadSessionInput) => CommandEffect
   return yield* dispatch({
     ...input,
     type: "thread.session.fork",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+/**
+ * PA-B04 — answer a Prime Agent resume that refused. `retry` re-runs the same
+ * durable validation; `fresh` is the confirmed choice to stop pointing this
+ * thread at its earlier session, and only it may carry `discardCursor`.
+ */
+export const recoverPrimeResume: (input: RecoverPrimeResumeInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.recoverPrimeResume",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.prime-resume.recover",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

@@ -88,6 +88,32 @@ describe("prime resume and recovery surface (mobile)", () => {
     expect(surface.choices.map((choice) => choice.kind)).toEqual(["retry", "fork", "fresh"]);
   });
 
+  // PA-B04 repair regression. Round one left the banner unmounted and the
+  // mobile send path untouched, so none of the above was reachable on a phone.
+  it("mounts the banner in the thread screen and gates that screen's send path", () => {
+    const screen = NodeFS.readFileSync(
+      "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+      "utf8",
+    );
+    expect(screen).toContain("<PrimeResumeBanner");
+    expect(screen).toContain("state: props.selectedThread?.session?.resumeState");
+    // The gate is on the send funnel itself, not only on a label: every send
+    // from this screen goes through handleSendMessage.
+    expect(screen).toContain("if (primeResumeComposerBlocked) return null;");
+    expect(screen).toContain("primeResumeBlocksComposer(");
+  });
+
+  it("dispatches recovery from the route screen instead of dropping it", () => {
+    const route = NodeFS.readFileSync(
+      "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
+      "utf8",
+    );
+    expect(route).toContain("threadEnvironment.recoverPrimeResume");
+    expect(route).toContain("onRecoverPrimeResume={handleRecoverPrimeResume}");
+    // A fork is a fork, and it keeps the refused session where it is.
+    expect(route).toContain("onForkSession={handleForkSession}");
+  });
+
   it("shares one resume model with web, so the two clients cannot drift", () => {
     const web = NodeFS.readFileSync("apps/web/src/components/chat/PrimeResumeBanner.tsx", "utf8");
     const mobile = NodeFS.readFileSync(

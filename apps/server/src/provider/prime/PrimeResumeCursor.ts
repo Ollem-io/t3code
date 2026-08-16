@@ -206,6 +206,50 @@ export const invalidatePrimeResumeCursor = async (path: string): Promise<boolean
   return true;
 };
 
+/**
+ * PA-B04 — deletes this thread's resume cursor so an explicitly confirmed fresh
+ * start can actually start.
+ *
+ * Invalidating in place is not enough here: an `invalidated` cursor keeps
+ * refusing, which is exactly the `capabilityMismatch` brick PA-B02 recorded as
+ * debt. Deletion is therefore the point, and it is fenced twice. The path is
+ * always one T3 derived from its own layout, and the file is removed only after
+ * it is *proved* to be a cursor for the expected scope — a file that decodes to
+ * someone else's scope is left untouched and reported as not discarded. The
+ * rolling backup goes with it, because leaving it would let a later fallback
+ * resurrect the cursor the user just chose to leave behind.
+ *
+ * Only the cursor is removed. The durable Prime session it pointed at, this
+ * thread's messages, and its checkpoints are not this function's business and
+ * are never touched.
+ */
+export const discardPrimeResumeCursor = async (
+  path: string,
+  expectedScope: PrimeResumeCursorScope,
+): Promise<boolean> => {
+  const { state, raw } = await readPrimeResumeCursor(path, expectedScope);
+  if (state.status === "available") {
+    if (!primeResumeScopeMatches(state.cursor.scope, expectedScope)) return false;
+  } else if (state.reason === "missing") {
+    // Nothing to discard is a satisfied post-condition, not a failure: the next
+    // start is already a truthful fresh one.
+    return false;
+  } else if (state.reason === "scopeMismatch") {
+    // Provably someone else's row at a path we derived. Refusing is the whole
+    // reason this check exists.
+    return false;
+  } else if (raw === undefined) {
+    return false;
+  }
+  // Corrupt, invalidated or unsupported-version rows fall through on purpose:
+  // they are unreadable, they cannot be attributed to another scope, and they
+  // are what makes a thread unstartable. Preserved version-keyed sidecars are
+  // written under a different name and are deliberately not removed here.
+  await rm(path, { force: true });
+  await rm(`${path}.bak`, { force: true });
+  return true;
+};
+
 export const primeResumeCursorFileMode = async (path: string): Promise<number> =>
   (await stat(path)).mode & 0o777;
 

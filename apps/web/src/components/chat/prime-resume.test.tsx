@@ -63,7 +63,7 @@ describe("prime resume and recovery surface (web/desktop)", () => {
     expect(markup).not.toContain("prime-resume-fresh-confirm");
   });
 
-  it("shows a two-device conflict as retry-only, with history intact", () => {
+  it("shows a two-device conflict as retry-or-fork, with history intact", () => {
     const markup = renderToStaticMarkup(
       <PrimeResumeBanner
         providerName="prime-agent"
@@ -73,8 +73,11 @@ describe("prime resume and recovery surface (web/desktop)", () => {
     );
     expect(markup).toContain('data-state="conflict"');
     expect(markup).toContain("This thread&#x27;s history is intact");
+    // Fork is the escape hatch for a writer that never finishes; a fresh start
+    // stays refused, because discarding the cursor while someone else is
+    // authoritative would fight over a session this client cannot see.
     expect(markup).not.toContain("prime-resume-fresh");
-    expect(markup).not.toContain("prime-resume-fork");
+    expect(markup).toContain("prime-resume-fork");
   });
 
   it("stops blocking the composer once the exact session came back", () => {

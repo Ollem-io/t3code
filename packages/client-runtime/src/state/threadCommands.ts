@@ -20,6 +20,8 @@ import {
   type DeleteThreadHeartbeatInput,
   type RenameThreadSessionInput,
   type ForkThreadSessionInput,
+  recoverPrimeResume,
+  type RecoverPrimeResumeInput,
   type RespondToThreadApprovalInput,
   type RespondToThreadUserInputInput,
   type RevertThreadCheckpointInput,
@@ -274,6 +276,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     forkSession: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:fork-session",
       execute: (input: ForkThreadSessionInput) => forkThreadSession(input),
+      scheduler,
+      concurrency,
+    }),
+    recoverPrimeResume: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:recover-prime-resume",
+      execute: (input: RecoverPrimeResumeInput) => recoverPrimeResume(input),
       scheduler,
       concurrency,
     }),

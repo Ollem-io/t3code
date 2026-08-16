@@ -1167,6 +1167,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ...(event.payload.session.runtimeCapabilities
           ? { runtimeCapabilities: event.payload.session.runtimeCapabilities }
           : {}),
+        ...(event.payload.session.resumeState
+          ? { resumeState: event.payload.session.resumeState }
+          : {}),
       });
     });
 
