@@ -50,8 +50,9 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-A01    | Capability negotiation and provider-neutral Alpha contracts        | Done — `c9659346` |
 | PA-A02    | Steering and queued follow-up with visible cancellation            | Done — `962c80b7` |
 | PA-A02.1  | PA-A02 review-debt cleanup                                         | Done — `2d8772c1` |
+| PA-A03    | Context usage, compaction, retry, bounded status UI                | Done — `f8218111` |
 
-Completed total: **19 of 31 milestones** (PA-A02.1 added to the original 30).
+Completed total: **20 of 31 milestones** (PA-A02.1 added to the original 30).
 
 Note on "merged to main": the run's milestone merges advance the run `main`
 lineage descending from public `origin/main` commit `9e201941a`. By maintainer
@@ -136,10 +137,9 @@ Every accepted non-blocker from the PA-A02 rounds is closed:
     server, open the running thread, and screenshot the composer runtime-action
     block in the same two capability states.
 
-## PA-A03 (implemented, in review)
+## PA-A03 (merged)
 
-**PA-A03 — Context usage, compaction, retry, and bounded status UI** is implemented on
-`dev/prime-agent-perfect-integration-20260813/pa-a03`.
+**PA-A03 — Context usage, compaction, retry, and bounded status UI** was dual-approved on exact SHA `f00d7e1a` (three workflow rounds — round 1 rejected for unreachable compaction/usage paths and missing client projection, round 2 for a fabricated-activity republish and a stranded post-terminal status, both repaired — final round dual APPROVE with zero blockers, Luna-verified watch passes) and merged to `main` at `f8218111` on 2026-08-16.
 
 Implemented:
 
