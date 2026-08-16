@@ -54,6 +54,11 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
         instanceId: String(instanceId),
         home: serverConfig.stateDir,
       });
+      // PA-B02 compatibility input. The probe is the only place this server
+      // learns the installed runtime version, so the newest one it saw is what
+      // resume validates a cursor against; before the first probe answers,
+      // resume treats the version as unknown rather than as proof either way.
+      let observedVersion: string | undefined;
       const adapter = yield* makePrimeAdapter(config, {
         instanceId,
         environmentId,
@@ -62,6 +67,7 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
         enabled,
         environment: processEnv,
         writeGate,
+        agentVersion: () => Promise.resolve(observedVersion),
       });
       const checkedAt = DateTime.formatIso(yield* DateTime.now);
       const initialDraft = primeProbeToSnapshot({
@@ -93,6 +99,11 @@ export const PrimeDriver: ProviderDriver<PrimeAgentSettings, PrimeDriverEnv> = {
           environment: processEnv,
         }),
       ).pipe(
+        Effect.tap((probe) =>
+          Effect.sync(() => {
+            observedVersion = probe.version ?? undefined;
+          }),
+        ),
         Effect.flatMap((probe) =>
           DateTime.now.pipe(
             Effect.map(DateTime.formatIso),

@@ -232,3 +232,58 @@ export const findPrimeResumeRedactionViolation = (
   }
   return undefined;
 };
+
+/**
+ * PA-B02 — the coarse, closed set of resume outcomes a host may publish.
+ *
+ * Every reason is a code, never a message, and never a host detail: a client
+ * learns *that* the exact session could not be recovered and which class of
+ * check refused it, so it can offer the right recovery in PA-B04 without ever
+ * learning a path, an owner, or a native identifier.
+ */
+export const PRIME_RESUME_FAILURE_REASONS = [
+  "missing",
+  "corrupt",
+  "unsupportedVersion",
+  "scopeMismatch",
+  "invalidated",
+  /** The cursor names a different provider instance than the one asked to resume. */
+  "instanceMismatch",
+  /** The workspace directory the cursor was recorded for is not the one requested. */
+  "workspaceMismatch",
+  /** Durable session storage for the cursor is gone or is not the recorded one. */
+  "storageMismatch",
+  /** The installed runtime cannot be trusted to reopen this session exactly. */
+  "incompatibleVersion",
+  /** The capability set changed since the cursor was written. */
+  "capabilityMismatch",
+  /** PA-M06 ownership generation moved on; this cursor is no longer ours. */
+  "ownershipMismatch",
+  /** PA-B03 refused the lease: another writer is authoritative right now. */
+  "conflict",
+  /** The caller is not permitted to become the writer for this session. */
+  "unauthorized",
+] as const;
+
+export const PrimeResumeFailureReason = Schema.Literals(PRIME_RESUME_FAILURE_REASONS);
+export type PrimeResumeFailureReason = typeof PrimeResumeFailureReason.Type;
+
+/** How an exact session was recovered. Never a claim T3 could not prove. */
+export const PrimeResumeMode = Schema.Literals(["adopted", "relaunched"]);
+export type PrimeResumeMode = typeof PrimeResumeMode.Type;
+
+export const PrimeResumeState = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("reconnecting") }),
+  Schema.Struct({ status: Schema.Literal("resumed"), mode: PrimeResumeMode }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), reason: PrimeResumeFailureReason }),
+]);
+export type PrimeResumeState = typeof PrimeResumeState.Type;
+
+/**
+ * Whether a refusal means "there was nothing to resume" (a first turn on a new
+ * thread) or "an exact session existed and could not be recovered". Only the
+ * first may start a fresh session; the second must surface, because silently
+ * starting fresh is exactly the data loss PA-B02 exists to prevent.
+ */
+export const primeResumeAllowsFreshStart = (reason: PrimeResumeFailureReason): boolean =>
+  reason === "missing";
