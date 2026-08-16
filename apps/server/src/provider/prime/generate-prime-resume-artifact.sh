@@ -6,8 +6,8 @@ vp=./node_modules/.bin/vp
 [ -x "$vp" ] || vp="$(command -v vp)"
 artifact=apps/server/src/provider/prime/prime-resume-artifact.mjs
 out="$(mktemp -d "${TMPDIR:-/tmp}/t3-prime-resume-bundle.XXXXXX")"
-candidate="$(mktemp "${TMPDIR:-/tmp}/t3-prime-resume-artifact.XXXXXX.mjs")"
-trap 'rm -rf "$out"; rm -f "$candidate"' EXIT
+candidate="$out/candidate.mjs"
+trap 'rm -rf "$out"' EXIT
 
 "$vp" pack apps/server/src/provider/prime/verify-prime-resume.ts \
   --out-dir "$out" \

@@ -1,7 +1,7 @@
-import { chmod, mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 //#region node_modules/.pnpm/effect@4.0.0-beta.103_patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6/node_modules/effect/dist/Pipeable.js
 /**
  * The `Pipeable` module defines the shared interface and implementation helpers
@@ -35158,7 +35158,7 @@ const PRIME_RESUME_MAX_BYTES = 16 * 1024;
 const primeSessionPathToken = (home, sessionPath) => {
   assertPrimeContained(join(resolve(home), "userdata", "prime", "v1"), sessionPath);
   return `spt-${createHash("sha256")
-    .update(`${primeHomeFingerprint(home)} ${resolve(sessionPath)}`)
+    .update(`${primeHomeFingerprint(home)}\u0000${resolve(sessionPath)}`)
     .digest("hex")
     .slice(0, 32)}`;
 };
@@ -35213,6 +35213,22 @@ const decodePrimeResumeCursor = (text) => {
     };
   return state;
 };
+/**
+ * Where a cursor version this build cannot understand is kept forever. The
+ * name is keyed by the stored version, so a rolling `.bak` slot can never
+ * clobber it and every distinct unknown version keeps its own copy.
+ */
+const primeResumeCursorPreservedPath = (path, storedVersion) =>
+  `${path}.preserved-v${storedVersion}`;
+/** Only a plain non-negative integer version may become part of a file name. */
+const preservableVersion = (state) =>
+  state.status === "unavailable" &&
+  state.reason === "unsupportedVersion" &&
+  typeof state.storedVersion === "number" &&
+  Number.isSafeInteger(state.storedVersion) &&
+  state.storedVersion >= 0
+    ? state.storedVersion
+    : void 0;
 const writePrimeResumeCursor = async (path, cursor) => {
   const violation = findPrimeResumeRedactionViolation(cursor);
   if (violation !== void 0)
@@ -35228,10 +35244,22 @@ const writePrimeResumeCursor = async (path, cursor) => {
     throw error;
   });
   if (existing !== void 0) {
+    const unknownVersion = preservableVersion(decodePrimeResumeCursor(existing));
+    if (unknownVersion !== void 0) {
+      const preserved = primeResumeCursorPreservedPath(path, unknownVersion);
+      await writeFile(preserved, existing, {
+        mode: 384,
+        flag: "wx",
+      })
+        .then(() => chmod(preserved, 384))
+        .catch((error) => {
+          if (error.code !== "EEXIST") throw error;
+        });
+    }
     await writeFile(`${path}.bak`, existing, { mode: 384 });
     await chmod(`${path}.bak`, 384);
   }
-  const temporary = `${path}.tmp-${process.pid}`;
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
   await writeFile(temporary, encodePrimeResumeCursor(cursor), { mode: 384 });
   await chmod(temporary, 384);
   await rename(temporary, path);
@@ -35276,6 +35304,7 @@ const invalidatePrimeResumeCursor = async (path) => {
     ...state.cursor,
     lifecycle: "invalidated",
   });
+  await rm(`${path}.bak`, { force: true });
   return true;
 };
 const primeResumeCursorFileMode = async (path) => (await stat(path)).mode & 511;
@@ -35455,15 +35484,37 @@ check(
   (await readFile(layoutFor(homeA).resumeCursorBackup, "utf8")) === future,
   "a downgrade must preserve the unknown cursor it replaced",
 );
+const preserved = primeResumeCursorPreservedPath(layoutFor(homeA).resumeCursor, 99);
+check(
+  (await readFile(preserved, "utf8")) === future,
+  "the unknown cursor must be preserved in a version-keyed slot",
+);
+for (let repeat = 0; repeat < 3; repeat++) {
+  await writePrimeResumeCursor(layoutFor(homeA).resumeCursor, cursorA);
+  check(
+    (await readFile(preserved, "utf8")) === future,
+    "repeated downgraded writes must never destroy the unknown cursor",
+  );
+}
 check(
   await invalidatePrimeResumeCursor(layoutFor(homeA).resumeCursor),
   "invalidation must succeed on a readable cursor",
 );
 check(
+  (await readFile(preserved, "utf8")) === future,
+  "invalidation must never destroy the unknown cursor either",
+);
+check(
+  (await readFile(layoutFor(homeA).resumeCursorBackup, "utf8").catch(() => void 0)) === void 0,
+  "invalidation must not leave a still-recorded copy in the rolling backup",
+);
+check(
   !(await invalidatePrimeResumeCursor(layoutFor(homeA).resumeCursor)),
   "invalidation must be idempotent",
 );
-line("storage: owner-only T3-scoped file, backup-before-replace, idempotent invalidation");
+line(
+  "storage: owner-only T3-scoped file, write-once preservation of unknown versions across repeated downgraded writes, idempotent invalidation",
+);
 for (const forbidden of [
   { transcript: ["hello"] },
   { settings: { theme: "dark" } },

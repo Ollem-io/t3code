@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,7 @@ import {
   PRIME_RESUME_FILE_MODE,
   PRIME_RESUME_MAX_BYTES,
   primeResumeCursorFileMode,
+  primeResumeCursorPreservedPath,
   primeSessionPathToken,
   readPrimeResumeCursor,
   redactPrimeResumeDiagnostics,
@@ -179,6 +180,59 @@ describe("PrimeResumeCursor", () => {
       PRIME_RESUME_FILE_MODE,
     );
     assert.isFalse(await invalidatePrimeResumeCursor(layout.resumeCursorBackup + ".missing"));
+  });
+
+  it("keeps an unknown future cursor across repeated downgraded writes and invalidation", async () => {
+    const root = await home("prime-resume-h2-");
+    const layout = layoutFor(root);
+    const future = `${JSON.stringify({ ...cursorFor(root), version: 99, futureField: { a: 1 } })}\n`;
+    const preserved = primeResumeCursorPreservedPath(layout.resumeCursor, 99);
+    await writePrimeResumeCursor(layout.resumeCursor, cursorFor(root));
+    await writeFile(layout.resumeCursor, future);
+
+    // A downgraded build writing over and over must never reach a state where
+    // the future payload exists nowhere on disk.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await writePrimeResumeCursor(layout.resumeCursor, cursorFor(root));
+      assert.equal(await readFile(preserved, "utf8"), future, `write ${attempt} destroyed v99`);
+    }
+    assert.equal(await primeResumeCursorFileMode(preserved), PRIME_RESUME_FILE_MODE);
+
+    // Invalidation is itself a write; it must not destroy the unknown row either.
+    assert.isTrue(await invalidatePrimeResumeCursor(layout.resumeCursor));
+    assert.equal(await readFile(preserved, "utf8"), future);
+    // ...and it must not leave a still-`recorded` copy behind in the rolling slot.
+    assert.isFalse(
+      await access(layout.resumeCursorBackup).then(
+        () => true,
+        () => false,
+      ),
+    );
+
+    // A second, different unknown version gets its own slot rather than
+    // overwriting the first one.
+    const otherFuture = `${JSON.stringify({ ...cursorFor(root), version: 100 })}\n`;
+    await writeFile(layout.resumeCursor, otherFuture);
+    await writePrimeResumeCursor(layout.resumeCursor, cursorFor(root));
+    assert.equal(await readFile(preserved, "utf8"), future);
+    assert.equal(
+      await readFile(primeResumeCursorPreservedPath(layout.resumeCursor, 100), "utf8"),
+      otherFuture,
+    );
+  });
+
+  it("does not collide when two writes to one cursor overlap in a single process", async () => {
+    const root = await home("prime-resume-h3-");
+    const layout = layoutFor(root);
+    const cursor = cursorFor(root);
+
+    await Promise.all([
+      writePrimeResumeCursor(layout.resumeCursor, cursor),
+      writePrimeResumeCursor(layout.resumeCursor, cursor),
+      writePrimeResumeCursor(layout.resumeCursor, cursor),
+    ]);
+
+    assert.equal(await readFile(layout.resumeCursor, "utf8"), encodePrimeResumeCursor(cursor));
   });
 
   it("invalidates without deleting, and stays idempotent", async () => {

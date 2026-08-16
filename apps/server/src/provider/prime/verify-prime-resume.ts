@@ -12,6 +12,7 @@ import {
   PRIME_RESUME_FILE_MODE,
   PRIME_RESUME_MAX_BYTES,
   primeResumeCursorFileMode,
+  primeResumeCursorPreservedPath,
   primeSessionPathToken,
   readPrimeResumeCursor,
   redactPrimeResumeDiagnostics,
@@ -152,15 +153,40 @@ check(
   (await readFile(layoutFor(homeA).resumeCursorBackup, "utf8")) === future,
   "a downgrade must preserve the unknown cursor it replaced",
 );
+// Preservation must survive an unbounded number of downgraded writes, not one:
+// a single rolling backup slot would lose the unknown row on the next write.
+const preserved = primeResumeCursorPreservedPath(layoutFor(homeA).resumeCursor, 99);
+check(
+  (await readFile(preserved, "utf8")) === future,
+  "the unknown cursor must be preserved in a version-keyed slot",
+);
+for (let repeat = 0; repeat < 3; repeat++) {
+  await writePrimeResumeCursor(layoutFor(homeA).resumeCursor, cursorA);
+  check(
+    (await readFile(preserved, "utf8")) === future,
+    "repeated downgraded writes must never destroy the unknown cursor",
+  );
+}
 check(
   await invalidatePrimeResumeCursor(layoutFor(homeA).resumeCursor),
   "invalidation must succeed on a readable cursor",
 );
 check(
+  (await readFile(preserved, "utf8")) === future,
+  "invalidation must never destroy the unknown cursor either",
+);
+check(
+  (await readFile(layoutFor(homeA).resumeCursorBackup, "utf8").catch(() => undefined)) ===
+    undefined,
+  "invalidation must not leave a still-recorded copy in the rolling backup",
+);
+check(
   !(await invalidatePrimeResumeCursor(layoutFor(homeA).resumeCursor)),
   "invalidation must be idempotent",
 );
-line("storage: owner-only T3-scoped file, backup-before-replace, idempotent invalidation");
+line(
+  "storage: owner-only T3-scoped file, write-once preservation of unknown versions across repeated downgraded writes, idempotent invalidation",
+);
 
 // 5. Redaction: no content, no host path, closed reason codes.
 for (const forbidden of [

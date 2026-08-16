@@ -2,7 +2,7 @@
 
 `prime-resume-artifact.mjs` is a deterministic standalone Node ESM bundle built from the checked-in production resume-cursor contract, codec, storage and redaction code plus the migration registry.
 
-SHA-256: `3e5fa97ab87471ff70cc6fc95da5e8cf0eac18b7622a0d4e4f08ca61c8baaf69`.
+SHA-256: `3ae2a34d502a08237f2b48b1d96df48bd768ff6e737383cdc132fa29d0e8b5c4`.
 
 Run the committed artifact directly:
 
@@ -22,13 +22,13 @@ Prove deterministic regeneration without replacing the committed artifact:
 apps/server/src/provider/prime/generate-prime-resume-artifact.sh --check
 ```
 
-The verifier reports 42 source-derived assertions and a matrix report covering:
+The verifier reports 48 source-derived assertions and a matrix report covering:
 
 - **encode/decode** — byte-stable deterministic encoding and an exact round trip;
 - **version matrix** — v1 (older supported), v2 (current), v99 (unknown future), partial row, corrupt bytes, oversized row and an invalidated cursor, each becoming a readable state instead of a crash;
 - **cross-environment** — a cursor whose environment, provider instance, project or thread differs is reported `scopeMismatch`, never adopted;
 - **two T3 homes** — the same logical thread in two homes yields different scope keys, and a cross-home read is `unavailable`;
-- **storage policy** — the cursor lives inside `<home>/userdata/prime/v1/...`, is owner-only (`0600`), is replaced atomically, and whatever it replaced (including a version this build cannot read) is preserved as a backup first;
+- **storage policy** — the cursor lives inside `<home>/userdata/prime/v1/...`, is owner-only (`0600`), is replaced atomically, whatever it replaced is copied to a rolling `.bak`, and a version this build cannot read is additionally copied to a write-once `preserved-v<version>` sidecar that survives repeated downgraded writes and invalidation;
 - **redaction** — storage refuses a cursor carrying transcript, settings, telemetry or a host path, and diagnostics are reduced to a scope digest plus a closed set of status/reason codes containing no identifier and no path;
 - **migration** — slot 48 `PrimeResumeCursors` is registered exactly once.
 
