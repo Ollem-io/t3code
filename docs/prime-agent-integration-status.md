@@ -58,8 +58,11 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-A08    | Session naming/forking and Alpha integration/docs                  | Done — `ce3187ba` |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy          | Done — `4b4043f2` |
 | PA-B03    | Server-side single-writer arbitration and conflict receipts        | Done — `a58bbafd` |
+| PA-B02    | Exact adoption/resume state machine and compatibility validation   | Done — `5da5d397` |
 
-Completed total: **27 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; Beta is underway.
+Completed total: **28 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; Beta is underway.
+
+**PA-B02 (merged).** Dual-approved on exact SHA `d5da06f2` in a single round (Luna-verified watch) and merged at `5da5d397` on 2026-08-16. Accepted non-blockers that PA-B04 MUST close: a `capabilityMismatch` refusal permanently bricks a thread (only reason `missing` permits a fresh start; PA-B04's recovery UI must delete the cursor file, not invalidate it); a published `reconnecting` state can lack a terminal follow-up on failed relaunch or an adopt race (latent until PA-B04 wires `onResumeState`); a throwing liveness proof or lease release can leave the PA-B03 lease acquired-but-unreported until TTL. Also disclosed: `ownershipGeneration` is presence-of-file (real generations await Beta recovery), and relaunch exactness rests on the deterministic per-thread session directory rather than a native `switch_session`, which Prime 0.7.2 does not expose — a maintainer should confirm that substitution before Beta graduation.
 
 **PA-B03 (merged).** Dual-approved on exact SHA `85261488` (three workflow rounds: round 1 REJECTed with three code/security blockers — the lease was never constructed in production, stop/teardown released it before killing the process, and fenced writers could still send compaction/interrupt/dialog mutations — all repaired; final round dual APPROVE, Luna-verified watches) and merged at `a58bbafd` on 2026-08-16.
 
@@ -352,7 +355,7 @@ callback until PA-B04 renders them.
 
 | Milestone | Planned scope                                                    | State   |
 | --------- | ---------------------------------------------------------------- | ------- |
-| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Pending |
+| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Next    |
 | PA-B05    | Durable cleanup, retention, migrations, rollback safety          | Pending |
 | PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Pending |
 
