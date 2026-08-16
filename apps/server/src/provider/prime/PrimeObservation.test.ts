@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { assert, describe, it } from "@effect/vitest";
 import {
+  OrchestrationSessionAgentRoster,
   ProviderDriverKind,
   ProviderInstanceId,
   RuntimeTaskId,
@@ -10,6 +11,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { spawnPrimeRpcTransport } from "./PrimeRpcProcessTransport.ts";
 import { decodePrimeRpcEnvelope } from "./PrimeRpcProtocol.ts";
@@ -80,6 +82,21 @@ describe("Prime agent roster mapping", () => {
     // row is dropped instead of renamed.
     assert.deepStrictEqual(primeAgentRoster([task({ taskId: "x".repeat(200) })]), []);
     assert.deepStrictEqual(primeAgentRoster([task({ taskId: "  " })]), []);
+    // Trimming would store a different string than the runtime reported, so a
+    // padded id is dropped rather than silently renamed.
+    assert.deepStrictEqual(primeAgentRoster([task({ taskId: " a " })]), []);
+  });
+
+  it("keeps a title-less long id inside the wire contract", () => {
+    // The id may be 128 chars while the contract caps a title at 120; an
+    // unclamped fallback failed decode and dropped every roster update for the
+    // thread.
+    const agents = primeAgentRoster([task({ taskId: "a".repeat(128) })]);
+    assert.equal(agents[0]?.title.length, 120);
+    assert.deepStrictEqual(
+      Schema.decodeUnknownSync(OrchestrationSessionAgentRoster)({ agents }).agents.length,
+      1,
+    );
   });
 
   it("never reports a finished agent as observed", () => {

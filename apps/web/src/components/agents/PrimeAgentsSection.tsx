@@ -1,9 +1,8 @@
 import {
   PRIME_AGENTS_ARE_NOT_TRANSCRIPT,
-  hasPrimeAgents,
   primeAgentControl,
+  primeAgentsView,
   renderPrimeAgent,
-  visiblePrimeAgents,
   type PrimeAgent,
   type PrimeAgentCapabilities,
   type PrimeAgentRoster,
@@ -30,13 +29,21 @@ export interface PrimeAgentsSectionProps {
  * agent always has its exact reverse on the same row.
  */
 export function PrimeAgentsSection(props: PrimeAgentsSectionProps) {
-  if (!hasPrimeAgents(props.providerName, props.capabilities)) return null;
-  const agents = visiblePrimeAgents(props.roster, props.session);
-  if (agents.length === 0) return null;
+  const view = primeAgentsView(props.providerName, props.capabilities, props.roster, props.session);
+  if (view.kind === "hidden") return null;
+  if (view.kind === "unavailable")
+    return (
+      <div
+        className="px-2 py-1 text-xs text-muted-foreground"
+        data-testid="prime-agents-unavailable"
+      >
+        {view.reason}
+      </div>
+    );
 
   return (
     <div className="px-2 py-1 text-xs text-muted-foreground" data-testid="prime-agents">
-      {agents.map((agent) => {
+      {view.agents.map((agent) => {
         const control = primeAgentControl(agent, props.session, props.capabilities);
         return (
           <div

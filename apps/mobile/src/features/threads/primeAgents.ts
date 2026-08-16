@@ -57,6 +57,33 @@ export function visiblePrimeAgents(
   return roster.agents;
 }
 
+export type PrimeAgentsView =
+  | { readonly kind: "hidden" }
+  | { readonly kind: "unavailable"; readonly reason: string }
+  | { readonly kind: "agents"; readonly agents: ReadonlyArray<PrimeAgent> };
+
+/**
+ * The single surface decision, shared by both clients.
+ *
+ * A live Prime session on a runtime that never advertises the agents extension
+ * explains itself instead of rendering nothing: an older runtime should look
+ * outdated, not broken. Everything else (another provider, a dead session, a
+ * capable runtime with no agents to show) stays hidden.
+ */
+export function primeAgentsView(
+  providerName: string | null | undefined,
+  capabilities: PrimeAgentCapabilities | undefined,
+  roster: PrimeAgentRoster | undefined,
+  session: PrimeSessionLiveness | undefined,
+): PrimeAgentsView {
+  if (providerName !== "prime-agent" || !hasLivePrimeSession(session)) return { kind: "hidden" };
+  if (capabilities?.tasks !== true)
+    return { kind: "unavailable", reason: PRIME_AGENTS_UNAVAILABLE };
+  const agents = visiblePrimeAgents(roster, session);
+  if (agents.length === 0) return { kind: "hidden" };
+  return { kind: "agents", agents };
+}
+
 const STATUS_LABELS: Record<PrimeAgent["status"], string> = {
   running: "Working",
   paused: "Paused",

@@ -9,6 +9,7 @@ import {
   hasLivePrimeSession,
   hasPrimeAgents,
   primeAgentControl,
+  primeAgentsView,
   renderPrimeAgent,
   renderPrimeAgents,
   visiblePrimeAgents,
@@ -128,19 +129,46 @@ describe("prime agents surface", () => {
     expect(markup).toContain("disabled=");
   });
 
-  it("renders nothing at all without the capability or a live session", () => {
+  // Regression: a runtime without the agents extension used to render literally
+  // nothing, so the promised explanation was unreachable product code.
+  it("explains an older runtime instead of rendering nothing", () => {
+    expect(primeAgentsView("prime-agent", {}, roster, live)).toEqual({
+      kind: "unavailable",
+      reason: PRIME_AGENTS_UNAVAILABLE,
+    });
+    expect(primeAgentsView("prime-agent", undefined, undefined, live)).toEqual({
+      kind: "unavailable",
+      reason: PRIME_AGENTS_UNAVAILABLE,
+    });
+    const markup = renderToStaticMarkup(
+      <PrimeAgentsSection
+        providerName="prime-agent"
+        capabilities={{}}
+        roster={roster}
+        session={live}
+        onToggleObservation={() => {}}
+      />,
+    );
+    expect(markup).toContain(PRIME_AGENTS_UNAVAILABLE);
+    expect(markup).not.toContain("Refactor pass");
+  });
+
+  it("renders nothing for another provider, a dead session, or an empty roster", () => {
+    expect(primeAgentsView("codex", capabilities, roster, live)).toEqual({ kind: "hidden" });
+    expect(primeAgentsView("prime-agent", {}, roster, { status: "stopped" })).toEqual({
+      kind: "hidden",
+    });
+    expect(primeAgentsView("prime-agent", capabilities, { agents: [] }, live)).toEqual({
+      kind: "hidden",
+    });
     for (const props of [
-      { capabilities: {}, session: live },
-      { capabilities, session: { status: "stopped" } },
+      { providerName: "codex", capabilities, session: live },
+      { providerName: "prime-agent", capabilities, session: { status: "stopped" } },
+      { providerName: "prime-agent", capabilities: {}, session: { status: "stopped" } },
     ]) {
       expect(
         renderToStaticMarkup(
-          <PrimeAgentsSection
-            providerName="prime-agent"
-            roster={roster}
-            onToggleObservation={() => {}}
-            {...props}
-          />,
+          <PrimeAgentsSection roster={roster} onToggleObservation={() => {}} {...props} />,
         ),
       ).toBe("");
     }

@@ -6,6 +6,7 @@ import {
   hasLivePrimeSession,
   hasPrimeAgents,
   primeAgentControl,
+  primeAgentsView,
   renderPrimeAgents,
   visiblePrimeAgents,
   type PrimeAgent,
@@ -59,6 +60,32 @@ describe("prime agents surface (mobile)", () => {
     });
     expect(primeAgentControl({ ...root, status: "failed" }, live, capabilities).enabled).toBe(
       false,
+    );
+  });
+
+  // Regression: the composer used to hide the whole section when the runtime
+  // lacked `tasks`, so the promised explanation never reached a phone.
+  it("explains an older runtime instead of rendering nothing", () => {
+    expect(primeAgentsView("prime-agent", {}, roster, live)).toEqual({
+      kind: "unavailable",
+      reason: PRIME_AGENTS_UNAVAILABLE,
+    });
+    expect(primeAgentsView("prime-agent", capabilities, roster, live)).toEqual({
+      kind: "agents",
+      agents: roster.agents,
+    });
+    expect(primeAgentsView("codex", capabilities, roster, live)).toEqual({ kind: "hidden" });
+    expect(primeAgentsView("prime-agent", {}, roster, { status: "stopped" })).toEqual({
+      kind: "hidden",
+    });
+    const composer = readFileSync("apps/mobile/src/features/threads/ThreadComposer.tsx", "utf8");
+    expect(composer).toContain('primeAgentsSurface.kind === "unavailable"');
+    expect(composer).toContain("{primeAgentsSurface.reason}");
+    // ...and outside the runtime-action panel, whose own gate needs `steer` or
+    // `followUps`: observation is a separate capability and must not inherit
+    // an unrelated one.
+    expect(composer.indexOf('primeAgentsSurface.kind === "hidden" ? null : (')).toBeGreaterThan(
+      composer.indexOf("{/* Transient extension status"),
     );
   });
 

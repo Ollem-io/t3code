@@ -111,10 +111,9 @@ import {
 } from "./primeExtensionUi";
 import {
   PRIME_AGENTS_ARE_NOT_TRANSCRIPT,
-  hasPrimeAgents,
   primeAgentControl,
+  primeAgentsView,
   renderPrimeAgent,
-  visiblePrimeAgents,
 } from "./primeAgents";
 
 /**
@@ -364,7 +363,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const primeDialogStatus = renderPrimeDialogStatus(props.pendingDialogCount ?? 0);
   // Root and subagent rows. Watching an agent always shows its exact reverse,
   // and a subagent's output stays here instead of flooding the thread.
-  const primeAgents = visiblePrimeAgents(
+  const primeAgentsSurface = primeAgentsView(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
     props.selectedThread.session?.agentRoster,
     props.selectedThread.session,
   );
@@ -1259,49 +1260,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 ) : null}
               </>
             ) : null}
-            {hasPrimeAgents(
-              props.selectedThread.session?.providerName,
-              props.selectedThread.session?.runtimeCapabilities,
-            ) && primeAgents.length > 0 ? (
-              <>
-                {primeAgents.map((agent) => {
-                  const control = primeAgentControl(
-                    agent,
-                    props.selectedThread.session,
-                    props.selectedThread.session?.runtimeCapabilities,
-                  );
-                  return (
-                    <View key={agent.agentId} className="mt-1 flex-row items-center gap-2">
-                      <Text className="text-xs text-foreground-muted">
-                        {renderPrimeAgent(agent)}
-                      </Text>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={control.label}
-                        accessibilityState={{ disabled: !control.enabled }}
-                        disabled={!control.enabled}
-                        onPress={() => {
-                          void props.onToggleAgentObservation?.(agent.agentId, control.action);
-                        }}
-                        className={
-                          control.enabled
-                            ? "rounded-md border border-border px-2 py-1"
-                            : "rounded-md border border-border px-2 py-1 opacity-50"
-                        }
-                      >
-                        <Text className="text-xs text-foreground">{control.label}</Text>
-                      </Pressable>
-                      {control.reason ? (
-                        <Text className="text-xs text-foreground-muted">{control.reason}</Text>
-                      ) : null}
-                    </View>
-                  );
-                })}
-                <Text className="mt-1 text-xs text-foreground-muted">
-                  {PRIME_AGENTS_ARE_NOT_TRANSCRIPT}
-                </Text>
-              </>
-            ) : null}
             {/* Transient extension status: bounded, dismissible, never transcript. */}
             {hasPrimeExtensionUi(
               props.selectedThread.session?.providerName,
@@ -1351,6 +1309,59 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             ) : null}
           </View>
         ) : null}
+        {/* Agents surface: an older runtime explains itself here instead of
+            rendering nothing, so it reads as outdated rather than broken. This
+            sits outside the runtime-action panel because observation does not
+            depend on steer or follow-up support. */}
+        {primeAgentsSurface.kind === "hidden" ? null : (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            {primeAgentsSurface.kind === "unavailable" ? (
+              <Text className="mt-1 text-xs text-foreground-muted">
+                {primeAgentsSurface.reason}
+              </Text>
+            ) : null}
+            {primeAgentsSurface.kind === "agents" ? (
+              <>
+                {primeAgentsSurface.agents.map((agent) => {
+                  const control = primeAgentControl(
+                    agent,
+                    props.selectedThread.session,
+                    props.selectedThread.session?.runtimeCapabilities,
+                  );
+                  return (
+                    <View key={agent.agentId} className="mt-1 flex-row items-center gap-2">
+                      <Text className="text-xs text-foreground-muted">
+                        {renderPrimeAgent(agent)}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={control.label}
+                        accessibilityState={{ disabled: !control.enabled }}
+                        disabled={!control.enabled}
+                        onPress={() => {
+                          void props.onToggleAgentObservation?.(agent.agentId, control.action);
+                        }}
+                        className={
+                          control.enabled
+                            ? "rounded-md border border-border px-2 py-1"
+                            : "rounded-md border border-border px-2 py-1 opacity-50"
+                        }
+                      >
+                        <Text className="text-xs text-foreground">{control.label}</Text>
+                      </Pressable>
+                      {control.reason ? (
+                        <Text className="text-xs text-foreground-muted">{control.reason}</Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {PRIME_AGENTS_ARE_NOT_TRANSCRIPT}
+                </Text>
+              </>
+            ) : null}
+          </View>
+        )}
         {/* Queue count */}
         {props.queueCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>

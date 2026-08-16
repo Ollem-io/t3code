@@ -29,7 +29,7 @@ import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { PrimeAgentsSection, type PrimeAgentsSectionProps } from "./agents/PrimeAgentsSection";
-import { hasPrimeAgents, visiblePrimeAgents } from "./agents/primeAgents";
+import { primeAgentsView } from "./agents/primeAgents";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -534,11 +534,10 @@ export function AgentsPanel({
 }) {
   // A runtime roster is agents too: the empty state must not claim there are
   // none while Prime is reporting a root and two subagents.
-  const primeAgents =
-    prime && hasPrimeAgents(prime.providerName, prime.capabilities)
-      ? visiblePrimeAgents(prime.roster, prime.session)
-      : [];
-  if (!model.hasAgents && primeAgents.length === 0) {
+  const primeView = prime
+    ? primeAgentsView(prime.providerName, prime.capabilities, prime.roster, prime.session)
+    : ({ kind: "hidden" } as const);
+  if (!model.hasAgents && primeView.kind === "hidden") {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />

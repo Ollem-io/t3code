@@ -62,7 +62,7 @@ export const primeAgentRoster = (
   const seen = new Set<string>();
   for (const task of tasks) {
     const agentId = boundedPrimeNoticeText(task.taskId, MAX_PRIME_AGENT_ID);
-    if (!agentId || agentId !== task.taskId.trim() || seen.has(agentId)) continue;
+    if (!agentId || agentId !== task.taskId || seen.has(agentId)) continue;
     seen.add(agentId);
     const status = task.status;
     const detail = boundedPrimeNoticeText(task.detail, MAX_PRIME_AGENT_DETAIL);
@@ -70,7 +70,12 @@ export const primeAgentRoster = (
       agentId,
       role: task.parentTaskId === undefined ? "root" : "subagent",
       status,
-      title: boundedPrimeNoticeText(task.title, MAX_PRIME_AGENT_TITLE) || agentId,
+      // The id is allowed to be longer than a title, so the fallback is clamped
+      // again: an over-long title fails the wire contract and would drop the
+      // whole roster update for this thread.
+      title:
+        boundedPrimeNoticeText(task.title, MAX_PRIME_AGENT_TITLE) ||
+        agentId.slice(0, MAX_PRIME_AGENT_TITLE),
       observed: observed.has(agentId) && !isTerminalPrimeAgentStatus(status),
       ...(detail ? { detail } : {}),
     });
