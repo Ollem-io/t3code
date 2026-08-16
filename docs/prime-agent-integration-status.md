@@ -55,8 +55,9 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-A05    | Rich extension UI and transient status integration                 | Done — `251b823c` |
 | PA-A06    | Subagents, observation, Agents-surface controls                    | Done — `2e6c1d3e` |
 | PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure     | Done — `75f56f24` |
+| PA-A08    | Session naming/forking and Alpha integration/docs                  | Done — `ce3187ba` |
 
-Completed total: **24 of 31 milestones** (PA-A02.1 added to the original 30).
+Completed total: **25 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; Beta remains.
 
 Note on "merged to main": the run's milestone merges advance the run `main`
 lineage descending from public `origin/main` commit `9e201941a`. By maintainer
@@ -268,7 +269,13 @@ Review round 3 repairs: the ownership record is per thread and outlives any one 
 
 Known gaps to raise at review: visual evidence is still pending UI-launch permission; the native heartbeat command and event names are the declaration baseline this repository has been building against and could not be re-verified against an installed `prime-agent` on this host; ownership handles are recorded only where the platform can prove a process incarnation (Linux `/proc`), matching the existing PA-M06 ownership boundary.
 
-## PA-A08 (implemented, awaiting review)
+## PA-A08 (merged)
+
+**PA-A08 — Session naming/forking and Alpha integration/docs** was dual-approved on exact SHA `defe5d25` (three workflow rounds: rounds 1–2 rejected by the black-box product review — fork ancestry/reverse navigation was persisted and doc-promised but rendered by no client, then a follow-up gap — repaired with the web `PrimeForkOriginBanner` and mobile equivalent; final round dual APPROVE with zero blockers, Luna-verified watch passes) and merged to `main` at `ce3187ba` on 2026-08-16. **This completes the Alpha phase.**
+
+Accepted non-blockers to carry forward: a runtime-rejected `new_session { parentSession }` handoff silently yields a fresh session in a thread recorded as a fork (adoption failure is invisible); `forkPointLabel` message previews persist in the thread row beyond the session lifetime (retention observation); mobile fork ids fall back to `Date.now()` without `crypto.randomUUID`; visual evidence still pending UI-launch permission.
+
+## PA-A08 (round-1 state, superseded by the section above)
 
 **PA-A08 — Session naming/fork affordances and Alpha phase integration/docs** is implemented on
 `dev/prime-agent-perfect-integration-20260813/pa-a08` and has not been reviewed or merged.
@@ -311,7 +318,7 @@ with `namingAndForking` on and off, plus the fork-origin row on the forked threa
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A08    | Session naming/forking and Alpha integration/docs                | Implemented; awaiting review    |
+| PA-B01    | Versioned resume cursor and scoped durable storage policy        | Next                            |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                         |
 | PA-B03    | Server-side single-writer arbitration and conflict receipts      | Pending after B01; precedes B02 |
 | PA-B02    | Exact adoption/resume state machine and compatibility validation | Pending after B01/B03           |
