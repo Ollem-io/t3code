@@ -1250,7 +1250,7 @@ export const makePrimeAdapter = (
                     operation: "executeRuntimeOperation",
                     issue: stopped
                       ? "Prime Agent created this schedule in a form T3 cannot represent exactly; it was not kept."
-                      : "Prime Agent created this schedule in a form T3 cannot represent exactly, and stopping it failed: it is still running and is disclosed on the board; deleting it remains available.",
+                      : "Prime Agent created this schedule in a form T3 cannot represent exactly, and stopping it failed: it is still running and is disclosed on the board.",
                   });
                 }
               }

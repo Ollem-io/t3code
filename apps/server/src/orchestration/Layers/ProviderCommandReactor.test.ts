@@ -906,7 +906,7 @@ describe("ProviderCommandReactor", () => {
   // PA-A07: the board this thread's session reports is the authorization list.
   // Remote clients reach this path over the wire, so an id the session does not
   // own must never turn into a runtime call - not even for delete.
-  it("dispatches owned heartbeat actions and refuses an unowned identity", async () => {
+  it("forwards heartbeat actions to the provider authority even when the rendered board lacks the row", async () => {
     const harness = await createHarness({ runtimeExtensions: { goals: true } });
     const now = "2026-01-01T00:00:00.000Z";
     await harness.runEffect(
@@ -952,13 +952,17 @@ describe("ProviderCommandReactor", () => {
         }),
       );
     }
-    // Someone else's schedule, reachable only by guessing an id.
+    // An owned schedule whose row the runtime drifted off the rendered board
+    // (for example a TUI interval edit) is absent from the projection, but the
+    // action must still reach the adapter, whose owned-handle set is the
+    // ownership authority: it acts on owned hidden handles and refuses unowned
+    // ids with a typed validation error. The reactor never gates on rendering.
     await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.heartbeat.delete",
-        commandId: CommandId.make("cmd-heartbeat-foreign"),
+        commandId: CommandId.make("cmd-heartbeat-drifted"),
         threadId: ThreadId.make("thread-1"),
-        heartbeatId: "hb-sentinel",
+        heartbeatId: "hb-drifted",
         createdAt: now,
       }),
     );
@@ -978,6 +982,7 @@ describe("ProviderCommandReactor", () => {
       expect.objectContaining({ type: "heartbeat.pause", heartbeatId: "hb-t3-1" }),
       expect.objectContaining({ type: "heartbeat.resume", heartbeatId: "hb-t3-1" }),
       expect.objectContaining({ type: "heartbeat.delete", heartbeatId: "hb-t3-1" }),
+      expect.objectContaining({ type: "heartbeat.delete", heartbeatId: "hb-drifted" }),
       expect.objectContaining({
         type: "heartbeat.create",
         title: "Watch the deploy",

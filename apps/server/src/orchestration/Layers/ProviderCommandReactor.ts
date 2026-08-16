@@ -1644,18 +1644,15 @@ const make = Effect.gen(function* () {
   ) {
     const target = yield* resolveHeartbeatTarget(event.payload);
     if (!target) return;
-    // The board is the authorization list. Checking it here refuses an id this
-    // thread's session does not own before it can reach the host at all; the
-    // adapter re-checks against its own live board regardless.
-    const owned = target.thread.session?.goalBoard?.heartbeats.some(
-      (heartbeat) => heartbeat.heartbeatId === event.payload.heartbeatId,
-    );
-    if (owned !== true) {
-      return yield* target.fail("This thread's session does not own that heartbeat.");
-    }
     if (!isHeartbeatId(event.payload.heartbeatId)) {
       return yield* target.fail("The heartbeat identifier is invalid.");
     }
+    // Ownership authorization lives in the adapter's owned-handle set, which is
+    // the source the rendered board is derived from. The projected board must
+    // not gate here: an owned schedule whose row the runtime drifted out of
+    // the representable range is absent from the rendered board yet must stay
+    // pausable/resumable/deletable by its exact owned id. Unowned targets are
+    // refused by the adapter with a typed validation error either way.
     yield* providerService
       .executeRuntimeOperation({
         type:
