@@ -42,7 +42,11 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { PrimeRpcClient } from "../prime/PrimeRpcClient.ts";
 import { spawnPrimeRpcTransport } from "../prime/PrimeRpcProcessTransport.ts";
 import { primeHomeFingerprint, primeResourceLayout } from "../prime/PrimeResourceLayout.ts";
-import { recoverPrimeInstanceOwnership, writePrimeOwnership } from "../prime/PrimeOwnership.ts";
+import {
+  primeThreadOwnershipRecord,
+  recoverPrimeInstanceOwnership,
+  writePrimeOwnership,
+} from "../prime/PrimeOwnership.ts";
 import { provePrimeProcess, stopProvenPrimeProcess } from "../prime/PrimeProcessOwnership.ts";
 import { PrimeEventNormalizer } from "../prime/PrimeEventNormalizer.ts";
 import {
@@ -282,15 +286,16 @@ export const makePrimeAdapter = (
      */
     const persistHeartbeatOwnership = async (context: SessionContext) => {
       if (!context.processIdentity) return;
-      await writePrimeOwnership(context.ownershipPath, {
-        version: 1,
-        environmentId: options.environmentId,
-        instanceId: String(options.instanceId),
-        threadId: String(context.session.threadId),
-        kind: "thread",
-        process: context.processIdentity,
-        ...(context.ownedHeartbeats.size > 0 ? { heartbeatIds: [...context.ownedHeartbeats] } : {}),
-      });
+      await writePrimeOwnership(
+        context.ownershipPath,
+        primeThreadOwnershipRecord({
+          environmentId: options.environmentId,
+          instanceId: String(options.instanceId),
+          threadId: String(context.session.threadId),
+          process: context.processIdentity,
+          ownedHeartbeatIds: context.ownedHeartbeats,
+        }),
+      );
     };
     /**
      * Resolves one pending dialog as cancelled. `answerNative` is false during
@@ -388,21 +393,20 @@ export const makePrimeAdapter = (
       await Promise.resolve(context.transport.close?.()).catch(() => undefined);
       await context.transport.terminal.catch(() => undefined);
       if (context.processIdentity) {
-        await writePrimeOwnership(context.ownershipPath, {
-          version: 1,
-          environmentId: options.environmentId,
-          instanceId: String(options.instanceId),
-          threadId: String(context.session.threadId),
-          kind: "thread",
-          process: context.processIdentity,
-          // Heartbeat handles outlive the process on purpose: a resident
-          // schedule that survives this session must stay exactly identified so
-          // a later cleanup can stop ours and only ours.
-          ...(context.ownedHeartbeats.size > 0
-            ? { heartbeatIds: [...context.ownedHeartbeats] }
-            : {}),
-          processStopped: true,
-        }).catch(() => undefined);
+        // Heartbeat handles outlive the process on purpose: a resident
+        // schedule that survives this session must stay exactly identified so
+        // a later cleanup can stop ours and only ours.
+        await writePrimeOwnership(
+          context.ownershipPath,
+          primeThreadOwnershipRecord({
+            environmentId: options.environmentId,
+            instanceId: String(options.instanceId),
+            threadId: String(context.session.threadId),
+            process: context.processIdentity,
+            ownedHeartbeatIds: context.ownedHeartbeats,
+            processStopped: true,
+          }),
+        ).catch(() => undefined);
       }
     };
 
@@ -438,14 +442,16 @@ export const makePrimeAdapter = (
       });
       const processIdentity = await transport.processIdentityReady?.catch(() => undefined);
       if (processIdentity) {
-        await writePrimeOwnership(layout.ownership, {
-          version: 1,
-          environmentId: options.environmentId,
-          instanceId: String(options.instanceId),
-          threadId: String(input.threadId),
-          kind: "thread",
-          process: processIdentity,
-        });
+        await writePrimeOwnership(
+          layout.ownership,
+          primeThreadOwnershipRecord({
+            environmentId: options.environmentId,
+            instanceId: String(options.instanceId),
+            threadId: String(input.threadId),
+            process: processIdentity,
+            ownedHeartbeatIds: [],
+          }),
+        );
       }
       try {
         const response = await client.command({ type: "get_state" });
@@ -605,15 +611,22 @@ export const makePrimeAdapter = (
             "Prime Agent interactive request was cancelled because the session ended.",
           );
           if (context.processIdentity)
-            await writePrimeOwnership(context.ownershipPath, {
-              version: 1,
-              environmentId: options.environmentId,
-              instanceId: String(options.instanceId),
-              threadId: String(input.threadId),
-              kind: "thread",
-              process: context.processIdentity,
-              processStopped: true,
-            }).catch(() => undefined);
+            // The child can exit while a T3-created schedule keeps the daemon
+            // resident. This record is the last write for this session — the
+            // context is already removed from `sessions`, so closeContext will
+            // never run — and dropping the handles here would leave the exact
+            // resource we own permanently unidentifiable to cleanup.
+            await writePrimeOwnership(
+              context.ownershipPath,
+              primeThreadOwnershipRecord({
+                environmentId: options.environmentId,
+                instanceId: String(options.instanceId),
+                threadId: String(input.threadId),
+                process: context.processIdentity,
+                ownedHeartbeatIds: context.ownedHeartbeats,
+                processStopped: true,
+              }),
+            ).catch(() => undefined);
           const graceful = terminal.kind === "exit" && terminal.code === 0;
           const reason =
             terminal.kind === "exit" && terminal.code !== null
@@ -819,6 +832,13 @@ export const makePrimeAdapter = (
       };
       context.nativeHeartbeats = data.heartbeats;
       context.resident = data.resident === true;
+      // Same rule as the heartbeat_update event path: ownership cannot outlive
+      // the heartbeat it named, so an id the store no longer reports is
+      // dropped instead of being persisted as an unprovable handle that would
+      // later stall the whole cleanup chain for this record.
+      const reported = new Set(data.heartbeats.map((heartbeat) => heartbeat.heartbeatId));
+      for (const heartbeatId of [...context.ownedHeartbeats])
+        if (!reported.has(heartbeatId)) context.ownedHeartbeats.delete(heartbeatId);
       // An id the store does not also contain is not adopted: T3 would be
       // claiming ownership of something it cannot see, and could later stop a
       // schedule it never actually created.

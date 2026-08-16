@@ -16,6 +16,7 @@ import * as Stream from "effect/Stream";
 import { spawnPrimeRpcTransport } from "./PrimeRpcProcessTransport.ts";
 import { decodePrimeRpcEnvelope } from "./PrimeRpcProtocol.ts";
 import { primeResourceLayout } from "./PrimeResourceLayout.ts";
+import { primeThreadOwnershipRecord } from "./PrimeOwnership.ts";
 import { makePrimeAdapter } from "../Layers/PrimeAdapter.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
@@ -291,6 +292,7 @@ createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{const
   return out({type:"response",id:c.id,command:c.type,success:true,data:{}});}
  if(c.type==="heartbeat_stop"){store=store.filter(h=>h.heartbeatId!==c.heartbeatId);
   return out({type:"response",id:c.id,command:c.type,success:true,data:{}});}
+ if(c.type==="prompt"&&c.message.includes("drop")) store=store.filter(h=>!h.heartbeatId.startsWith("hb-t3-"));
  out({type:"response",id:c.id,command:c.type,success:true,data:{state:"idle"}}); if(c.type!=="prompt") return;
  out({type:"turn_start"});
  if(c.message.includes("goal")) setTimeout(()=>out({type:"goal_update",goal:{goalId:"goal-1",title:"Finish provider adapter review",status:"active",detail:"3 of 8"}}),5);
@@ -501,6 +503,83 @@ describe("PrimeAdapter owned heartbeats", () => {
           const record = decodeOwnershipRecord(written);
           assert.deepStrictEqual(record.heartbeatIds, ["hb-t3-1"]);
         }
+      }),
+    ),
+  );
+
+  it("keeps the owned heartbeat handles on the process-exit record", () => {
+    // Every thread ownership write replaces the record whole. The write that
+    // happens when the Prime child exits on its own is the last one this
+    // session ever makes, so if it dropped the ids, a T3-created schedule that
+    // is still keeping the daemon resident would become impossible for cleanup
+    // to identify — and cleanup only ever touches ids it can prove are ours.
+    const stopped = primeThreadOwnershipRecord({
+      environmentId: "env",
+      instanceId: String(INSTANCE),
+      threadId: String(THREAD),
+      process: { pid: 4242, startToken: "token" },
+      ownedHeartbeatIds: new Set(["hb-t3-1", "hb-t3-2"]),
+      processStopped: true,
+    });
+    assert.deepStrictEqual(stopped.heartbeatIds, ["hb-t3-1", "hb-t3-2"]);
+    assert.equal(stopped.processStopped, true);
+    assert.equal(stopped.kind, "thread");
+    // Nothing owned means no handle at all, rather than an empty claim.
+    const empty = primeThreadOwnershipRecord({
+      environmentId: "env",
+      instanceId: String(INSTANCE),
+      threadId: String(THREAD),
+      process: { pid: 4242, startToken: "token" },
+      ownedHeartbeatIds: [],
+    });
+    assert.equal(empty.heartbeatIds, undefined);
+    assert.equal(empty.processStopped, undefined);
+  });
+
+  it.effect("drops an owned id the runtime stops reporting on a re-read", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup;
+        const adapter = yield* start(f);
+        yield* operation(adapter, {
+          type: "heartbeat.create",
+          heartbeatId: HeartbeatId.make("client-draft"),
+          title: "Check CI",
+          intervalSeconds: 1_200,
+        });
+        yield* nextBoard(adapter);
+        // The schedule disappears out of band; only a heartbeat_get follows.
+        yield* adapter.sendTurn({
+          threadId: THREAD,
+          input: "drop it",
+          modelSelection: {
+            instanceId: INSTANCE,
+            model: "model",
+            nativeIdentity: { provider: "provider", modelId: "model" },
+          },
+        });
+        yield* operation(adapter, {
+          type: "heartbeat.pause",
+          heartbeatId: HeartbeatId.make("hb-t3-1"),
+        });
+        const board = yield* nextBoard(adapter);
+        assert.deepStrictEqual(board.payload.heartbeats, []);
+        const layout = primeResourceLayout({
+          home: join(f.root, "home"),
+          environmentId: "env",
+          instanceId: String(INSTANCE),
+          threadId: String(THREAD),
+        });
+        const written = yield* Effect.promise(() =>
+          readFile(layout.ownership, "utf8").catch(() => undefined),
+        );
+        // A stale id is never persisted: an unprovable handle would stall the
+        // whole cleanup chain for this record forever.
+        if (written !== undefined)
+          assert.equal(decodeOwnershipRecord(written).heartbeatIds, undefined);
+        // The sentinel was never named by anything T3 sent.
+        const sent = yield* commands(f.marker);
+        assert.ok(!sent.some((c) => c.heartbeatId === "hb-sentinel"));
       }),
     ),
   );

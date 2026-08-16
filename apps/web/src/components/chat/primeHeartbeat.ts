@@ -51,6 +51,8 @@ export const PRIME_GOAL_READ_ONLY =
 export const MIN_PRIME_HEARTBEAT_INTERVAL_SECONDS = 60;
 export const MAX_PRIME_HEARTBEAT_INTERVAL_SECONDS = 86_400;
 export const MAX_PRIME_HEARTBEATS = 8;
+/** Mirrors the `thread.heartbeat.create` title bound so the cap is stated inline, not by schema rejection. */
+export const MAX_PRIME_HEARTBEAT_TITLE_CHARS = 120;
 
 /** True only when the runtime advertises the PA-A07 goals extension. */
 export function hasPrimeGoals(
@@ -221,6 +223,11 @@ export function primeHeartbeatDraftDecision(
     };
   if (draft.title.trim().length === 0)
     return { canCreate: false, reason: "Name what this heartbeat should do." };
+  if (draft.title.trim().length > MAX_PRIME_HEARTBEAT_TITLE_CHARS)
+    return {
+      canCreate: false,
+      reason: `Keep the heartbeat name to ${MAX_PRIME_HEARTBEAT_TITLE_CHARS} characters or fewer.`,
+    };
   if (
     !Number.isSafeInteger(draft.intervalSeconds) ||
     draft.intervalSeconds < MIN_PRIME_HEARTBEAT_INTERVAL_SECONDS ||

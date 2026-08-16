@@ -13,6 +13,7 @@ import {
   hasPrimeGoals,
   primeGoalBoardView,
   primeHeartbeatControls,
+  MAX_PRIME_HEARTBEAT_TITLE_CHARS,
   primeHeartbeatDraftDecision,
   renderPrimeGoalBoard,
   renderPrimeHeartbeat,
@@ -117,6 +118,18 @@ describe("prime goals and heartbeats surface", () => {
       canCreate: false,
       reason: "Name what this heartbeat should do.",
     });
+    // The wire schema caps the title at 120 characters. Saying so inline is
+    // the difference between guidance and a raw dispatch rejection.
+    expect(
+      refuse({ title: "x".repeat(MAX_PRIME_HEARTBEAT_TITLE_CHARS + 1), intervalSeconds: 900 }),
+    ).toEqual({
+      canCreate: false,
+      reason: `Keep the heartbeat name to ${MAX_PRIME_HEARTBEAT_TITLE_CHARS} characters or fewer.`,
+    });
+    expect(
+      refuse({ title: "x".repeat(MAX_PRIME_HEARTBEAT_TITLE_CHARS), intervalSeconds: 900 })
+        .canCreate,
+    ).toBe(true);
     for (const intervalSeconds of [30, 90_000, 60.5]) {
       expect(refuse({ title: "Watch", intervalSeconds })).toEqual({
         canCreate: false,

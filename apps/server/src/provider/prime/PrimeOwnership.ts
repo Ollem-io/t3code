@@ -424,6 +424,34 @@ const validate = (path: string, r: PrimeOwnershipRecord, id: Identity) =>
   r.threadId === id.threadId &&
   (basename(path) === "daemon.json") === (r.kind === "daemon") &&
   (r.kind === "daemon" ? r.rpcSessionId === undefined : r.daemonSessionId === undefined);
+/**
+ * The one shape every thread ownership write uses.
+ *
+ * Each write replaces the record whole, so a site that forgets the owned
+ * heartbeat ids does not just omit them — it erases the only handle that makes
+ * a resident T3-created schedule stoppable later. Building the record in one
+ * place is what keeps the process-exit write as exact as the create write.
+ */
+export const primeThreadOwnershipRecord = (input: {
+  readonly environmentId: string;
+  readonly instanceId: string;
+  readonly threadId: string;
+  readonly process: PrimeProcessHandle;
+  readonly ownedHeartbeatIds: Iterable<string>;
+  readonly processStopped?: boolean;
+}): PrimeOwnershipRecord => {
+  const heartbeatIds = [...input.ownedHeartbeatIds];
+  return {
+    version: PRIME_OWNERSHIP_VERSION,
+    environmentId: input.environmentId,
+    instanceId: input.instanceId,
+    threadId: input.threadId,
+    kind: "thread",
+    process: input.process,
+    ...(heartbeatIds.length > 0 ? { heartbeatIds } : {}),
+    ...(input.processStopped === true ? { processStopped: true } : {}),
+  };
+};
 export type PrimeOwnershipWriteHooks = AtomicWriteHooks;
 export const writePrimeOwnership = async (
   path: string,

@@ -8,6 +8,7 @@ import {
   hasPrimeGoals,
   primeGoalBoardView,
   primeHeartbeatControls,
+  MAX_PRIME_HEARTBEAT_TITLE_CHARS,
   primeHeartbeatDraftDecision,
   renderPrimeGoalBoard,
   type PrimeGoalBoard,
@@ -73,6 +74,17 @@ describe("prime goals and heartbeats surface (mobile)", () => {
       primeHeartbeatDraftDecision(board, live, capabilities, { title: "x", intervalSeconds: 5 })
         .canCreate,
     ).toBe(false);
+    // The 120-character wire cap is stated inline here too, rather than
+    // arriving as a raw schema rejection after the user hits create.
+    expect(
+      primeHeartbeatDraftDecision(board, live, capabilities, {
+        title: "x".repeat(MAX_PRIME_HEARTBEAT_TITLE_CHARS + 1),
+        intervalSeconds: 900,
+      }),
+    ).toEqual({
+      canCreate: false,
+      reason: `Keep the heartbeat name to ${MAX_PRIME_HEARTBEAT_TITLE_CHARS} characters or fewer.`,
+    });
   });
 
   it("renders the panel, its reverse controls, and the confirmation on the composer", () => {
