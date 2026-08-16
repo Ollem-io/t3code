@@ -81,15 +81,16 @@ const QueuedPromptCommand = Schema.Struct({
 });
 const NoArgumentCommand = Schema.Struct({
   id: Schema.optional(RequestId),
-  // `get_session_stats` and `compact` are part of the declaration-verified 0.7.2
-  // command baseline; neither takes arguments and neither is inferred from a
-  // response we merely observed.
+  // `get_session_stats`, `compact`, and `get_commands` are part of the
+  // declaration-verified 0.7.2 command baseline; none takes arguments and none
+  // is inferred from a response we merely observed.
   type: Schema.Literals([
     "abort",
     "get_state",
     "get_available_models",
     "get_session_stats",
     "compact",
+    "get_commands",
   ]),
 });
 const NewSessionCommand = Schema.Struct({
@@ -402,6 +403,7 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "set_thinking_level",
     "get_session_stats",
     "compact",
+    "get_commands",
   ]);
   const knownEventTypes = new Set([
     "agent_start",

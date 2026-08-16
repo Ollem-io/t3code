@@ -156,6 +156,7 @@ describe("ProviderCommandReactor", () => {
           readonly compaction?: boolean;
           readonly compactionCancel?: boolean;
           readonly usageAndRetry?: boolean;
+          readonly commandDiscovery?: boolean;
         }
       | undefined;
     readonly requiresNewThreadForModelChange?: boolean;
@@ -739,6 +740,83 @@ describe("ProviderCommandReactor", () => {
         requestId: "usage-1",
       }),
     ]);
+  });
+
+  it("dispatches a command refresh as a command.discover runtime operation without requiring a running turn", async () => {
+    const harness = await createHarness({
+      runtimeExtensions: { commandDiscovery: true },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-command-refresh-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "idle",
+          providerName: "prime-agent",
+          providerInstanceId: ProviderInstanceId.make("prime-agent"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.commands.refresh",
+        commandId: CommandId.make("cmd-command-refresh"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: "commands-1",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "command.discover",
+        threadId: ThreadId.make("thread-1"),
+      }),
+    );
+  });
+
+  it("fails closed when command discovery is not advertised", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-command-refresh-unsupported-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "idle",
+          providerName: "prime-agent",
+          providerInstanceId: ProviderInstanceId.make("prime-agent"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.commands.refresh",
+        commandId: CommandId.make("cmd-command-refresh-unsupported"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: "commands-1",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
   });
 
   it("fails closed when the runtime does not advertise the context capability", async () => {

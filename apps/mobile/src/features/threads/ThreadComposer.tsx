@@ -93,6 +93,12 @@ import {
   resolvePrimeCompactionRequest,
   resolvePrimeUsageRefresh,
 } from "./primeContext";
+import {
+  appendPrimeCommandToDraft,
+  hasPrimeCommandSurface,
+  primeCommandOriginLabel,
+  resolvePrimeCommandInvocation,
+} from "./primeCommands";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -138,6 +144,8 @@ export interface ThreadComposerProps {
   /** Runtime context management. Compaction is never a checkpoint or a revert. */
   readonly onRequestCompaction?: () => Promise<boolean>;
   readonly onRefreshUsage?: () => Promise<boolean>;
+  /** Explicit, bounded re-read of the runtime command catalog. Never polled. */
+  readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -321,6 +329,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     );
   const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
   const primeContextLines = renderPrimeContext(props.selectedThread.session?.contextState);
+  const primeCommands = props.selectedThread.session?.commandCatalog?.commands;
+  const primeCommandCatalogRef = useRef(primeCommands);
+  primeCommandCatalogRef.current = primeCommands;
+  const primeCommandsAvailable = hasPrimeCommandSurface(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+  );
+  const [primeCommandsOpen, setPrimeCommandsOpen] = useState(false);
+  const [primeCommandError, setPrimeCommandError] = useState<string | null>(null);
   const primeHasRunningTurn = hasPrimeRunningTurn(props.selectedThread.session);
   const primeCompactionDecision = resolvePrimeCompactionRequest(
     props.selectedThread.session?.providerName,
@@ -1085,6 +1102,69 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             <Text className="mt-1 text-xs text-foreground-muted">
               {primeCancellationCopy(props.selectedThread.session?.runtimeCapabilities)}
             </Text>
+            {/* Runtime-supplied commands, prompts, and skills. Picking one only
+                fills the composer: the user still decides to send. */}
+            {primeCommandsAvailable ? (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Prime commands"
+                  onPress={() => {
+                    setPrimeCommandError(null);
+                    setPrimeCommandsOpen((open) => {
+                      // Opening is the one moment the list is about to be read,
+                      // so it is also the one moment worth re-reading the host.
+                      if (!open) void props.onRefreshCommands?.();
+                      return !open;
+                    });
+                  }}
+                  className="mt-2 self-start rounded-md border border-border px-2 py-1"
+                >
+                  <Text className="text-xs text-foreground">
+                    {`Prime commands (${primeCommands?.length ?? 0})`}
+                  </Text>
+                </Pressable>
+                {primeCommandsOpen
+                  ? (primeCommands ?? []).map((command) => (
+                      <Pressable
+                        key={command.name}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Insert /${command.name}`}
+                        onPress={() => {
+                          // Resolved against the newest catalog rather than the
+                          // rendered row, so an entry the host deleted since
+                          // this list was built says so instead of inserting
+                          // prose the runtime will ignore.
+                          const decision = resolvePrimeCommandInvocation(
+                            primeCommandCatalogRef.current,
+                            command.name,
+                          );
+                          if (!decision.ok) {
+                            setPrimeCommandError(decision.reason);
+                            return;
+                          }
+                          setPrimeCommandError(null);
+                          setPrimeCommandsOpen(false);
+                          props.onChangeDraftMessage(
+                            appendPrimeCommandToDraft(props.draftMessage, decision.prompt),
+                          );
+                        }}
+                        className="mt-1"
+                      >
+                        <Text className="text-xs text-foreground">{`/${command.name}`}</Text>
+                        <Text className="text-xs text-foreground-muted">
+                          {command.description === undefined
+                            ? primeCommandOriginLabel(command)
+                            : `${primeCommandOriginLabel(command)} — ${command.description}`}
+                        </Text>
+                      </Pressable>
+                    ))
+                  : null}
+                {primeCommandError === null ? null : (
+                  <Text className="mt-1 text-xs text-red-500">{primeCommandError}</Text>
+                )}
+              </>
+            ) : null}
             {/* Compaction is the runtime's context management, never a checkpoint. */}
             {hasPrimeContextControls(
               props.selectedThread.session?.providerName,

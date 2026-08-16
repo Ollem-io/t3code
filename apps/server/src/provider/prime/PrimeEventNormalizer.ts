@@ -9,6 +9,7 @@ import {
   EventId,
   RuntimeItemId,
   RuntimeRequestId,
+  type SessionCommandsUpdatedPayload,
   type ThreadTokenUsageSnapshot,
 } from "@t3tools/contracts";
 import type { PrimeRpcKnownEvent, PrimeRpcEnvelope } from "./PrimeRpcProtocol.ts";
@@ -208,12 +209,10 @@ export class PrimeEventNormalizer {
                   question: cleanNative(e.title),
                   options:
                     e.method === "select"
-                      ? e.options
-                          .slice(0, MAX_SELECT_OPTIONS)
-                          .map((label) => ({
-                            label: cleanNative(label, "Option"),
-                            description: cleanNative(label, "Option"),
-                          }))
+                      ? e.options.slice(0, MAX_SELECT_OPTIONS).map((label) => ({
+                          label: cleanNative(label, "Option"),
+                          description: cleanNative(label, "Option"),
+                        }))
                       : [],
                   multiSelect: false,
                 },
@@ -306,6 +305,16 @@ export class PrimeEventNormalizer {
     const context = this.#context.applyUsage(usage);
     if (context) out.push(this.base("session.context.updated", context, { turnId: this.#turn }));
     return out;
+  }
+
+  /**
+   * Publishes a discovered command catalog. The caller owns the bounded cache,
+   * so a byte-identical catalog never reaches this method and no snapshot is
+   * emitted after the session stopped.
+   */
+  commandsSnapshot(catalog: SessionCommandsUpdatedPayload | undefined): ProviderRuntimeEvent[] {
+    if (this.#stopped || !catalog) return [];
+    return [this.base("session.commands.updated", catalog, { turnId: this.#turn })];
   }
 
   cancelled(

@@ -358,6 +358,26 @@ export type OrchestrationSessionContextState = typeof OrchestrationSessionContex
 export const EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE: OrchestrationSessionContextState =
   Object.freeze({ compaction: Object.freeze({ status: "idle", trigger: "automatic" }) });
 
+/**
+ * Runtime-supplied command/prompt/skill catalog. Mirrors the canonical
+ * `session.commands.updated` snapshot: replacement is the only reconciliation,
+ * and `location` is a bounded display label that never carries a host path.
+ */
+export const OrchestrationSessionCommandCatalog = Schema.Struct({
+  commands: Schema.Array(
+    Schema.Struct({
+      name: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+      kind: Schema.Literals(["command", "prompt", "skill"]),
+      description: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+      source: Schema.Literals(["builtin", "user", "project", "extension"]),
+      location: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
+    }),
+  ).check(Schema.isMaxLength(128)),
+});
+export type OrchestrationSessionCommandCatalog = typeof OrchestrationSessionCommandCatalog.Type;
+export const EMPTY_ORCHESTRATION_SESSION_COMMAND_CATALOG: OrchestrationSessionCommandCatalog =
+  Object.freeze({ commands: Object.freeze([]) });
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -382,6 +402,8 @@ export const OrchestrationSession = Schema.Struct({
   actionState: Schema.optional(OrchestrationSessionActionState),
   /** Native authoritative context/compaction/retry snapshot; absent means none supplied. */
   contextState: Schema.optional(OrchestrationSessionContextState),
+  /** Native authoritative command/prompt/skill catalog; absent means none supplied. */
+  commandCatalog: Schema.optional(OrchestrationSessionCommandCatalog),
   runtimeCapabilities: Schema.optional(
     Schema.Struct({
       steer: Schema.optional(Schema.Boolean),
@@ -390,6 +412,7 @@ export const OrchestrationSession = Schema.Struct({
       compaction: Schema.optional(Schema.Boolean),
       compactionCancel: Schema.optional(Schema.Boolean),
       usageAndRetry: Schema.optional(Schema.Boolean),
+      commandDiscovery: Schema.optional(Schema.Boolean),
     }),
   ),
 });
@@ -984,6 +1007,14 @@ const ThreadUsageRefreshCommand = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
+/** Explicit, bounded re-read of the runtime's command catalog; never polled. */
+const ThreadCommandRefreshCommand = Schema.Struct({
+  type: Schema.Literal("thread.commands.refresh"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -1054,6 +1085,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadFollowUpAddCommand,
   ThreadCompactionRequestCommand,
   ThreadUsageRefreshCommand,
+  ThreadCommandRefreshCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1086,6 +1118,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadFollowUpAddCommand,
   ThreadCompactionRequestCommand,
   ThreadUsageRefreshCommand,
+  ThreadCommandRefreshCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1210,6 +1243,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.follow-up-add-requested",
   "thread.compaction-requested",
   "thread.usage-refresh-requested",
+  "thread.command-refresh-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1417,6 +1451,11 @@ export const ThreadUsageRefreshRequestedPayload = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
+export const ThreadCommandRefreshRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
 
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -1615,6 +1654,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.usage-refresh-requested"),
     payload: ThreadUsageRefreshRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.command-refresh-requested"),
+    payload: ThreadCommandRefreshRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

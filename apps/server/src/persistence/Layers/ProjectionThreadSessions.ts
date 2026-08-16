@@ -21,6 +21,9 @@ const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(
     actionState: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.actionState)),
     ),
+    commandCatalog: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.commandCatalog)),
+    ),
     contextState: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.contextState)),
     ),
@@ -47,6 +50,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           last_error,
           updated_at,
           action_state_json,
+          command_catalog_json,
           context_state_json,
           runtime_capabilities_json
         )
@@ -60,6 +64,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.lastError},
           ${row.updatedAt},
           ${row.actionState === undefined ? null : JSON.stringify(row.actionState)},
+          ${row.commandCatalog === undefined ? null : JSON.stringify(row.commandCatalog)},
           ${row.contextState === undefined ? null : JSON.stringify(row.contextState)},
           ${row.runtimeCapabilities === undefined ? null : JSON.stringify(row.runtimeCapabilities)}
         )
@@ -73,6 +78,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           last_error = excluded.last_error,
           updated_at = excluded.updated_at,
           action_state_json = excluded.action_state_json,
+          command_catalog_json = excluded.command_catalog_json,
           context_state_json = excluded.context_state_json,
           runtime_capabilities_json = excluded.runtime_capabilities_json
       `,
@@ -93,6 +99,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           last_error AS "lastError",
           updated_at AS "updatedAt",
           action_state_json AS "actionState",
+          command_catalog_json AS "commandCatalog",
           context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
@@ -119,12 +126,15 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
       // SQL NULL decodes to null; the repository contract models absence as
       // an omitted optional field.
       Effect.map(
-        Option.map(({ actionState, contextState, runtimeCapabilities, ...rest }) => ({
-          ...rest,
-          ...(actionState != null ? { actionState } : {}),
-          ...(contextState != null ? { contextState } : {}),
-          ...(runtimeCapabilities != null ? { runtimeCapabilities } : {}),
-        })),
+        Option.map(
+          ({ actionState, commandCatalog, contextState, runtimeCapabilities, ...rest }) => ({
+            ...rest,
+            ...(actionState != null ? { actionState } : {}),
+            ...(commandCatalog != null ? { commandCatalog } : {}),
+            ...(contextState != null ? { contextState } : {}),
+            ...(runtimeCapabilities != null ? { runtimeCapabilities } : {}),
+          }),
+        ),
       ),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadSessionRepository.getByThreadId:query"),

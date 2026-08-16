@@ -119,6 +119,7 @@ export interface ThreadDetailScreenProps {
   readonly onRuntimeAction?: (mode: "steer" | "followUp", text: string) => Promise<boolean>;
   readonly onRequestCompaction?: () => Promise<boolean>;
   readonly onRefreshUsage?: () => Promise<boolean>;
+  readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
@@ -743,6 +744,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onRuntimeAction={props.onRuntimeAction}
                 onRequestCompaction={props.onRequestCompaction}
                 onRefreshUsage={props.onRefreshUsage}
+                onRefreshCommands={props.onRefreshCommands}
                 onSendMessage={handleSendMessage}
                 onReconnectEnvironment={props.onReconnectEnvironment}
                 onUpdateModelSelection={props.onUpdateThreadModelSelection}

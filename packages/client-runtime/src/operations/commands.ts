@@ -51,6 +51,7 @@ export type SteerThreadInput = CommandInput<"thread.steer.add">;
 export type AddThreadFollowUpInput = CommandInput<"thread.follow-up.add">;
 export type RequestThreadCompactionInput = CommandInput<"thread.compaction.request">;
 export type RefreshThreadUsageInput = CommandInput<"thread.usage.refresh">;
+export type RefreshThreadCommandsInput = CommandInput<"thread.commands.refresh">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
@@ -325,6 +326,18 @@ export const refreshThreadUsage: (input: RefreshThreadUsageInput) => CommandEffe
     createdAt: metadata.createdAt,
   });
 });
+
+/** Explicit, bounded re-read of the runtime command catalog. */
+export const refreshThreadCommands: (input: RefreshThreadCommandsInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.refreshThreadCommands")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.commands.refresh",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
 
 export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.interruptThreadTurn",

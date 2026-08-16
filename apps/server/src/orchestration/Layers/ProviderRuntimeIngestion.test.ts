@@ -407,6 +407,88 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  // PA-A04: the discovered command catalog is current state, not scrollback. It
+  // must reach the read model so a client can offer the commands, survive the
+  // turn boundary, and disappear when the session exits.
+  it("projects the command catalog, keeps it across turns, and clears it on session exit", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-commands-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-commands"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "running");
+
+    harness.emit({
+      type: "session.commands.updated",
+      eventId: asEventId("evt-commands-discovered"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-commands"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: {
+        commands: [{ name: "review", kind: "prompt", source: "project", location: "review.md" }],
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => (thread.session?.commandCatalog?.commands.length ?? 0) === 1,
+    );
+    const discovered = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(discovered?.session?.commandCatalog).toEqual({
+      commands: [{ name: "review", kind: "prompt", source: "project", location: "review.md" }],
+    });
+
+    // A finished turn does not remove commands: the same session still owns the
+    // same command files.
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-commands-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-commands"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: { state: "completed" },
+    });
+    await waitForThread(harness.readModel, (thread) => thread.session?.status !== "running");
+    const afterTurn = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(afterTurn?.session?.commandCatalog?.commands.length).toBe(1);
+
+    // Snapshots replace: a command deleted on the host disappears everywhere.
+    harness.emit({
+      type: "session.commands.updated",
+      eventId: asEventId("evt-commands-removed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: { commands: [{ name: "deploy", kind: "command", source: "user" }] },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.commandCatalog?.commands[0]?.name === "deploy",
+    );
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-commands-session-exited"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      payload: { reason: "exited" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => (thread.session?.commandCatalog?.commands.length ?? 0) === 0,
+    );
+  });
+
   // PA-A03 blocker regression: a late "Compacting" arriving after the turn
   // terminal used to persist forever, permanently disabling the compact control
   // on an idle thread with no event able to clear it. Compaction is session
