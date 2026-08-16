@@ -77,7 +77,13 @@ import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerComm
 import { buildThreadSettingsMenu } from "./thread-settings-menu";
 import { ThreadSettingsSheet, threadSettingsSummaryLabel } from "./ThreadSettingsSheet";
 import { useThreadSettingsSheetPresentation } from "./use-thread-settings-sheet-presentation";
-import { hasPrimeRuntimeActions, renderPrimeQueue, resolvePrimeSend, type PrimeActionMode } from "./primeQueue";
+import {
+  hasPrimeRuntimeActions,
+  primeCancellationCopy,
+  renderPrimeQueue,
+  resolvePrimeSend,
+  type PrimeActionMode,
+} from "./primeQueue";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -297,7 +303,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const [primeActionMode, setPrimeActionMode] = useState<PrimeActionMode>(null);
   const primeRuntimeActive =
     props.selectedThread.session?.status === "running" &&
-    hasPrimeRuntimeActions(props.selectedThread.session.providerName, props.selectedThread.session.runtimeCapabilities);
+    hasPrimeRuntimeActions(
+      props.selectedThread.session.providerName,
+      props.selectedThread.session.runtimeCapabilities,
+    );
   const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
   // Keep the runtime-action decision visible before send is pressed: a disabled
   // mode must explain how to proceed rather than silently dropping the draft.
@@ -1000,23 +1009,47 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             <View className="mt-2 flex-row gap-2">
               <Pressable
                 accessibilityRole="button"
+                accessibilityState={{
+                  disabled: props.selectedThread.session?.runtimeCapabilities?.steer !== true,
+                  selected: primeActionMode === "steer",
+                }}
                 disabled={props.selectedThread.session?.runtimeCapabilities?.steer !== true}
                 onPress={() => setPrimeActionMode("steer")}
-                className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"
+                className={`rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700 ${
+                  props.selectedThread.session?.runtimeCapabilities?.steer !== true
+                    ? "opacity-40"
+                    : ""
+                }`}
               >
                 <Text>Steer now</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
+                accessibilityState={{
+                  disabled: props.selectedThread.session?.runtimeCapabilities?.followUps !== true,
+                  selected: primeActionMode === "followUp",
+                }}
                 disabled={props.selectedThread.session?.runtimeCapabilities?.followUps !== true}
                 onPress={() => setPrimeActionMode("followUp")}
-                className="rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700"
+                className={`rounded-full bg-neutral-200 px-3 py-2 dark:bg-neutral-700 ${
+                  props.selectedThread.session?.runtimeCapabilities?.followUps !== true
+                    ? "opacity-40"
+                    : ""
+                }`}
               >
                 <Text>Queue next</Text>
               </Pressable>
             </View>
-            {props.selectedThread.session?.runtimeCapabilities?.steer !== true ? <Text className="mt-1 text-xs text-foreground-muted">Steering is unavailable in this runtime.</Text> : null}
-            {props.selectedThread.session?.runtimeCapabilities?.followUps !== true ? <Text className="mt-1 text-xs text-foreground-muted">Queued follow-ups are unavailable in this runtime.</Text> : null}
+            {props.selectedThread.session?.runtimeCapabilities?.steer !== true ? (
+              <Text className="mt-1 text-xs text-foreground-muted">
+                Steering is unavailable in this runtime.
+              </Text>
+            ) : null}
+            {props.selectedThread.session?.runtimeCapabilities?.followUps !== true ? (
+              <Text className="mt-1 text-xs text-foreground-muted">
+                Queued follow-ups are unavailable in this runtime.
+              </Text>
+            ) : null}
             {primeQueue.map((item, index) => (
               <Text key={`${index}:${item}`} className="mt-1 text-xs text-foreground-muted">
                 {item}
@@ -1026,7 +1059,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               <Text className="mt-1 text-xs text-red-500">{primeSendDecision.reason}</Text>
             ) : null}
             <Text className="mt-1 text-xs text-foreground-muted">
-              Interrupt stops the turn; Stop ends the session. Queued actions cannot be cancelled.
+              {primeCancellationCopy(props.selectedThread.session?.runtimeCapabilities)}
             </Text>
           </View>
         ) : null}

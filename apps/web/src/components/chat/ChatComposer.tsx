@@ -228,6 +228,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 import {
   hasPrimeRuntimeActions,
+  primeCancellationCopy,
   renderPrimeQueue,
   resolvePrimeSend,
   type PrimeActionMode,
@@ -1825,6 +1826,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     showPlanFollowUpPrompt,
   ]);
 
+  // Keep the runtime-action decision visible before send is pressed: a disabled
+  // mode must explain how to proceed rather than only failing on submit.
+  const primeSendDecision = primeRuntimeActive
+    ? resolvePrimeSend(
+        activeThread?.session?.providerName,
+        primeActionMode,
+        activeThread?.session?.runtimeCapabilities,
+        composerImages.length +
+          composerTerminalContexts.length +
+          composerElementContexts.length +
+          composerPreviewAnnotations.length +
+          composerReviewComments.length,
+      )
+    : { ok: true as const };
+
   const submitComposer = useCallback(
     (event?: { preventDefault: () => void }) => {
       if (noProviderAvailable || isSendDisabled) {
@@ -3185,9 +3201,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       : "Send runtime action"}
                 </Button>
               </div>
+              {!primeSendDecision.ok ? (
+                <p className="mt-1 text-destructive" data-prime-runtime-reason="true">
+                  {primeSendDecision.reason}
+                </p>
+              ) : null}
               <p className="mt-1 text-muted-foreground">
-                Interrupt stops the current turn; Stop ends the session. Queued actions cannot be
-                cancelled by this runtime.
+                {primeCancellationCopy(activeThread?.session?.runtimeCapabilities)}
               </p>
             </div>
           ) : null}
