@@ -457,6 +457,12 @@ export interface PrimeSessionWriteGate {
   }) => Promise<void>;
   /** Stop, crash teardown and provider-instance removal. Never throws. */
   readonly release: (input: { readonly threadId: string }) => Promise<void>;
+  /**
+   * The durable scope this gate arbitrates a thread under. PA-B02 validates a
+   * stored cursor against exactly this scope, so resume and arbitration can
+   * never disagree about which session they are talking about.
+   */
+  readonly scopeForThread: (threadId: string) => Promise<PrimeResumeCursorScope>;
 }
 
 export const makePrimeSessionWriteGate = (input: {
@@ -616,6 +622,7 @@ export const makePrimeSessionWriteGate = (input: {
         .then(async (service) => service.release(handle, await requestFor(threadId, "release")))
         .catch(() => undefined);
     },
+    scopeForThread: async (threadId) => await input.scopeForThread(threadId),
   };
 };
 

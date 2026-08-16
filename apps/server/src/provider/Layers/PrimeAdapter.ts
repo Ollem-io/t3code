@@ -10,6 +10,7 @@ import {
   PROVIDER_SEND_TURN_MAX_TEXT_ATTACHMENT_BYTES,
   ProviderDriverKind,
   type PrimeAgentSettings,
+  type PrimeResumeState,
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
@@ -48,13 +49,25 @@ import type { PrimeRpcForkMessage } from "../prime/PrimeRpcProtocol.ts";
 import { spawnPrimeRpcTransport } from "../prime/PrimeRpcProcessTransport.ts";
 import { primeHomeFingerprint, primeResourceLayout } from "../prime/PrimeResourceLayout.ts";
 import {
+  PRIME_OWNERSHIP_VERSION,
   isPrimeOwnableHeartbeatId,
   primeThreadOwnershipRecord,
   readPrimeOwnedHeartbeatIds,
   recoverPrimeInstanceOwnership,
   writePrimeOwnership,
 } from "../prime/PrimeOwnership.ts";
-import { provePrimeProcess, stopProvenPrimeProcess } from "../prime/PrimeProcessOwnership.ts";
+import {
+  provePrimeProcess,
+  readPrimeProcessStartToken,
+  stopProvenPrimeProcess,
+} from "../prime/PrimeProcessOwnership.ts";
+import {
+  makePrimeResumeCoordinator,
+  primeCapabilityDigest,
+  primeResumeRefusalMessage,
+  type PrimeResumeCoordinator,
+} from "../prime/PrimeResumeCoordinator.ts";
+import { primeSessionPathToken } from "../prime/PrimeResumeCursor.ts";
 import { PrimeEventNormalizer } from "../prime/PrimeEventNormalizer.ts";
 import {
   PrimeSessionLeaseConflictError,
@@ -206,6 +219,18 @@ export interface PrimeAdapterOptions {
    * can exercise the transport without a database.
    */
   readonly writeGate?: PrimeSessionWriteGate;
+  /**
+   * PA-B02 compatibility input: the installed runtime version, or `undefined`
+   * when it could not be read. A version that cannot be read is never treated
+   * as proof of anything — neither of a supported upgrade nor of an
+   * incompatible one.
+   */
+  readonly agentVersion?: () => Promise<string | undefined>;
+  /**
+   * Coarse resume state for clients and diagnostics. Reason codes only; the
+   * coordinator never hands out a path, an owner or a native identifier.
+   */
+  readonly onResumeState?: (threadId: string, state: PrimeResumeState) => void;
 }
 
 /**
@@ -232,6 +257,54 @@ const PRIME_UNGATED_RUNTIME_OPERATIONS: ReadonlySet<string> = new Set([
   "command.discover",
   "usage.snapshot.retry",
 ]);
+
+/**
+ * The capability set this build drives a Prime session with.
+ *
+ * Module scope because PA-B02 hashes it into the durable resume cursor: a
+ * session recorded by a build with a different capability set is refused
+ * rather than reopened by a build that would drive it differently. `get_state`
+ * is the bootstrap liveness probe, and this adapter is pinned to the
+ * declaration-verified 0.7.2 command baseline — it never infers cancellation
+ * from an enqueue acknowledgement.
+ */
+const PRIME_ADAPTER_CAPABILITIES: ProviderAdapterShape<ProviderAdapterError>["capabilities"] = {
+  sessionModelSwitch: "in-session",
+  conversationRollback: "unsupported",
+  // `compact` and `get_session_stats` are declaration-verified 0.7.2 commands.
+  // Prime exposes no compaction-cancel RPC, so that flag stays false rather
+  // than mapping cancellation onto the turn-wide `abort`.
+  runtimeExtensions: {
+    steer: true,
+    followUps: true,
+    followUpCancel: false,
+    compaction: true,
+    compactionCancel: false,
+    usageAndRetry: true,
+    // Discovery only. Prime 0.7.2 has no invoke RPC: an eligible command is
+    // sent as an ordinary prompt, so `command.invoke` stays refused rather
+    // than mapped onto a command that does not exist.
+    commandDiscovery: true,
+    // Typed extension dialogs plus the bounded transient status board.
+    // Blocking methods are answered exactly; fire-and-forget methods are
+    // displayed and never answered; anything else is safe-cancelled.
+    interactions: true,
+    // Root/subagent roster plus `observe`/`unobserve`. Prime 0.7.2 has no
+    // per-agent cancel/pause/resume RPC, so those operations stay refused
+    // rather than mapped onto the turn-wide `abort`.
+    tasks: true,
+    // Goal state plus T3-owned heartbeat create/pause/resume/delete. Prime
+    // 0.7.2 has no goal-change RPC, so `goal.*` operations stay refused rather
+    // than mapped onto something that does another thing.
+    goals: true,
+    // `set_session_name`, `get_fork_messages`, and `fork`/`clone`. The fork is
+    // handed to the new thread inside this process; it is not a durable resume
+    // cursor and never claims to be one.
+    namingAndForking: true,
+  },
+};
+
+const PRIME_CAPABILITY_DIGEST = primeCapabilityDigest(PRIME_ADAPTER_CAPABILITIES);
 
 const startKey = (input: ProviderSessionStartInput, cwd: string) =>
   JSON.stringify({
@@ -298,6 +371,62 @@ export const makePrimeAdapter = (
     const pending = new Map<ThreadId, PendingStart>();
     const runtimeEvents = yield* Queue.bounded<ProviderRuntimeEvent>(1_024);
     let closed = false;
+    /**
+     * PA-B02 — exact durable resume.
+     *
+     * Built only when there is a PA-B03 gate: recovering a durable session
+     * means becoming its authoritative writer, and this adapter must never do
+     * that without arbitration. Fixtures that drive the transport without a
+     * database therefore keep the pre-Beta behaviour of always starting a new
+     * session, which is truthful because they have no durable identity at all.
+     */
+    const writeGate = options.writeGate;
+    const layoutFor = (threadId: string) =>
+      primeResourceLayout({
+        home: options.home,
+        environmentId: options.environmentId,
+        instanceId: options.instanceId,
+        threadId,
+      });
+    const resume: PrimeResumeCoordinator | undefined =
+      writeGate === undefined
+        ? undefined
+        : makePrimeResumeCoordinator({
+            scopeForThread: (threadId) => writeGate.scopeForThread(threadId),
+            cursorPath: (threadId) => layoutFor(threadId).resumeCursor,
+            sessionPathToken: (threadId) =>
+              primeSessionPathToken(options.home, layoutFor(threadId).session),
+            sessionStorageExists: (threadId) =>
+              NodeFSP.stat(layoutFor(threadId).session)
+                .then((entry) => entry.isDirectory())
+                .catch(() => false),
+            // PA-M06 ownership: a thread whose ownership record cleanup already
+            // retired is a generation behind, and its cursor must not be
+            // adopted. Present records are at the current record version.
+            ownershipGeneration: (threadId) =>
+              NodeFSP.stat(layoutFor(threadId).ownership)
+                .then(() => PRIME_OWNERSHIP_VERSION as number)
+                .catch(() => 0),
+            agentVersion: async () => await options.agentVersion?.(),
+            capabilityDigest: () => PRIME_CAPABILITY_DIGEST,
+            // Liveness this process can actually observe: the session object is
+            // still in the map, and where the platform can prove a process
+            // incarnation it still matches. An unprovable platform is not
+            // evidence against our own live handle, so it does not veto it.
+            liveSession: (threadId) => {
+              const context = sessions.get(ThreadId.make(threadId));
+              if (context === undefined) return undefined;
+              return async () => {
+                const identity = context.processIdentity;
+                if (identity === undefined) return true;
+                const token = await readPrimeProcessStartToken(identity.pid).catch(() => undefined);
+                return token === undefined ? true : token === identity.startToken;
+              };
+            },
+            acquireLease: (threadId) => writeGate.acquire({ threadId, operation: "activate" }),
+            releaseLease: (threadId) => writeGate.release({ threadId }),
+            ...(options.onResumeState ? { publish: options.onResumeState } : {}),
+          });
     const offerEvents = async (events: ReadonlyArray<ProviderRuntimeEvent>) => {
       for (const event of events) await Effect.runPromise(Queue.offer(runtimeEvents, event));
     };
@@ -935,7 +1064,11 @@ export const makePrimeAdapter = (
         throw new ProviderAdapterValidationError({
           provider: PROVIDER,
           operation: "startSession",
-          issue: "Prime Agent resume is unavailable until Beta.",
+          // Durable resume exists (PA-B02) but it is host-side and cursor-based:
+          // it is recovered from T3's own storage under the arbitration lease,
+          // never handed in by a caller. An opaque continuation from elsewhere
+          // is refused rather than trusted.
+          issue: "Prime Agent does not accept a caller-supplied resume cursor.",
         });
       if (!input.cwd || !isAbsolute(input.cwd))
         throw new ProviderAdapterValidationError({
@@ -959,12 +1092,27 @@ export const makePrimeAdapter = (
           Effect.tryPromise({
             try: async () => {
               const cwd = await validateStart(input);
+              // PA-B02: recovery decides *what* is being started before
+              // anything is started. A cursor that exists and cannot be proven
+              // must never be replaced by a new session — that silent fresh
+              // start is the data loss this milestone exists to prevent — so a
+              // refusal surfaces as a validation error with a reason code and
+              // the durable cursor is left exactly as it is.
+              const decision = await resume?.resume(String(input.threadId));
+              if (decision?.plan.kind === "unavailable")
+                throw new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "startSession",
+                  issue: primeResumeRefusalMessage(decision.plan.reason),
+                });
               // Arbitration precedes activation: a second client cannot even
-              // reach the launch path for a thread another writer owns.
-              await options.writeGate?.acquire({
-                threadId: String(input.threadId),
-                operation: "activate",
-              });
+              // reach the launch path for a thread another writer owns. A
+              // decision that already holds the lease does not re-acquire it.
+              if (decision?.leaseHeld !== true)
+                await options.writeGate?.acquire({
+                  threadId: String(input.threadId),
+                  operation: "activate",
+                });
               // An activation that acquires and then fails to launch must not
               // sit on the scope for a full TTL: whatever fails below hands the
               // lease straight back before the error propagates.
@@ -982,6 +1130,13 @@ export const makePrimeAdapter = (
                     operation: "startSession",
                     issue: "Thread already has a different Prime session binding.",
                   });
+                // Adopting a still-live owned session is a resume too, and it
+                // refreshes the cursor so the next recovery validates against
+                // the capabilities and version this session is really running.
+                if (decision?.plan.kind === "adopt")
+                  await resume
+                    ?.recordSession({ threadId: String(input.threadId), mode: "adopted" })
+                    .catch(() => undefined);
                 return live.session;
               }
               const inFlight = pending.get(input.threadId);
@@ -999,7 +1154,20 @@ export const makePrimeAdapter = (
                   pending.delete(input.threadId);
               });
               pending.set(input.threadId, { key, promise });
-              return await promise.catch(releaseOnFailure);
+              const session = await promise.catch(releaseOnFailure);
+              // The cursor is written only once a session is provably live
+              // under this process's lease, so a failed activation can never
+              // leave a pointer to a session that does not exist. Recording it
+              // must never fail the start: the session is already running, and
+              // a missing cursor degrades the *next* start to a fresh one
+              // rather than losing this one.
+              await resume
+                ?.recordSession({
+                  threadId: String(input.threadId),
+                  ...(decision?.plan.kind === "relaunch" ? { mode: "relaunched" as const } : {}),
+                })
+                .catch(() => undefined);
+              return session;
             },
             catch: (cause) =>
               cause instanceof ProviderAdapterValidationError ||
@@ -1020,6 +1188,11 @@ export const makePrimeAdapter = (
       Effect.tryPromise({
         try: async () => {
           await pending.get(threadId)?.promise.catch(() => undefined);
+          // Stop is non-destructive: the durable cursor stays exactly as it is
+          // so the next start can recover this same session. Only the in-memory
+          // recovery decision is dropped, because the next one must re-validate
+          // durable state rather than trust a verdict from before the stop.
+          resume?.forget(String(threadId));
           const context = sessions.get(threadId);
           if (!context) {
             // Nothing is live, but an activation that crashed still holds the
@@ -1812,41 +1985,7 @@ export const makePrimeAdapter = (
       // declaration-verified 0.7.2 command baseline, whose exact `steer` and
       // `follow_up` commands are available after that probe; it never infers
       // cancellation from the enqueue acknowledgement.
-      capabilities: {
-        sessionModelSwitch: "in-session",
-        conversationRollback: "unsupported",
-        // `compact` and `get_session_stats` are declaration-verified 0.7.2
-        // commands. Prime exposes no compaction-cancel RPC, so that flag stays
-        // false rather than mapping cancellation onto the turn-wide `abort`.
-        runtimeExtensions: {
-          steer: true,
-          followUps: true,
-          followUpCancel: false,
-          compaction: true,
-          compactionCancel: false,
-          usageAndRetry: true,
-          // Discovery only. Prime 0.7.2 has no invoke RPC: an eligible command
-          // is sent as an ordinary prompt, so `command.invoke` stays refused
-          // rather than mapped onto a command that does not exist.
-          commandDiscovery: true,
-          // Typed extension dialogs plus the bounded transient status board.
-          // Blocking methods are answered exactly; fire-and-forget methods are
-          // displayed and never answered; anything else is safe-cancelled.
-          interactions: true,
-          // Root/subagent roster plus `observe`/`unobserve`. Prime 0.7.2 has no
-          // per-agent cancel/pause/resume RPC, so those operations stay refused
-          // rather than mapped onto the turn-wide `abort`.
-          tasks: true,
-          // Goal state plus T3-owned heartbeat create/pause/resume/delete.
-          // Prime 0.7.2 has no goal-change RPC, so `goal.*` operations stay
-          // refused rather than mapped onto something that does another thing.
-          goals: true,
-          // `set_session_name`, `get_fork_messages`, and `fork`/`clone`. The
-          // fork is handed to the new thread inside this process; it is not a
-          // durable resume cursor and never claims to be one.
-          namingAndForking: true,
-        },
-      },
+      capabilities: PRIME_ADAPTER_CAPABILITIES,
       startSession,
       sendTurn,
       interruptTurn,

@@ -4,7 +4,10 @@ import * as Schema from "effect/Schema";
 import {
   findPrimeResumeRedactionViolation,
   PRIME_RESUME_CURSOR_VERSION,
+  PRIME_RESUME_FAILURE_REASONS,
+  primeResumeAllowsFreshStart,
   PrimeResumeCursor,
+  PrimeResumeState,
   type PrimeResumeCursorScope,
   PrimeResumeCursorState,
   primeResumeCursorStateFromUnknown,
@@ -140,5 +143,41 @@ describe("prime resume cursor", () => {
     expect(findPrimeResumeRedactionViolation({ ...cursorV2, note: "C:\\Users\\dev" })).toBe(
       "note.<host-path>",
     );
+  });
+
+  it("keeps every resume outcome inside a closed, content-free set", () => {
+    const decodeResumeState = Schema.decodeUnknownSync(PrimeResumeState);
+    expect(decodeResumeState({ status: "reconnecting" })).toEqual({ status: "reconnecting" });
+    expect(decodeResumeState({ status: "resumed", mode: "adopted" })).toEqual({
+      status: "resumed",
+      mode: "adopted",
+    });
+    for (const reason of PRIME_RESUME_FAILURE_REASONS) {
+      expect(decodeResumeState({ status: "unavailable", reason })).toEqual({
+        status: "unavailable",
+        reason,
+      });
+    }
+    // A reason is a code, never a message: free text can never reach a client.
+    expect(() =>
+      decodeResumeState({ status: "unavailable", reason: "/Users/dev/.t3 is gone" }),
+    ).toThrow();
+    expect(() => decodeResumeState({ status: "resumed", mode: "guessed" })).toThrow();
+    // Every cursor-level reason stays expressible as a resume outcome, so a
+    // storage refusal never has to be flattened into a vaguer one.
+    for (const reason of [
+      "missing",
+      "corrupt",
+      "unsupportedVersion",
+      "scopeMismatch",
+      "invalidated",
+    ])
+      expect(PRIME_RESUME_FAILURE_REASONS).toContain(reason);
+  });
+
+  it("only lets a completely absent cursor become a fresh session", () => {
+    expect(primeResumeAllowsFreshStart("missing")).toBe(true);
+    for (const reason of PRIME_RESUME_FAILURE_REASONS.filter((entry) => entry !== "missing"))
+      expect(primeResumeAllowsFreshStart(reason)).toBe(false);
   });
 });

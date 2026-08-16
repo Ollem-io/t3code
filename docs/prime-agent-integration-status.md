@@ -327,11 +327,31 @@ release it only once the process it authorized is gone. A held lease also renews
 bounded schedule for as long as this server owns the session, so a turn that outruns the
 30s TTL is never mistaken for a crashed writer and handed to a second T3 process.
 
+PA-B02 (exact adoption/resume) has landed: the Prime adapter now consults a resume coordinator
+before it starts anything. A recorded cursor is validated against environment, provider instance,
+project workspace, durable storage token, PA-M06 ownership generation, runtime compatibility and
+capability digest; only then is the PA-B03 lease acquired, and the cursor is revalidated under it
+before a plan is returned. A still-live owned session is adopted, otherwise the scoped RPC is
+reopened against the exact recorded session directory. The only outcome that starts a new session is
+a thread with no cursor at all — every other refusal surfaces as a typed `unavailable` reason code
+and leaves the durable cursor untouched. The cursor is written only once a session is provably live
+under this process's lease, and `stop` remains non-destructive. Runnable artifact:
+`apps/server/src/provider/prime/prime-resume-coordinator-artifact.mjs`.
+
+Known gaps to raise at review: the projected-transcript reconciliation is "do not touch" rather than
+"re-read" — a resumed session's history is whatever T3 already projected, because copying the native
+transcript is explicitly out of scope; a `switch_session`-style native command is _not_ sent, because
+it is not part of the declaration-verified 0.7.2 baseline this repository builds against — exactness
+comes from reopening the same scoped `--session-dir`, which is the storage the cursor names; the
+ownership generation is derived from the presence of the PA-M06 ownership record rather than from a
+dedicated counter, so a cleanup that retired the record refuses adoption (deliberate) but two
+successive records are indistinguishable; and client-visible resume states stop at the adapter
+callback until PA-B04 renders them.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State   |
 | --------- | ---------------------------------------------------------------- | ------- |
-| PA-B02    | Exact adoption/resume state machine and compatibility validation | Next    |
 | PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Pending |
 | PA-B05    | Durable cleanup, retention, migrations, rollback safety          | Pending |
 | PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Pending |
@@ -339,5 +359,5 @@ bounded schedule for as long as this server owns the session, so a turn that out
 ## Immediate next steps
 
 1. Capture the standing visual-evidence debt (PA-A02 through PA-A08 surfaces) when UI-launch permission is granted (exact steps recorded above).
-2. Implement remaining Beta in dependency order: `PA-B02`, `PA-B04`, `PA-B05`, `PA-B06`.
+2. Implement remaining Beta in dependency order: `PA-B04`, `PA-B05`, `PA-B06`.
 3. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.
