@@ -52,10 +52,13 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 
 Completed total: **18 of 30 milestones**.
 
-Note on "merged to main": the run's milestone merges advance the local `main`
-lineage descending from public `origin/main` commit `9e201941a`; `origin/main`
-itself has not been advanced with this run's work. Publishing the run to
-`origin/main` (direct push vs. pull request) is an open coordination decision.
+Note on "merged to main": the run's milestone merges advance the run `main`
+lineage descending from public `origin/main` commit `9e201941a`. By maintainer
+decision (2026-08-16): the run stays on this lineage, mirrored at
+`origin/dev/prime-agent-perfect-integration-20260813/run-main` after each
+milestone merge, and reaches `origin/main` as a single pull request when the
+integration completes. Milestone branches are owned by the local T3 coordinator
+session; the garden-host coordinator must not push to run branches.
 
 The accepted PA-M06 legacy pathname cleanup debt remains recorded in `security-fidings.md`; proof-before-action rules still apply and the debt must not spread.
 
@@ -108,8 +111,7 @@ Accepted non-blocker debt carried into **PA-A02.1** (see `docs/prime-agent-remai
 
 ## Immediate next steps
 
-1. Decide how the run's `main` lineage reaches `origin/main` (direct push vs. pull request), and which coordinator (local session vs. garden host) owns each milestone branch to avoid divergent pushes.
-2. Implement `PA-A02.1` (review-debt batch above, including visual evidence once UI-launch permission is granted) through the `pa-milestone` workflow with the standard dual-review gate.
-3. Implement and review `PA-A03`–`PA-A08` sequentially.
-4. Implement Beta in the dependency order above.
-5. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.
+1. Implement `PA-A02.1` (review-debt batch above, including visual evidence once UI-launch permission is granted) through the `pa-milestone` workflow with the standard dual-review gate.
+2. Implement and review `PA-A03`–`PA-A08` sequentially.
+3. Implement Beta in the dependency order above.
+4. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.

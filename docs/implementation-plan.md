@@ -356,6 +356,24 @@ Alpha tasks are capability-gated. An older compatible Prime version must retain 
 
 **Applicability.** Clients: all. Providers: Prime yes; others unsupported unless existing semantic match. Contracts: A01. Reverse states: remove/cancel/abort and visible resolution. Connections: multi-device conflict-authoritative server state. Performance: bounded queue, coalesced updates. Security/privacy: queued text not telemetry/logged. Lifecycle: dies/terminalizes with owned session. Docs: U10 graduates when task ships.
 
+### PA-A02.1 — PA-A02 review-debt cleanup (Alpha)
+
+**Objective.** Retire the accepted non-blocker findings from PA-A02's four review rounds before they compound into later milestones.
+
+**Scope.** (1) Derive cancellation copy from the negotiated `followUpCancel` capability instead of hard-coded text on web and mobile. (2) Surface `primeSendDecision.reason` inline in the web composer while typing (mobile parity). (3) Apply disabled styling to disabled mobile runtime-action buttons. (4) Render `PrimeActionState.active` in `renderPrimeQueue` on both clients. (5) Add a regression test for the invalid-runtime-action-ID fail-closed path asserting the "identifier is invalid" failure activity without text leakage. (6) Make the runnable artifact's two-client convergence assertion falsifiable by deriving each client's projection independently, and add a genuine two-client convergence test through the read model. (7) Coalesce byte-identical consecutive `session_action_update` snapshots so they do not produce duplicate durable events and projection writes. (8) On startup/recovery, clear or mark stale `action_state_json` on sessions whose provider process no longer exists, so dead queues are never displayed. (9) Document the interrupt handler's optimistic action-state clear as an explicit exception to the authoritative-snapshot invariant at its call site. (10) Add a guard or warning comment on the writer-less `"orchestration"` log stream noting `thread.session-set` payloads would carry unredacted action text if a writer is ever attached. (11) Capture the permission-gated visual evidence for the PA-A02 runtime-action panel once UI launch is approved. **Exclude** all new Prime capabilities (A03+ scope) and any change to the handoff or snapshot contract semantics.
+
+**Acceptance criteria.** Every listed item is closed or explicitly re-accepted with rationale; all PA-A02 behavior tests keep passing; no new typecheck diagnostics; capability copy and controls remain independently truthful (P-Alpha 1–3; U10).
+
+**Expected components.** Web/mobile composer and queue rendering, runtime ingestion coalescing and recovery, reactor test coverage, artifact fixture, docs.
+
+**Review artifact.** Updated `packages/contracts/fixtures/pa-a02-prime-runtime-transcript.mjs` whose convergence check can fail, plus before/after screenshots of the runtime-action panel when UI-launch permission is granted (otherwise exact launch instructions and truthful pending status).
+
+**Focused verification.** `vp test run apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.test.ts apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts apps/web/src/components/prime-queue.test.ts apps/mobile/src/features/threads/prime-queue.test.ts packages/contracts/src/providerCapabilities.test.ts`; `node packages/contracts/fixtures/pa-a02-prime-runtime-transcript.mjs`; targeted web/mobile/server typechecks with attribution against the recorded baseline.
+
+**Migration/compatibility.** No schema changes; coalescing is write-path-only and replay-safe; recovery marking must not alter healthy running sessions.
+
+**Applicability.** Clients: all. Providers: Prime only. Contracts: A01/A02 unchanged. Reverse states: unchanged. Connections: multi-device unchanged. Performance: fewer duplicate writes. Security/privacy: closes the orchestration-stream latent gap and tests the fail-closed ID path. Lifecycle: adds dead-session queue clearing. Docs: status doc debt list retired.
+
 ### PA-A03 — Context usage, compaction, retry, and bounded status UI (Alpha)
 
 **Objective.** Expose honest context/usage and manual compaction/retry controls without conflating them with T3 checkpoints.
