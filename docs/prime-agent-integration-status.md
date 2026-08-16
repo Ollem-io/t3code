@@ -48,14 +48,20 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-M15    | Mobile selection/control/interaction/host-status parity            | Done — `112d977a` |
 | PA-M16    | Isolated real-binary gate and MVP documentation graduation         | Done — `074f18a9` |
 | PA-A01    | Capability negotiation and provider-neutral Alpha contracts        | Done — `c9659346` |
+| PA-A02    | Steering and queued follow-up with visible cancellation            | Done — `962c80b7` |
 
-Completed total: **17 of 30 milestones**.
+Completed total: **18 of 30 milestones**.
+
+Note on "merged to main": the run's milestone merges advance the local `main`
+lineage descending from public `origin/main` commit `9e201941a`; `origin/main`
+itself has not been advanced with this run's work. Publishing the run to
+`origin/main` (direct push vs. pull request) is an open coordination decision.
 
 The accepted PA-M06 legacy pathname cleanup debt remains recorded in `security-fidings.md`; proof-before-action rules still apply and the debt must not spread.
 
-## Current milestone: PA-A02
+## PA-A02 (merged)
 
-**PA-A02 — Steering and queued follow-up with visible cancellation** is implemented on branch `dev/prime-agent-perfect-integration-20260813/pa-a02`, based on main `c9659346`, but is **not merged or approved yet**.
+**PA-A02 — Steering and queued follow-up with visible cancellation** was dual-approved on exact SHA `9897baf7a` (code/security and black-box product, after three review rounds plus scoped confirmations) and merged to `main` at `962c80b7` on 2026-08-16.
 
 Implemented:
 
@@ -76,31 +82,34 @@ Review round 1 on SHA `02fdb511` (2026-08-16): product APPROVE; code/security RE
 1. The `pendingTurnStart` session replacement in `ProviderCommandReactor` dropped `runtimeCapabilities` on every turn after the first for a live reused session, silently removing the steer/queue panel. The capabilities are now carried forward through that session-set, with a two-turn regression test.
 2. The web composer traded the stop/interrupt control for Send while a Prime turn was running. The stop control now stays rendered during running turns, and the runtime-action panel carries its own explicit send button.
 
-PA-A02 remains pending because the repaired cumulative SHA requires fresh independent code/security and black-box approval on that exact SHA. Visual evidence is truthfully not run because UI-launch permission was not granted.
+Round 3 on `22a87da3` (which also absorbed the external coordinator commit `7d9bf0f3` adding snapshot identity binding and canonical-log redaction, reviewed as new code): dual APPROVE, with three accuracy corrections landed as `9897baf7a` and confirmed by both reviewers on that exact SHA before merge.
+
+Visual evidence remains truthfully not captured across all rounds because UI-launch permission was never granted; the runtime-action panel has never been observed rendered. Closing that gap is carried into PA-A02.1.
+
+Accepted non-blocker debt carried into **PA-A02.1** (see `docs/prime-agent-remaining-execution-plan.md`): falsifiable artifact convergence assertion; genuine two-client convergence evidence; capability-derived cancellation copy; inline send-decision reason on web; mobile disabled-button styling; rendering `PrimeActionState.active`; snapshot coalescing; crash-restart stale action-state display; a regression test for the invalid-ID fail-closed path; documenting the interrupt handler's optimistic action-state clear as an explicit invariant exception; a guard or warning comment on the writer-less orchestration log stream; and visual evidence capture.
 
 ## Pending milestones
 
-| Milestone | Planned scope                                                    | State                                       |
-| --------- | ---------------------------------------------------------------- | ------------------------------------------- |
-| PA-A02    | Steering and queued follow-up with truthful reverse semantics    | Implemented; exact-SHA review/merge pending |
-| PA-A03    | Context usage, compaction, retry, bounded status UI              | Pending after A02                           |
-| PA-A04    | Prime commands, skills, prompt templates                         | Pending                                     |
-| PA-A05    | Rich extension UI and transient status integration               | Pending                                     |
-| PA-A06    | Subagents, observation, Agents-surface controls                  | Pending                                     |
-| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Pending                                     |
-| PA-A08    | Session naming/forking and Alpha integration/docs                | Pending                                     |
-| PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                                     |
-| PA-B03    | Server-side single-writer arbitration and conflict receipts      | Pending after B01; precedes B02             |
-| PA-B02    | Exact adoption/resume state machine and compatibility validation | Pending after B01/B03                       |
-| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Pending                                     |
-| PA-B05    | Durable cleanup, retention, migrations, rollback safety          | Pending                                     |
-| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Pending                                     |
+| Milestone | Planned scope                                                    | State                           |
+| --------- | ---------------------------------------------------------------- | ------------------------------- |
+| PA-A02.1  | Review-debt cleanup batch from PA-A02 rounds                     | Next                            |
+| PA-A03    | Context usage, compaction, retry, bounded status UI              | Pending after A02.1             |
+| PA-A04    | Prime commands, skills, prompt templates                         | Pending                         |
+| PA-A05    | Rich extension UI and transient status integration               | Pending                         |
+| PA-A06    | Subagents, observation, Agents-surface controls                  | Pending                         |
+| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Pending                         |
+| PA-A08    | Session naming/forking and Alpha integration/docs                | Pending                         |
+| PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                         |
+| PA-B03    | Server-side single-writer arbitration and conflict receipts      | Pending after B01; precedes B02 |
+| PA-B02    | Exact adoption/resume state machine and compatibility validation | Pending after B01/B03           |
+| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Pending                         |
+| PA-B05    | Durable cleanup, retention, migrations, rollback safety          | Pending                         |
+| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Pending                         |
 
 ## Immediate next steps
 
-1. Commit this checkpoint and the latest PA-A02 test hardening, then push the PA-A02 branch.
-2. Run fresh independent code/security and black-box reviews on the new exact SHA.
-3. Repair any blocker and repeat the same-SHA dual-review gate; otherwise merge PA-A02 to `main` and remove its worktree/branch.
-4. Implement and review `PA-A03`–`PA-A08` sequentially.
-5. Implement Beta in the dependency order above.
-6. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.
+1. Decide how the run's `main` lineage reaches `origin/main` (direct push vs. pull request), and which coordinator (local session vs. garden host) owns each milestone branch to avoid divergent pushes.
+2. Implement `PA-A02.1` (review-debt batch above, including visual evidence once UI-launch permission is granted) through the `pa-milestone` workflow with the standard dual-review gate.
+3. Implement and review `PA-A03`–`PA-A08` sequentially.
+4. Implement Beta in the dependency order above.
+5. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.
