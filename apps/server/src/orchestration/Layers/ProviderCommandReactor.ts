@@ -1320,7 +1320,18 @@ const make = Effect.gen(function* () {
     }
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
+    // A failure intentionally preserves the current action snapshot.
     yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    yield* setThreadSession({
+      threadId: event.payload.threadId,
+      session: {
+        ...thread.session,
+        // Remain running until the terminal runtime event arrives.
+        actionState: { queuedCount: 0, steering: [], followUps: [] },
+        updatedAt: event.payload.createdAt,
+      },
+      createdAt: event.payload.createdAt,
+    });
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (

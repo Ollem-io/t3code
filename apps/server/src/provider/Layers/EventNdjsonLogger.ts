@@ -46,6 +46,57 @@ const transientCanonicalEventTypes = new Set([
   "turn.proposed.delta",
 ]);
 
+const ACTION_TEXT_REDACTION_MARKER = "[REDACTED]";
+
+function redactCanonicalActionSnapshotForLog(event: unknown): unknown {
+  if (typeof event !== "object" || event === null) return event;
+  try {
+    if (Reflect.get(event, "type") !== "session.actions.updated") return event;
+    const safe: Record<string, unknown> = {};
+    for (const key of [
+      "type",
+      "eventId",
+      "provider",
+      "providerInstanceId",
+      "threadId",
+      "createdAt",
+      "turnId",
+    ]) {
+      const value = Reflect.get(event, key);
+      if (value !== undefined) safe[key] = value;
+    }
+    const payload = Reflect.get(event, "payload");
+    const record =
+      typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
+    const steering = Reflect.get(record, "steering");
+    const followUps = Reflect.get(record, "followUps");
+    const active = Reflect.get(record, "active");
+    const activeRecord =
+      typeof active === "object" && active !== null
+        ? (active as Record<string, unknown>)
+        : undefined;
+    safe.payload = {
+      queuedCount: typeof record.queuedCount === "number" ? record.queuedCount : 0,
+      steeringCount: Array.isArray(steering) ? steering.length : 0,
+      followUpCount: Array.isArray(followUps) ? followUps.length : 0,
+      ...(activeRecord
+        ? {
+            active: {
+              ...(typeof activeRecord.kind === "string" ? { kind: activeRecord.kind } : {}),
+              ...(typeof activeRecord.phase === "string" ? { phase: activeRecord.phase } : {}),
+              label: ACTION_TEXT_REDACTION_MARKER,
+            },
+          }
+        : {}),
+      redaction: ACTION_TEXT_REDACTION_MARKER,
+    };
+    return safe;
+  } catch {
+    // Never fall back to unredacted action text for hostile accessors.
+    return { type: "session.actions.updated", redaction: ACTION_TEXT_REDACTION_MARKER };
+  }
+}
+
 export type EventNdjsonStream = "native" | "canonical" | "orchestration";
 
 export interface EventNdjsonLogger {
@@ -556,7 +607,9 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
 
     const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
       if (!shouldPersist(stream, event)) return;
-      const payload = yield* serializeEvent(event);
+      const payload = yield* serializeEvent(
+        stream === "canonical" ? redactCanonicalActionSnapshotForLog(event) : event,
+      );
       if (payload === undefined) return;
 
       const observedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));

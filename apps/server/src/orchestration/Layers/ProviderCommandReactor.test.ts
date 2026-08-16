@@ -160,6 +160,7 @@ describe("ProviderCommandReactor", () => {
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
+    readonly interruptShouldFail?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -242,7 +243,11 @@ describe("ProviderCommandReactor", () => {
         turnId: asTurnId("turn-1"),
       }),
     );
-    const interruptTurn = vi.fn((_: unknown) => Effect.void);
+    const interruptTurn = vi.fn((_: unknown) =>
+      input?.interruptShouldFail
+        ? Effect.die(new Error("injected interrupt failure"))
+        : Effect.void,
+    );
     const executeRuntimeOperation = vi.fn<ProviderServiceShape["executeRuntimeOperation"]>(
       () => Effect.void,
     );
@@ -2699,6 +2704,7 @@ describe("ProviderCommandReactor", () => {
           activeTurnId: asTurnId("turn-1"),
           lastError: null,
           updatedAt: now,
+          actionState: { queuedCount: 1, steering: ["pending"], followUps: ["queued"] },
         },
         createdAt: now,
       }),
@@ -2718,6 +2724,58 @@ describe("ProviderCommandReactor", () => {
     expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
     });
+    await waitFor(
+      async () =>
+        (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"))
+          ?.session?.actionState?.queuedCount === 0,
+    );
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.session).toMatchObject({
+      providerName: "codex",
+      status: "running",
+      activeTurnId: "turn-1",
+    });
+    expect(thread?.session?.actionState).toEqual({ queuedCount: 0, steering: [], followUps: [] });
+  });
+
+  it("preserves action state when provider interrupt fails", async () => {
+    const harness = await createHarness({ interruptShouldFail: true });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("interrupt-fail-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+          actionState: { queuedCount: 1, steering: ["retain"], followUps: [] },
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("interrupt-fail"),
+        threadId,
+        turnId: asTurnId("turn-1"),
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+    expect(
+      (await harness.readModel()).threads.find((entry) => entry.id === threadId)?.session
+        ?.actionState,
+    ).toEqual({ queuedCount: 1, steering: ["retain"], followUps: [] });
   });
 
   it("starts a fresh session when only projected session state exists", async () => {

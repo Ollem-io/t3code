@@ -65,7 +65,7 @@ Implemented:
 - Non-Prime running composers remain on their existing behavior.
 - Authoritative snapshot replacement persisted only for the matching active Prime turn; ready, completed, aborted, stopped, errored, and exited lifecycles clear action state and late/stale snapshots fail closed.
 - Two-client projection convergence and runtime capability persistence.
-- Bounded, 60-second, process-local, one-shot runtime-text handoff. Queued/steering text reaches the provider but is excluded from durable orchestration intent payloads, activities, and error details; restart/expiry fails closed.
+- Bounded, 60-second, process-local, one-shot runtime-text handoff. Queued/steering text reaches the provider but is excluded from durable orchestration intent payloads, activities, error details, and telemetry/log sinks; restart/expiry fails closed. The authoritative operational `action_state_json` projection deliberately retains live queue text for cross-client synchronization; it is neither observability nor durable intent.
 - Migration 041 for nullable session action/capability JSON columns, including migration-through-40/41 partial-schema and idempotency coverage.
 - Runnable artifact `packages/contracts/fixtures/pa-a02-prime-runtime-transcript.mjs`.
 

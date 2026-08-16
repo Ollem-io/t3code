@@ -1585,7 +1585,9 @@ const make = Effect.gen(function* () {
         const nextActiveTurnId =
           event.type === "turn.started"
             ? (eventTurnId ?? null)
-            : event.type === "turn.completed" || event.type === "turn.aborted" || event.type === "session.exited"
+            : event.type === "turn.completed" ||
+                event.type === "turn.aborted" ||
+                event.type === "session.exited"
               ? null
               : event.type === "session.state.changed" &&
                   !sessionStatusAllowsActiveTurn(
@@ -1639,10 +1641,20 @@ const make = Effect.gen(function* () {
               activeTurnId: nextActiveTurnId,
               lastError,
               updatedAt: now,
-              ...(event.type === "turn.completed" || event.type === "turn.aborted" || event.type === "session.exited" || (event.type === "session.state.changed" && (event.payload.state === "ready" || event.payload.state === "error" || event.payload.state === "stopped"))
+              ...(event.type === "turn.completed" ||
+              event.type === "turn.aborted" ||
+              event.type === "session.exited" ||
+              (event.type === "session.state.changed" &&
+                (event.payload.state === "ready" ||
+                  event.payload.state === "error" ||
+                  event.payload.state === "stopped"))
                 ? { actionState: { queuedCount: 0, steering: [], followUps: [] } }
-                : (thread.session?.actionState ? { actionState: thread.session.actionState } : {})),
-              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
+                : thread.session?.actionState
+                  ? { actionState: thread.session.actionState }
+                  : {}),
+              ...(thread.session?.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
             },
             createdAt: now,
           });
@@ -1657,18 +1669,41 @@ const make = Effect.gen(function* () {
         thread.session?.status === "running" &&
         thread.session.activeTurnId !== null &&
         eventTurnId !== undefined &&
-        sameId(thread.session.activeTurnId, eventTurnId)
+        sameId(thread.session.activeTurnId, eventTurnId) &&
+        // An action snapshot is authenticated to the persisted session binding.
+        // Optional instance ids agree only when both sides are absent or equal.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
       ) {
         // Replacement only: native event is the authoritative bounded snapshot.
+        // Preserve bound identity rather than accepting it from this event.
         yield* orchestrationEngine.dispatch({
-          type: "thread.session.set", commandId: yield* providerCommandId(event, "session-actions-snapshot"), threadId: thread.id,
-          session: { threadId: thread.id, status: thread.session?.status ?? "ready", providerName: event.provider,
-            ...(event.providerInstanceId !== undefined ? { providerInstanceId: event.providerInstanceId } : {}),
-            runtimeMode: thread.session?.runtimeMode ?? "full-access", activeTurnId: thread.session?.activeTurnId ?? null,
-            lastError: thread.session?.lastError ?? null, updatedAt: now,
-            actionState: { queuedCount: event.payload.queuedCount, steering: [...event.payload.steering], followUps: [...event.payload.followUps], ...(event.payload.active ? { active: event.payload.active } : {}) },
-            ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
-          }, createdAt: now,
+          type: "thread.session.set",
+          commandId: yield* providerCommandId(event, "session-actions-snapshot"),
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: thread.session.status,
+            providerName: thread.session.providerName,
+            ...(thread.session.providerInstanceId !== undefined
+              ? { providerInstanceId: thread.session.providerInstanceId }
+              : {}),
+            runtimeMode: thread.session.runtimeMode,
+            activeTurnId: thread.session.activeTurnId,
+            lastError: thread.session.lastError,
+            updatedAt: now,
+            actionState: {
+              queuedCount: event.payload.queuedCount,
+              steering: [...event.payload.steering],
+              followUps: [...event.payload.followUps],
+              ...(event.payload.active ? { active: event.payload.active } : {}),
+            },
+            ...(thread.session.runtimeCapabilities
+              ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+              : {}),
+          },
+          createdAt: now,
         });
       }
 
@@ -1917,7 +1952,9 @@ const make = Effect.gen(function* () {
               lastError: runtimeErrorMessage,
               updatedAt: now,
               actionState: { queuedCount: 0, steering: [], followUps: [] },
-              ...(thread.session?.runtimeCapabilities ? { runtimeCapabilities: thread.session.runtimeCapabilities } : {}),
+              ...(thread.session?.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
             },
             createdAt: now,
           });
