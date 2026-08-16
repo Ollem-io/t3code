@@ -319,7 +319,6 @@ with `namingAndForking` on and off, plus the fork-origin row on the forked threa
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy        | Next                            |
-| PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                         |
 | PA-B03    | Server-side single-writer arbitration and conflict receipts      | Pending after B01; precedes B02 |
 | PA-B02    | Exact adoption/resume state machine and compatibility validation | Pending after B01/B03           |
 | PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Pending                         |
