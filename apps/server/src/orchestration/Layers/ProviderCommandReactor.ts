@@ -5,6 +5,7 @@ import {
   EventId,
   FollowUpId,
   RuntimeRequestId,
+  RuntimeTaskId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -55,6 +56,7 @@ const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isFollowUpId = Schema.is(FollowUpId);
 const isCompactionId = Schema.is(CompactionId);
 const isRuntimeRequestId = Schema.is(RuntimeRequestId);
+const isRuntimeTaskId = Schema.is(RuntimeTaskId);
 /**
  * Publishing `runtimeCapabilities` at all is gated on the provider advertising at
  * least one runtime action. Every flag the session contract can carry is listed
@@ -70,6 +72,7 @@ const PUBLISHED_RUNTIME_CAPABILITY_KEYS = [
   "usageAndRetry",
   "commandDiscovery",
   "interactions",
+  "tasks",
 ] as const;
 const hasRuntimeActionCapabilities = (
   capabilities:
@@ -92,6 +95,7 @@ type ProviderIntentEvent = Extract<
       | "thread.compaction-requested"
       | "thread.usage-refresh-requested"
       | "thread.command-refresh-requested"
+      | "thread.agent-observation-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -389,7 +393,8 @@ const make = Effect.gen(function* () {
       | "provider.runtime-action.failed"
       | "provider.compaction.failed"
       | "provider.usage-refresh.failed"
-      | "provider.command-refresh.failed";
+      | "provider.command-refresh.failed"
+      | "provider.agent-observation.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -1521,6 +1526,54 @@ const make = Effect.gen(function* () {
       .pipe(Effect.catchCause(() => fail("The provider did not accept this command refresh.")));
   });
 
+  const processAgentObservationRequested = Effect.fn("processAgentObservationRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.agent-observation-requested" }>,
+  ) {
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.agent-observation.failed",
+        summary: "Agent observation failed",
+        detail,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread?.session) {
+      return yield* fail("No provider session is bound to this thread.");
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      return yield* fail("This provider session cannot watch agents.");
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    if (capabilities?.runtimeExtensions?.tasks !== true) {
+      return yield* fail("This runtime does not support watching agents.");
+    }
+    // The roster is the authorization list. Checking it here refuses an id
+    // this thread's session does not report before it can reach the host at
+    // all; the adapter re-checks against its own live roster regardless.
+    const owned = thread.session.agentRoster?.agents.some(
+      (agent) => agent.agentId === event.payload.agentId,
+    );
+    if (owned !== true) {
+      return yield* fail("This thread's session does not report that agent.");
+    }
+    if (!isRuntimeTaskId(event.payload.agentId)) {
+      return yield* fail("The agent identifier is invalid.");
+    }
+    yield* providerService
+      .executeRuntimeOperation({
+        type: event.payload.intent === "observe" ? "task.observe" : "task.unobserve",
+        commandId: event.commandId ?? CommandId.make(`provider-agent-observation:${event.eventId}`),
+        threadId: event.payload.threadId,
+        taskId: event.payload.agentId,
+      })
+      .pipe(Effect.catchCause(() => fail("The provider did not accept this agent action.")));
+  });
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1722,6 +1775,9 @@ const make = Effect.gen(function* () {
       case "thread.command-refresh-requested":
         yield* processCommandRefreshRequested(event);
         return;
+      case "thread.agent-observation-requested":
+        yield* processAgentObservationRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1775,6 +1831,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.compaction-requested" ||
         event.type === "thread.usage-refresh-requested" ||
         event.type === "thread.command-refresh-requested" ||
+        event.type === "thread.agent-observation-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"

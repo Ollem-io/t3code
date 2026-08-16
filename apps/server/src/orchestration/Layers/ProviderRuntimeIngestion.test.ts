@@ -19,6 +19,7 @@ import {
   type OrchestrationCommand,
   ProjectId,
   ProviderItemId,
+  RuntimeTaskId,
   type ServerSettings,
   ThreadId,
   TurnId,
@@ -570,6 +571,126 @@ describe("ProviderRuntimeIngestion", () => {
     await waitForThread(
       harness.readModel,
       (thread) => (thread.session?.noticeBoard?.notices.length ?? 0) === 0,
+    );
+  });
+
+  // PA-A06: root and subagent work reaches every attached client as one
+  // replaced roster snapshot, writes nothing when unchanged, and does not
+  // survive the session that owned it.
+  it("projects the agent roster, coalesces repeats, and clears it on exit", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-agents-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agents"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "running");
+
+    const roster = {
+      agents: [
+        {
+          agentId: RuntimeTaskId.make("root-1"),
+          role: "root",
+          status: "running",
+          title: "Refactor pass",
+          observed: false,
+        },
+        {
+          agentId: RuntimeTaskId.make("sub-1"),
+          role: "subagent",
+          status: "running",
+          title: "Read the tests",
+          observed: true,
+          detail: "12 tests read",
+        },
+      ],
+    } as const;
+    harness.emit({
+      type: "session.agents.updated",
+      eventId: asEventId("evt-agents-first"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agents"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: roster,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => (thread.session?.agentRoster?.agents.length ?? 0) === 2,
+    );
+    const projected = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    // Two clients read the same projected roster, so they cannot disagree.
+    expect(projected?.session?.agentRoster?.agents.map((agent) => agent.agentId)).toEqual([
+      "root-1",
+      "sub-1",
+    ]);
+    expect(projected?.session?.agentRoster?.agents[1]?.observed).toBe(true);
+    const updatedAt = projected?.session?.updatedAt;
+
+    // Byte-identical repeat: no projection write at all.
+    harness.emit({
+      type: "session.agents.updated",
+      eventId: asEventId("evt-agents-repeat"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agents"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: roster,
+    });
+    harness.emit({
+      type: "session.agents.updated",
+      eventId: asEventId("evt-agents-finished"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agents"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {
+        agents: [
+          {
+            agentId: RuntimeTaskId.make("root-1"),
+            role: "root",
+            status: "running",
+            title: "Refactor pass",
+            observed: false,
+          },
+          {
+            agentId: RuntimeTaskId.make("sub-1"),
+            role: "subagent",
+            status: "completed",
+            title: "Read the tests",
+            observed: false,
+          },
+        ],
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.agentRoster?.agents[1]?.status === "completed",
+    );
+    const replaced = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    // Replacement, not accumulation, and the observation went with the agent.
+    expect(replaced?.session?.agentRoster?.agents.length).toBe(2);
+    expect(replaced?.session?.agentRoster?.agents[1]?.observed).toBe(false);
+    expect(replaced?.session?.updatedAt).not.toBe(updatedAt);
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-agents-session-exited"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      payload: { reason: "exited" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => (thread.session?.agentRoster?.agents.length ?? 0) === 0,
     );
   });
 

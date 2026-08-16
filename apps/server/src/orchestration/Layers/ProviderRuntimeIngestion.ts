@@ -22,6 +22,8 @@ import {
   type OrchestrationSessionCommandCatalog,
   type OrchestrationSessionContextState,
   type OrchestrationSessionNoticeBoard,
+  EMPTY_ORCHESTRATION_SESSION_AGENT_ROSTER,
+  type OrchestrationSessionAgentRoster,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -167,6 +169,17 @@ function sameCommandCatalog(
 function sameNoticeBoard(
   current: OrchestrationSessionNoticeBoard | undefined,
   next: OrchestrationSessionNoticeBoard,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+/**
+ * Structural equality for the agent roster. A task store re-reports the same
+ * rows constantly, so this drops writes that change nothing.
+ */
+function sameAgentRoster(
+  current: OrchestrationSessionAgentRoster | undefined,
+  next: OrchestrationSessionAgentRoster,
 ): boolean {
   return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
 }
@@ -1799,6 +1812,14 @@ const make = Effect.gen(function* () {
                       : thread.session?.noticeBoard
                         ? { noticeBoard: thread.session.noticeBoard }
                         : {}),
+                    // Agents and observations belong to the live runtime, so an
+                    // exited session shows no agents rather than a roster whose
+                    // rows nothing can act on.
+                    ...(event.type === "session.exited"
+                      ? { agentRoster: EMPTY_ORCHESTRATION_SESSION_AGENT_ROSTER }
+                      : thread.session?.agentRoster
+                        ? { agentRoster: thread.session.agentRoster }
+                        : {}),
                   }
                 : {
                     ...(thread.session?.actionState
@@ -1835,6 +1856,9 @@ const make = Effect.gen(function* () {
                       : {}),
                     ...(thread.session?.noticeBoard
                       ? { noticeBoard: thread.session.noticeBoard }
+                      : {}),
+                    ...(thread.session?.agentRoster
+                      ? { agentRoster: thread.session.agentRoster }
                       : {}),
                   }),
               ...(thread.session?.runtimeCapabilities
@@ -1896,6 +1920,7 @@ const make = Effect.gen(function* () {
                 ? { commandCatalog: thread.session.commandCatalog }
                 : {}),
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -1986,6 +2011,7 @@ const make = Effect.gen(function* () {
                 ? { commandCatalog: thread.session.commandCatalog }
                 : {}),
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2042,6 +2068,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
               commandCatalog: nextCommandCatalog,
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2096,6 +2123,60 @@ const make = Effect.gen(function* () {
                 ? { commandCatalog: thread.session.commandCatalog }
                 : {}),
               noticeBoard: nextNoticeBoard,
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Root and subagent work. Deliberately not scrollback: an observed
+      // subagent contributes one bounded line to its own roster row, so the
+      // main transcript is never flooded with a second agent's output.
+      if (
+        event.type === "session.agents.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextAgentRoster: OrchestrationSessionAgentRoster = {
+          agents: event.payload.agents.map((agent) => ({
+            agentId: String(agent.agentId),
+            role: agent.role,
+            status: agent.status,
+            title: agent.title,
+            observed: agent.observed,
+            ...(agent.detail === undefined ? {} : { detail: agent.detail }),
+          })),
+        };
+        if (!sameAgentRoster(thread.session.agentRoster, nextAgentRoster)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-agents-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              agentRoster: nextAgentRoster,
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2357,6 +2438,7 @@ const make = Effect.gen(function* () {
                 ? { commandCatalog: thread.session.commandCatalog }
                 : {}),
               ...(thread.session?.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session?.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),

@@ -52,6 +52,8 @@ export type AddThreadFollowUpInput = CommandInput<"thread.follow-up.add">;
 export type RequestThreadCompactionInput = CommandInput<"thread.compaction.request">;
 export type RefreshThreadUsageInput = CommandInput<"thread.usage.refresh">;
 export type RefreshThreadCommandsInput = CommandInput<"thread.commands.refresh">;
+export type ObserveThreadAgentInput = CommandInput<"thread.agent.observe">;
+export type UnobserveThreadAgentInput = CommandInput<"thread.agent.unobserve">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
@@ -338,6 +340,31 @@ export const refreshThreadCommands: (input: RefreshThreadCommandsInput) => Comma
       createdAt: metadata.createdAt,
     });
   });
+
+/** Start watching one runtime-reported agent. Always paired with its reverse. */
+export const observeThreadAgent: (input: ObserveThreadAgentInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.observeThreadAgent",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.agent.observe",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+/** The exact reverse of `observeThreadAgent`. */
+export const unobserveThreadAgent: (input: UnobserveThreadAgentInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.unobserveThreadAgent",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.agent.unobserve",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
 
 export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.interruptThreadTurn",

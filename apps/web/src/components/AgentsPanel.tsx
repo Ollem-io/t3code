@@ -28,6 +28,8 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { PrimeAgentsSection, type PrimeAgentsSectionProps } from "./agents/PrimeAgentsSection";
+import { primeAgentsView } from "./agents/primeAgents";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -522,12 +524,20 @@ export function AgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  prime,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  /** Runtime-reported root/subagent roster, for providers that have one. */
+  prime?: PrimeAgentsSectionProps | undefined;
 }) {
-  if (!model.hasAgents) {
+  // A runtime roster is agents too: the empty state must not claim there are
+  // none while Prime is reporting a root and two subagents.
+  const primeView = prime
+    ? primeAgentsView(prime.providerName, prime.capabilities, prime.roster, prime.session)
+    : ({ kind: "hidden" } as const);
+  if (!model.hasAgents && primeView.kind === "hidden") {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
@@ -544,6 +554,7 @@ export function AgentsPanel({
     <div className="flex h-full min-h-0 flex-col">
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 p-2">
+          {prime ? <PrimeAgentsSection {...prime} /> : null}
           {model.workflows.map((group) => (
             <WorkflowSection
               key={group.workflow.id}

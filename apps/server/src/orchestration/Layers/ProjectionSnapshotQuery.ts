@@ -14,6 +14,7 @@ import {
   OrchestrationSessionActionState,
   OrchestrationSessionCommandCatalog,
   OrchestrationSessionNoticeBoard,
+  OrchestrationSessionAgentRoster,
   OrchestrationSessionContextState,
   ProviderRuntimeCapabilities,
   ProjectScript,
@@ -108,6 +109,9 @@ const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
     ),
     noticeBoard: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(OrchestrationSessionNoticeBoard)),
+    ),
+    agentRoster: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionAgentRoster)),
     ),
     contextState: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(OrchestrationSessionContextState)),
@@ -334,6 +338,9 @@ function mapSessionRow(
       : {}),
     ...(row.noticeBoard !== null && row.noticeBoard !== undefined
       ? { noticeBoard: row.noticeBoard }
+      : {}),
+    ...(row.agentRoster !== null && row.agentRoster !== undefined
+      ? { agentRoster: row.agentRoster }
       : {}),
     ...(row.contextState !== null && row.contextState !== undefined
       ? { contextState: row.contextState }
@@ -636,6 +643,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           action_state_json AS "actionState",
           command_catalog_json AS "commandCatalog",
           notice_board_json AS "noticeBoard",
+          agent_roster_json AS "agentRoster",
           context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
@@ -662,6 +670,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           action_state_json AS "actionState",
           command_catalog_json AS "commandCatalog",
           notice_board_json AS "noticeBoard",
+          agent_roster_json AS "agentRoster",
           context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions sessions
@@ -692,6 +701,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           action_state_json AS "actionState",
           command_catalog_json AS "commandCatalog",
           notice_board_json AS "noticeBoard",
+          agent_roster_json AS "agentRoster",
           context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions sessions
@@ -1094,6 +1104,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           action_state_json AS "actionState",
           command_catalog_json AS "commandCatalog",
           notice_board_json AS "noticeBoard",
+          agent_roster_json AS "agentRoster",
           context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
@@ -1602,6 +1613,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     : {}),
                   ...(row.noticeBoard !== null && row.noticeBoard !== undefined
                     ? { noticeBoard: row.noticeBoard }
+                    : {}),
+                  ...(row.agentRoster !== null && row.agentRoster !== undefined
+                    ? { agentRoster: row.agentRoster }
                     : {}),
                   ...(row.contextState !== null && row.contextState !== undefined
                     ? { contextState: row.contextState }

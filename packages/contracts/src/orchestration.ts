@@ -402,6 +402,27 @@ export type OrchestrationSessionNoticeBoard = typeof OrchestrationSessionNoticeB
 export const EMPTY_ORCHESTRATION_SESSION_NOTICE_BOARD: OrchestrationSessionNoticeBoard =
   Object.freeze({ notices: Object.freeze([]) });
 
+/**
+ * Runtime-supplied agent roster. Mirrors the canonical `session.agents.updated`
+ * snapshot: bounded, replaced whole, opaque runtime-owned identities, and
+ * deliberately not transcript - a subagent's output never lands in the thread.
+ */
+export const OrchestrationSessionAgentRoster = Schema.Struct({
+  agents: Schema.Array(
+    Schema.Struct({
+      agentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      role: Schema.Literals(["root", "subagent"]),
+      status: Schema.Literals(["running", "paused", "completed", "cancelled", "failed"]),
+      title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+      observed: Schema.Boolean,
+      detail: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+    }),
+  ).check(Schema.isMaxLength(16)),
+});
+export type OrchestrationSessionAgentRoster = typeof OrchestrationSessionAgentRoster.Type;
+export const EMPTY_ORCHESTRATION_SESSION_AGENT_ROSTER: OrchestrationSessionAgentRoster =
+  Object.freeze({ agents: Object.freeze([]) });
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -430,6 +451,8 @@ export const OrchestrationSession = Schema.Struct({
   commandCatalog: Schema.optional(OrchestrationSessionCommandCatalog),
   /** Native transient status board; absent means this runtime supplied none. */
   noticeBoard: Schema.optional(OrchestrationSessionNoticeBoard),
+  /** Native root/subagent roster; absent means this runtime supplied none. */
+  agentRoster: Schema.optional(OrchestrationSessionAgentRoster),
   runtimeCapabilities: Schema.optional(
     Schema.Struct({
       steer: Schema.optional(Schema.Boolean),
@@ -441,6 +464,8 @@ export const OrchestrationSession = Schema.Struct({
       commandDiscovery: Schema.optional(Schema.Boolean),
       /** Typed dialogs and transient status from runtime extension UI. */
       interactions: Schema.optional(Schema.Boolean),
+      /** Root/subagent roster and observation controls. */
+      tasks: Schema.optional(Schema.Boolean),
     }),
   ),
 });
@@ -1043,6 +1068,27 @@ const ThreadCommandRefreshCommand = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
+/**
+ * Start or stop observing one runtime-reported agent.
+ *
+ * `agentId` is the runtime's own identity, carried opaquely; the host re-checks
+ * that this exact session still reports it before anything reaches the runtime.
+ * Observing always ships with its reverse, so there is no one-way door.
+ */
+const ThreadAgentObserveCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent.observe"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  createdAt: IsoDateTime,
+});
+const ThreadAgentUnobserveCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent.unobserve"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  createdAt: IsoDateTime,
+});
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -1114,6 +1160,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadCompactionRequestCommand,
   ThreadUsageRefreshCommand,
   ThreadCommandRefreshCommand,
+  ThreadAgentObserveCommand,
+  ThreadAgentUnobserveCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1147,6 +1195,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadCompactionRequestCommand,
   ThreadUsageRefreshCommand,
   ThreadCommandRefreshCommand,
+  ThreadAgentObserveCommand,
+  ThreadAgentUnobserveCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1272,6 +1322,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.compaction-requested",
   "thread.usage-refresh-requested",
   "thread.command-refresh-requested",
+  "thread.agent-observation-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1484,6 +1535,12 @@ export const ThreadCommandRefreshRequestedPayload = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
+export const ThreadAgentObservationRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  intent: Schema.Literals(["observe", "unobserve"]),
+  createdAt: IsoDateTime,
+});
 
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -1687,6 +1744,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.command-refresh-requested"),
     payload: ThreadCommandRefreshRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.agent-observation-requested"),
+    payload: ThreadAgentObservationRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

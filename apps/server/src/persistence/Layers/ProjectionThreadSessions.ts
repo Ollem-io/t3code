@@ -27,6 +27,9 @@ const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(
     noticeBoard: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.noticeBoard)),
     ),
+    agentRoster: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.agentRoster)),
+    ),
     contextState: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.contextState)),
     ),
@@ -55,6 +58,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           action_state_json,
           command_catalog_json,
           notice_board_json,
+          agent_roster_json,
           context_state_json,
           runtime_capabilities_json
         )
@@ -70,6 +74,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.actionState === undefined ? null : JSON.stringify(row.actionState)},
           ${row.commandCatalog === undefined ? null : JSON.stringify(row.commandCatalog)},
           ${row.noticeBoard === undefined ? null : JSON.stringify(row.noticeBoard)},
+          ${row.agentRoster === undefined ? null : JSON.stringify(row.agentRoster)},
           ${row.contextState === undefined ? null : JSON.stringify(row.contextState)},
           ${row.runtimeCapabilities === undefined ? null : JSON.stringify(row.runtimeCapabilities)}
         )
@@ -85,6 +90,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           action_state_json = excluded.action_state_json,
           command_catalog_json = excluded.command_catalog_json,
           notice_board_json = excluded.notice_board_json,
+          agent_roster_json = excluded.agent_roster_json,
           context_state_json = excluded.context_state_json,
           runtime_capabilities_json = excluded.runtime_capabilities_json
       `,
@@ -107,6 +113,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           action_state_json AS "actionState",
           command_catalog_json AS "commandCatalog",
           notice_board_json AS "noticeBoard",
+          agent_roster_json AS "agentRoster",
           context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
@@ -138,6 +145,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
             actionState,
             commandCatalog,
             noticeBoard,
+            agentRoster,
             contextState,
             runtimeCapabilities,
             ...rest
@@ -146,6 +154,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
             ...(actionState != null ? { actionState } : {}),
             ...(commandCatalog != null ? { commandCatalog } : {}),
             ...(noticeBoard != null ? { noticeBoard } : {}),
+            ...(agentRoster != null ? { agentRoster } : {}),
             ...(contextState != null ? { contextState } : {}),
             ...(runtimeCapabilities != null ? { runtimeCapabilities } : {}),
           }),

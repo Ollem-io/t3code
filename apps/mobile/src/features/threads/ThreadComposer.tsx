@@ -109,6 +109,12 @@ import {
   renderPrimeNotice,
   visiblePrimeNotices,
 } from "./primeExtensionUi";
+import {
+  PRIME_AGENTS_ARE_NOT_TRANSCRIPT,
+  primeAgentControl,
+  primeAgentsView,
+  renderPrimeAgent,
+} from "./primeAgents";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -156,6 +162,10 @@ export interface ThreadComposerProps {
   /** Runtime context management. Compaction is never a checkpoint or a revert. */
   readonly onRequestCompaction?: () => Promise<boolean>;
   readonly onRefreshUsage?: () => Promise<boolean>;
+  readonly onToggleAgentObservation?: (
+    agentId: string,
+    action: "task.observe" | "task.unobserve",
+  ) => Promise<boolean>;
   /** Explicit, bounded re-read of the runtime command catalog. Never polled. */
   readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
@@ -351,6 +361,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     dismissedPrimeNotices,
   );
   const primeDialogStatus = renderPrimeDialogStatus(props.pendingDialogCount ?? 0);
+  // Root and subagent rows. Watching an agent always shows its exact reverse,
+  // and a subagent's output stays here instead of flooding the thread.
+  const primeAgentsSurface = primeAgentsView(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+    props.selectedThread.session?.agentRoster,
+    props.selectedThread.session,
+  );
   const primeCommands = props.selectedThread.session?.commandCatalog?.commands;
   const primeCommandCatalogRef = useRef(primeCommands);
   primeCommandCatalogRef.current = primeCommands;
@@ -1291,6 +1309,59 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             ) : null}
           </View>
         ) : null}
+        {/* Agents surface: an older runtime explains itself here instead of
+            rendering nothing, so it reads as outdated rather than broken. This
+            sits outside the runtime-action panel because observation does not
+            depend on steer or follow-up support. */}
+        {primeAgentsSurface.kind === "hidden" ? null : (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            {primeAgentsSurface.kind === "unavailable" ? (
+              <Text className="mt-1 text-xs text-foreground-muted">
+                {primeAgentsSurface.reason}
+              </Text>
+            ) : null}
+            {primeAgentsSurface.kind === "agents" ? (
+              <>
+                {primeAgentsSurface.agents.map((agent) => {
+                  const control = primeAgentControl(
+                    agent,
+                    props.selectedThread.session,
+                    props.selectedThread.session?.runtimeCapabilities,
+                  );
+                  return (
+                    <View key={agent.agentId} className="mt-1 flex-row items-center gap-2">
+                      <Text className="text-xs text-foreground-muted">
+                        {renderPrimeAgent(agent)}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={control.label}
+                        accessibilityState={{ disabled: !control.enabled }}
+                        disabled={!control.enabled}
+                        onPress={() => {
+                          void props.onToggleAgentObservation?.(agent.agentId, control.action);
+                        }}
+                        className={
+                          control.enabled
+                            ? "rounded-md border border-border px-2 py-1"
+                            : "rounded-md border border-border px-2 py-1 opacity-50"
+                        }
+                      >
+                        <Text className="text-xs text-foreground">{control.label}</Text>
+                      </Pressable>
+                      {control.reason ? (
+                        <Text className="text-xs text-foreground-muted">{control.reason}</Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {PRIME_AGENTS_ARE_NOT_TRANSCRIPT}
+                </Text>
+              </>
+            ) : null}
+          </View>
+        )}
         {/* Queue count */}
         {props.queueCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>

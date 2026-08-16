@@ -16,6 +16,7 @@ import {
   type ProviderRuntimeOperation,
   type ProviderSession,
   type ProviderSessionStartInput,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -56,6 +57,15 @@ import {
   type PrimeExtensionUiRequest,
   type PrimeNotice,
 } from "../prime/PrimeExtensionUi.ts";
+import {
+  findOwnedPrimeAgent,
+  isTerminalPrimeAgentStatus,
+  primeAgentRoster,
+  primeAgentRosterFingerprint,
+  primeObservationDecision,
+  primeObservationRefusalMessage,
+  type PrimeAgentRosterEntry,
+} from "../prime/PrimeObservation.ts";
 
 const PROVIDER = ProviderDriverKind.make("prime-agent");
 const HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -104,6 +114,11 @@ type SessionContext = {
   /** Bounded transient status, insertion-ordered and replaced by key. */
   readonly notices: Map<string, PrimeNotice>;
   noticesFingerprint: string;
+  /** Bounded root/subagent roster, exactly as the runtime last reported it. */
+  agents: ReadonlyArray<PrimeAgentRosterEntry>;
+  agentsFingerprint: string;
+  /** Ids this environment holds an observation on; the roster is the authority on which are real. */
+  readonly observedAgents: Set<string>;
 };
 type PendingStart = { readonly key: string; readonly promise: Promise<ProviderSession> };
 
@@ -183,6 +198,24 @@ export const makePrimeAdapter = (
       if (fingerprint === context.noticesFingerprint) return;
       context.noticesFingerprint = fingerprint;
       await offerEvents(context.normalizer.noticesSnapshot({ notices }));
+    };
+    /**
+     * Publishes the roster only when it actually changed. A task store that
+     * re-reports the same rows must not cost a canonical event, a projection
+     * write, or a client repaint.
+     */
+    const publishAgents = async (context: SessionContext) => {
+      const fingerprint = primeAgentRosterFingerprint(context.agents);
+      if (fingerprint === context.agentsFingerprint) return;
+      context.agentsFingerprint = fingerprint;
+      await offerEvents(
+        context.normalizer.agentsSnapshot({
+          agents: context.agents.map((agent) => ({
+            ...agent,
+            agentId: RuntimeTaskId.make(agent.agentId),
+          })),
+        }),
+      );
     };
     /**
      * Resolves one pending dialog as cancelled. `answerNative` is false during
@@ -365,6 +398,9 @@ export const makePrimeAdapter = (
           pendingRequests: new Map(),
           notices: new Map(),
           noticesFingerprint: "[]",
+          agents: [],
+          agentsFingerprint: "[]",
+          observedAgents: new Set(),
           ownershipPath: layout.ownership,
           processIdentity,
         };
@@ -376,7 +412,23 @@ export const makePrimeAdapter = (
             // here: the strict transport fails the session closed, which is the
             // one behaviour that cannot leave a client waiting on a dialog it
             // will never be able to answer.
-            if (envelope._tag === "known-event" && envelope.value.type === "extension_ui_request") {
+            if (envelope._tag === "known-event" && envelope.value.type === "task_update") {
+              // The task store is current state, not transcript: a subagent's
+              // work is projected onto its own roster row and never copied into
+              // the thread timeline.
+              canonicalEnvelope = false;
+              context.agents = primeAgentRoster(envelope.value.tasks, context.observedAgents);
+              // An observation cannot survive the agent it was attached to.
+              for (const agentId of [...context.observedAgents]) {
+                const agent = findOwnedPrimeAgent(context.agents, agentId);
+                if (!agent || isTerminalPrimeAgentStatus(agent.status))
+                  context.observedAgents.delete(agentId);
+              }
+              await publishAgents(context);
+            } else if (
+              envelope._tag === "known-event" &&
+              envelope.value.type === "extension_ui_request"
+            ) {
               const request: PrimeExtensionUiRequest = envelope.value;
               if (!isBlockingPrimeUiRequest(request)) {
                 // Fire-and-forget UI operations. They describe *now*, so they go
@@ -868,6 +920,33 @@ export const makePrimeAdapter = (
               await Effect.runPromise(Queue.offer(runtimeEvents, event));
             return;
           }
+          if (operation.type === "task.observe" || operation.type === "task.unobserve") {
+            const intent = operation.type === "task.observe" ? "observe" : "unobserve";
+            const decision = primeObservationDecision(
+              context.agents,
+              String(operation.taskId),
+              intent,
+            );
+            // Ownership is checked on every action, against the roster this
+            // T3-owned session currently reports. An id that is not in it never
+            // reaches the runtime, whichever client sent it.
+            if (!decision.allowed)
+              throw new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "executeRuntimeOperation",
+                issue: primeObservationRefusalMessage(decision.reason),
+              });
+            await expectSuccess(context, { type: intent, taskId: decision.agent.agentId });
+            if (intent === "observe") context.observedAgents.add(decision.agent.agentId);
+            else context.observedAgents.delete(decision.agent.agentId);
+            context.agents = context.agents.map((agent) =>
+              agent.agentId === decision.agent.agentId
+                ? { ...agent, observed: intent === "observe" }
+                : agent,
+            );
+            await publishAgents(context);
+            return;
+          }
           if (operation.type !== "steer.add" && operation.type !== "follow-up.add")
             throw new ProviderAdapterValidationError({
               provider: PROVIDER,
@@ -1057,6 +1136,10 @@ export const makePrimeAdapter = (
           // Blocking methods are answered exactly; fire-and-forget methods are
           // displayed and never answered; anything else is safe-cancelled.
           interactions: true,
+          // Root/subagent roster plus `observe`/`unobserve`. Prime 0.7.2 has no
+          // per-agent cancel/pause/resume RPC, so those operations stay refused
+          // rather than mapped onto the turn-wide `abort`.
+          tasks: true,
         },
       },
       startSession,

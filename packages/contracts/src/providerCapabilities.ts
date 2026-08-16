@@ -140,6 +140,12 @@ export const ProviderRuntimeOperation = Schema.Union([
     interactionId: InteractionId,
   }),
   Schema.Struct({ type: Schema.Literal("task.observe"), ...OperationBase, taskId: RuntimeTaskId }),
+  /** The exact reverse of `task.observe`; observation without a way out is a one-way door. */
+  Schema.Struct({
+    type: Schema.Literal("task.unobserve"),
+    ...OperationBase,
+    taskId: RuntimeTaskId,
+  }),
   Schema.Struct({ type: Schema.Literal("task.cancel"), ...OperationBase, taskId: RuntimeTaskId }),
   Schema.Struct({ type: Schema.Literal("task.pause"), ...OperationBase, taskId: RuntimeTaskId }),
   Schema.Struct({ type: Schema.Literal("task.resume"), ...OperationBase, taskId: RuntimeTaskId }),
@@ -321,6 +327,7 @@ const RuntimeOperationType = Schema.Literals([
   "interaction.respond",
   "interaction.cancel",
   "task.observe",
+  "task.unobserve",
   "task.cancel",
   "task.pause",
   "task.resume",
@@ -369,7 +376,7 @@ function isCorrelatedSuccessResult(
     return "interactionResponse" in result && result.interactionResponse.status === "cancelled";
   if (type === "command.invoke") return "commandInvocation" in result;
   if (type === "skill.invoke") return "skillInvocation" in result;
-  if (["task.observe", "task.cancel", "task.pause", "task.resume"].includes(type))
+  if (["task.observe", "task.unobserve", "task.cancel", "task.pause", "task.resume"].includes(type))
     return "task" in result;
   if (type === "usage.snapshot.retry") return "usage" in result;
   if (type === "thread.fork") return "thread" in result;

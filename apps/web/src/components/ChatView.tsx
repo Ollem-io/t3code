@@ -1240,6 +1240,12 @@ function ChatViewContent(props: ChatViewProps) {
   const refreshThreadUsage = useAtomCommand(threadEnvironment.refreshUsage, {
     reportFailure: false,
   });
+  const observeThreadAgent = useAtomCommand(threadEnvironment.observeAgent, {
+    reportFailure: false,
+  });
+  const unobserveThreadAgent = useAtomCommand(threadEnvironment.unobserveAgent, {
+    reportFailure: false,
+  });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -5422,6 +5428,32 @@ function ChatViewContent(props: ChatViewProps) {
     return true;
   }, [activeThread, environmentId, refreshThreadUsage, setThreadError]);
 
+  // Watching a runtime agent, and its exact reverse. Ownership is re-checked
+  // server-side against the roster this thread's session reports.
+  const onToggleAgentObservation = useCallback(
+    async (
+      agent: { readonly agentId: string },
+      action: "task.observe" | "task.unobserve",
+    ): Promise<boolean> => {
+      if (!activeThread) return false;
+      const input = { threadId: activeThread.id, agentId: agent.agentId };
+      const result =
+        action === "task.observe"
+          ? await observeThreadAgent({ environmentId, input })
+          : await unobserveThreadAgent({ environmentId, input });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Agent observation request failed.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [activeThread, environmentId, observeThreadAgent, setThreadError, unobserveThreadAgent],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -6214,6 +6246,15 @@ function ChatViewContent(props: ChatViewProps) {
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
+        prime={{
+          providerName: activeThread?.session?.providerName,
+          capabilities: activeThread?.session?.runtimeCapabilities,
+          roster: activeThread?.session?.agentRoster,
+          session: activeThread?.session,
+          onToggleObservation: (agent, action) => {
+            void onToggleAgentObservation(agent, action);
+          },
+        }}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
