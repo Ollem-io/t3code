@@ -61,8 +61,11 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-B02    | Exact adoption/resume state machine and compatibility validation   | Done — `5da5d397` |
 | PA-B04    | Web/desktop/mobile resume and recovery-choice UI                   | Done — `f6f3b1b5` |
 | PA-B05    | Durable cleanup, retention, migrations, rollback safety            | Done — `4f9f94a9` |
+| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation   | Done — `021e03c0` |
 
-Completed total: **30 of 31 milestones** merged (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; `PA-B06` is implemented and in review, after which only the closing audit remains.
+Completed total: **31 of 31 milestones** merged (PA-A02.1 added to the original 30). MVP, Alpha, and Beta are complete.
+
+**PA-B06 (merged).** Dual-approved on exact tagged SHA `9ee3d703` (`pa-b06-review`) by fresh independent code/security and black-box product reviews (the earlier standing reviewers had ended; the workflow's own two rounds plus a coordinator repair fixed the retention-disclosure over-promise and made the abrupt-loss branch a real SIGKILL-with-held-lease proof with inside-TTL fencing) and merged at `021e03c0` on 2026-08-16. Accepted non-blockers recorded for the audit: the abrupt-branch fence assertion checks only failure, not the conflict reason; `verify-prime-beta.ts` says "nothing is mocked" while stubbing liveness and fabricating manifest pids; the §20 doc interlock detects future controls by fixed name regex only; §20's retention sentences are guarded by heading, not content; §7's "Resumed" label paraphrases the shipped string; inherited (pre-PA-B06): usage §22 claims cleanup warnings are "shown" but no wire/contract/client path renders them; `docs/operations/prime-resume-storage.md` still carries a stale "draft" label; one pre-existing environmental timeout in `primeAgent.integration.test.ts`.
 
 **PA-B05 (merged).** Dual-approved on exact SHA `87003e19` (two workflow rounds: round 1 rejected for host paths and base64 scope identifiers leaking through cleanup warning details into the durable journal and the "redacted" report — repaired with closed reason codes; final round dual APPROVE, Luna-verified watches) and merged at `4f9f94a9` on 2026-08-16. Delivered: journaled, crash-resumable, at-most-once durable cleanup (migration 050) with retention refusals, scope-fenced destructive runs proven against sentinels and a second home, prime-agent-scoped rollback preserving version-keyed sidecars, redacted opaque-digest reporting, and a 79-assertion deterministic artifact. No user-visible surface ships in this milestone, so no visual evidence applies.
 
@@ -359,9 +362,7 @@ callback until PA-B04 renders them.
 
 ## Pending milestones
 
-| Milestone | Planned scope                                                    | State                                                                                      |
-| --------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Implemented on `dev/prime-agent-perfect-integration-20260813/pa-b06`; awaiting dual review |
+None. All 31 milestones are merged; only the closing audit and the origin/main pull request remain.
 
 **PA-B06 (implemented, round 2 repair in review).** Adds `apps/server/integration/primeAgentBeta.integration.test.ts`:
 thirteen scenarios composing B01–B05 against real subprocesses and disposable T3 homes — graceful stop
