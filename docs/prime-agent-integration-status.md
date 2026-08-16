@@ -54,8 +54,9 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-A04    | Prime commands, skills, prompt templates                           | Done — `44c23c2c` |
 | PA-A05    | Rich extension UI and transient status integration                 | Done — `251b823c` |
 | PA-A06    | Subagents, observation, Agents-surface controls                    | Done — `2e6c1d3e` |
+| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure     | Done — `75f56f24` |
 
-Completed total: **23 of 31 milestones** (PA-A02.1 added to the original 30).
+Completed total: **24 of 31 milestones** (PA-A02.1 added to the original 30).
 
 Note on "merged to main": the run's milestone merges advance the run `main`
 lineage descending from public `origin/main` commit `9e201941a`. By maintainer
@@ -247,7 +248,15 @@ Delivered: runtime-owned subagent roster (migration 045, 16-row bound, clamped s
 
 Accepted non-blocker to carry forward: the roster title fallback can exceed the 120-char contract cap for 121–128-char task ids with no title, causing roster updates for that thread to roll back until the agent disappears (one-line clamp fix); visual evidence still pending UI-launch permission.
 
-## PA-A07 (implemented, awaiting review)
+## PA-A07 (merged)
+
+**PA-A07 — T3-owned goals and heartbeats with daemon-promotion disclosure** was dual-approved on exact tagged SHA `a4add78a` (`pa-a07-review`) and merged to `main` at `75f56f24` on 2026-08-16, after seven review rounds — the hardest gate of the run. The chain the reviewers drove out: runtime-issued ids outside the wire-contract brand killed the event pump (round 3); dropping them silently removed the daemon-residency disclosure (round 4); the residency fix left owned schedules unreachable when the runtime drifted their interval (rounds 5–6); and the adapter-side fallback was unreachable because the reactor gated actions on the rendered board (round 7). Final state: creation-time divergence is stopped and refused with per-branch honest messaging; residency is disclosed from the owned set with a "cannot be displayed exactly" line; ownership authorization lives in one authority (the adapter's owned-handle set) with a reactor-crossing test; post-creation drift stays pausable/resumable/deletable by raw id.
+
+Known gaps, accepted at approval and owned by Beta (`PA-B05`/`PA-B06` recovery scope): startup recovery still runs without `heartbeatMatches`/`cleanupHeartbeat` proofs (no live RPC channel exists at that point), so a legacy or stop-failed handle is disclosed and left intact rather than stopped; a never-rendered handle cannot be named by any client (the disclosure is the only affordance); a schedule with an unownable id (empty/oversized) keeps the pre-existing never-adopt behavior with no disclosure; refusal messages surfaced through the reactor are generic rather than reason-specific; and no composed reactor→adapter test spans the split ownership guarantee. Visual evidence: every PA-A07 disclosure surface was verified by source reading and unit test only — no browser, Electron, or simulator was ever launched (permission never granted), so the milestone's screenshot clause remains unsatisfied and is tracked with the standing visual-evidence debt.
+
+Correction to the round-3 note below: "a created id the board could not state exactly is no longer adopted as a permanent unusable handle" described an intermediate state; the shipped behavior is stronger — any just-created schedule the board cannot render is stopped and the create refused, with fail-closed adoption only if the stop itself fails.
+
+## PA-A07 (round-3 state, superseded by the section above)
 
 **PA-A07 — T3-owned goals and heartbeats with daemon-promotion disclosure** is implemented on `dev/prime-agent-perfect-integration-20260813/pa-a07` and has not been reviewed or merged.
 
@@ -263,8 +272,7 @@ Known gaps to raise at review: visual evidence is still pending UI-launch permis
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Implemented, awaiting review    |
-| PA-A08    | Session naming/forking and Alpha integration/docs                | Pending                         |
+| PA-A08    | Session naming/forking and Alpha integration/docs                | Next                            |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                         |
 | PA-B03    | Server-side single-writer arbitration and conflict receipts      | Pending after B01; precedes B02 |
 | PA-B02    | Exact adoption/resume state machine and compatibility validation | Pending after B01/B03           |
