@@ -196,6 +196,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "runtime.warning",
   "runtime.error",
   "session.actions.updated",
+  "session.context.updated",
 ]);
 export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 
@@ -249,6 +250,7 @@ const ToolDeniedType = Schema.Literal("tool.denied");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 const SessionActionsUpdatedType = Schema.Literal("session.actions.updated");
+const SessionContextUpdatedType = Schema.Literal("session.context.updated");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
@@ -843,6 +845,83 @@ export const reduceProviderSessionActionState = (
   return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_ACTION_STATE : current;
 };
 
+/**
+ * Provider-neutral context/compaction/retry status. This is deliberately a full
+ * snapshot with no identifiers of its own: a runtime reports what is happening
+ * to its own context window, and replacing the value is the only safe
+ * reconciliation. Compaction here is the *runtime's* context management; it is
+ * unrelated to T3 checkpoints and never reverts user work.
+ */
+const CompactionStatus = Schema.Literals(["idle", "running", "succeeded", "failed", "cancelled"]);
+const CompactionTrigger = Schema.Literals(["manual", "automatic"]);
+const SessionContextUpdatedPayload = Schema.Struct({
+  compaction: Schema.Struct({
+    status: CompactionStatus,
+    trigger: CompactionTrigger,
+    /** Runtime-supplied explanation. Never native transcript content. */
+    reason: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+  }),
+  retry: Schema.optional(
+    Schema.Struct({
+      attempt: NonNegativeInt.check(Schema.isLessThanOrEqualTo(64)),
+      maxAttempts: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(64))),
+      reason: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+    }),
+  ),
+  /** Post-compaction usage is legitimately absent until the runtime reports it. */
+  usage: Schema.optional(ThreadTokenUsageSnapshot),
+});
+export type SessionContextUpdatedPayload = typeof SessionContextUpdatedPayload.Type;
+
+export interface ProviderSessionContextState {
+  readonly compaction: {
+    readonly status: "idle" | "running" | "succeeded" | "failed" | "cancelled";
+    readonly trigger: "manual" | "automatic";
+    readonly reason?: string;
+  };
+  readonly retry?: {
+    readonly attempt: number;
+    readonly maxAttempts?: number;
+    readonly reason?: string;
+  };
+  readonly usage?: ThreadTokenUsageSnapshot;
+}
+export const EMPTY_PROVIDER_SESSION_CONTEXT_STATE: ProviderSessionContextState = Object.freeze({
+  compaction: Object.freeze({ status: "idle" as const, trigger: "automatic" as const }),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so every
+ * attached client converges; session termination clears stale status.
+ */
+export const reduceProviderSessionContextState = (
+  current: ProviderSessionContextState = EMPTY_PROVIDER_SESSION_CONTEXT_STATE,
+  event: ProviderRuntimeEvent,
+): ProviderSessionContextState => {
+  if (event.type === "session.context.updated") {
+    const payload = event.payload;
+    return {
+      compaction: {
+        status: payload.compaction.status,
+        trigger: payload.compaction.trigger,
+        ...(payload.compaction.reason === undefined ? {} : { reason: payload.compaction.reason }),
+      },
+      ...(payload.retry === undefined
+        ? {}
+        : {
+            retry: {
+              attempt: payload.retry.attempt,
+              ...(payload.retry.maxAttempts === undefined
+                ? {}
+                : { maxAttempts: payload.retry.maxAttempts }),
+              ...(payload.retry.reason === undefined ? {} : { reason: payload.retry.reason }),
+            },
+          }),
+      ...(payload.usage === undefined ? {} : { usage: payload.usage }),
+    };
+  }
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_CONTEXT_STATE : current;
+};
+
 const ProviderRuntimeSessionStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionStartedType,
@@ -1211,6 +1290,14 @@ const ProviderRuntimeSessionActionsUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionActionsUpdatedEvent =
   typeof ProviderRuntimeSessionActionsUpdatedEvent.Type;
 
+const ProviderRuntimeSessionContextUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionContextUpdatedType,
+  payload: SessionContextUpdatedPayload,
+});
+export type ProviderRuntimeSessionContextUpdatedEvent =
+  typeof ProviderRuntimeSessionContextUpdatedEvent.Type;
+
 export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
@@ -1262,6 +1349,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
   ProviderRuntimeSessionActionsUpdatedEvent,
+  ProviderRuntimeSessionContextUpdatedEvent,
 ]);
 export type ProviderRuntimeEventV2 = typeof ProviderRuntimeEventV2.Type;
 

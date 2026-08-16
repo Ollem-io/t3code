@@ -798,6 +798,42 @@ export function runtimeEventToActivities(
       ];
     }
 
+    // Runtime-side context compaction. This is explicitly not a T3 checkpoint:
+    // it shrinks the provider's context window and never reverts user work, so
+    // the activity is labelled as compaction and carries no revert affordance.
+    case "session.context.updated": {
+      const { compaction, retry, usage } = event.payload;
+      if (compaction.status === "idle") {
+        return [];
+      }
+      const summary =
+        compaction.status === "running"
+          ? "Compacting context"
+          : compaction.status === "succeeded"
+            ? "Context compacted"
+            : compaction.status === "failed"
+              ? "Context compaction failed"
+              : "Context compaction cancelled";
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: compaction.status === "failed" ? "error" : "info",
+          kind: "context-compaction",
+          summary,
+          payload: {
+            status: compaction.status,
+            trigger: compaction.trigger,
+            ...(compaction.reason !== undefined ? { detail: compaction.reason } : {}),
+            ...(retry !== undefined ? { retry } : {}),
+            ...(usage !== undefined ? { usage } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "thread.token-usage.updated": {
       const payload = buildContextWindowActivityPayload(event);
       if (!payload) {

@@ -81,7 +81,16 @@ const QueuedPromptCommand = Schema.Struct({
 });
 const NoArgumentCommand = Schema.Struct({
   id: Schema.optional(RequestId),
-  type: Schema.Literals(["abort", "get_state", "get_available_models"]),
+  // `get_session_stats` and `compact` are part of the declaration-verified 0.7.2
+  // command baseline; neither takes arguments and neither is inferred from a
+  // response we merely observed.
+  type: Schema.Literals([
+    "abort",
+    "get_state",
+    "get_available_models",
+    "get_session_stats",
+    "compact",
+  ]),
 });
 const NewSessionCommand = Schema.Struct({
   id: Schema.optional(RequestId),
@@ -195,11 +204,35 @@ const PrimeRpcSessionActionSnapshot = Schema.Struct({
   queuedCount: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 32 })),
   steering: PrimeRpcActionList,
   followUps: PrimeRpcActionList,
-  active: Schema.optional(Schema.Struct({
-    kind: Schema.Literals(["turn", "session_command"]),
-    phase: Schema.Literals(["preparing", "committing", "running"]),
-    label: Schema.optional(PrimeRpcActionText),
-  }).annotate({ parseOptions: { onExcessProperty: "error" } })),
+  active: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literals(["turn", "session_command"]),
+      phase: Schema.Literals(["preparing", "committing", "running"]),
+      label: Schema.optional(PrimeRpcActionText),
+    }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  ),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+// Compaction and retry status arrive as bounded native status snapshots. As
+// with the action store, `onExcessProperty: error` keeps an unrecognized shape
+// incompatible rather than silently reinterpreted.
+const CompactionUpdateEvent = Schema.Struct({
+  type: Schema.Literal("compaction_update"),
+  phase: Schema.Literals(["started", "completed", "failed", "cancelled"]),
+  trigger: Schema.Literals(["manual", "automatic"]),
+  reason: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  // Prime legitimately reports no usage until it recomputes after compaction.
+  usedTokens: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000_000 })),
+  ),
+  maxTokens: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000_000_000 })),
+  ),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const RetryUpdateEvent = Schema.Struct({
+  type: Schema.Literal("retry_update"),
+  attempt: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 64 })),
+  maxAttempts: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 64 }))),
+  reason: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
 const SessionActionUpdateEvent = Schema.Struct({
   type: Schema.Literal("session_action_update"),
@@ -285,6 +318,8 @@ export const PrimeRpcKnownEvent = Schema.Union([
   ToolExecutionEnd,
   ExtensionUiRequest,
   SessionActionUpdateEvent,
+  CompactionUpdateEvent,
+  RetryUpdateEvent,
 ]);
 export type PrimeRpcCommand = typeof PrimeRpcCommand.Type;
 export type PrimeRpcResponse = typeof PrimeRpcResponse.Type;
@@ -365,6 +400,8 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "new_session",
     "set_model",
     "set_thinking_level",
+    "get_session_stats",
+    "compact",
   ]);
   const knownEventTypes = new Set([
     "agent_start",
@@ -379,6 +416,8 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "tool_execution_end",
     "extension_ui_request",
     "session_action_update",
+    "compaction_update",
+    "retry_update",
   ]);
   if (knownCommandTypes.has(envelope.type))
     return { _tag: "malformed", error: new PrimeRpcCompatibilityError("command") };

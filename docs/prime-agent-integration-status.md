@@ -136,12 +136,42 @@ Every accepted non-blocker from the PA-A02 rounds is closed:
     server, open the running thread, and screenshot the composer runtime-action
     block in the same two capability states.
 
+## PA-A03 (implemented, in review)
+
+**PA-A03 — Context usage, compaction, retry, and bounded status UI** is implemented on
+`dev/prime-agent-perfect-integration-20260813/pa-a03`.
+
+Implemented:
+
+- Exact Prime 0.7.2 `get_session_stats` and `compact` commands, plus bounded `compaction_update`
+  and `retry_update` status events at the RPC boundary (`onExcessProperty: error`, so an
+  unrecognized shape is incompatible rather than silently reinterpreted).
+- Provider-neutral `session.context.updated` snapshot with compaction status/trigger/reason,
+  retry attempt, and optional usage. Null post-compaction usage is valid and never guessed.
+- `PrimeContextTracker` publishes only on real change: byte-identical snapshots are dropped and
+  streamed usage churn never publishes a context snapshot, so the status UI is a short list of
+  discrete states with nothing to animate.
+- `compaction.request` maps to native `compact`; `usage.snapshot.retry` re-reads
+  `get_session_stats`. Compaction cancellation is **not** claimed: the independent
+  `compactionCancel` capability stays false rather than mapping cancel onto the turn-wide `abort`.
+- Activity projection labels compaction as compaction and carries no checkpoint/revert
+  vocabulary; mobile composer copy states explicitly that compacting is not a checkpoint and does
+  not revert work.
+- Runnable artifact `packages/contracts/fixtures/pa-a03-prime-context-transcript.mjs`, which
+  verifies its mapping tables against the shipped source, proves coalescing, and proves its own
+  convergence check is falsifiable.
+
+Visual evidence is truthfully **not captured**: UI-launch permission was not granted. Exact steps
+once granted — web: `vp run dev` in a worktree, open the printed `pairingUrl:`, start a Prime
+Agent thread, run a turn, trigger compaction, and screenshot the context/compaction status rows
+in the work log; mobile: `test-t3-mobile` against the same server and screenshot the composer
+runtime block with `compaction` on and off.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A03    | Context usage, compaction, retry, bounded status UI              | Next                            |
-| PA-A04    | Prime commands, skills, prompt templates                         | Pending                         |
+| PA-A04    | Prime commands, skills, prompt templates                         | Next                            |
 | PA-A05    | Rich extension UI and transient status integration               | Pending                         |
 | PA-A06    | Subagents, observation, Agents-surface controls                  | Pending                         |
 | PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Pending                         |

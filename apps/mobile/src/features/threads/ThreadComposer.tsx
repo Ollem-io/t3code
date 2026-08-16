@@ -84,6 +84,11 @@ import {
   resolvePrimeSend,
   type PrimeActionMode,
 } from "./primeQueue";
+import {
+  PRIME_COMPACTION_NOT_CHECKPOINT,
+  hasPrimeContextControls,
+  primeCompactionCancelCopy,
+} from "./primeContext";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -1061,6 +1066,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             <Text className="mt-1 text-xs text-foreground-muted">
               {primeCancellationCopy(props.selectedThread.session?.runtimeCapabilities)}
             </Text>
+            {/* Compaction is the runtime's context management, never a checkpoint. */}
+            {hasPrimeContextControls(
+              props.selectedThread.session?.providerName,
+              props.selectedThread.session?.runtimeCapabilities,
+            ) ? (
+              <>
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {PRIME_COMPACTION_NOT_CHECKPOINT}
+                </Text>
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {primeCompactionCancelCopy(props.selectedThread.session?.runtimeCapabilities)}
+                </Text>
+              </>
+            ) : null}
           </View>
         ) : null}
         {/* Queue count */}

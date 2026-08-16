@@ -39,6 +39,11 @@ import { primeHomeFingerprint, primeResourceLayout } from "../prime/PrimeResourc
 import { recoverPrimeInstanceOwnership, writePrimeOwnership } from "../prime/PrimeOwnership.ts";
 import { provePrimeProcess, stopProvenPrimeProcess } from "../prime/PrimeProcessOwnership.ts";
 import { PrimeEventNormalizer } from "../prime/PrimeEventNormalizer.ts";
+import {
+  PRIME_COMPACT_COMMAND,
+  PRIME_SESSION_STATS_COMMAND,
+  normalizePrimeSessionStats,
+} from "../prime/PrimeCompaction.ts";
 
 const PROVIDER = ProviderDriverKind.make("prime-agent");
 const HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -495,6 +500,16 @@ export const makePrimeAdapter = (
         throw new Error(`${command.type} failed`);
     };
 
+    const commandData = async (
+      context: SessionContext,
+      command: Parameters<PrimeRpcClient["command"]>[0],
+    ) => {
+      const response = await context.client.command(command);
+      if (!response.success || response.command !== command.type)
+        throw new Error(`${command.type} failed`);
+      return response.data;
+    };
+
     const resolveTurnInput = async (input: ProviderSendTurnInput, context: SessionContext) => {
       if (!input.input && (input.attachments?.length ?? 0) === 0)
         throw new ProviderAdapterValidationError({
@@ -703,6 +718,18 @@ export const makePrimeAdapter = (
       Effect.tryPromise({
         try: async () => {
           const context = requireContext(operation.threadId);
+          if (operation.type === "compaction.request") {
+            await expectSuccess(context, PRIME_COMPACT_COMMAND);
+            return;
+          }
+          if (operation.type === "usage.snapshot.retry") {
+            // "Retry" here re-reads the authoritative usage snapshot; it never
+            // replays a model turn.
+            const data = await commandData(context, PRIME_SESSION_STATS_COMMAND);
+            for (const event of context.normalizer.usageSnapshot(normalizePrimeSessionStats(data)))
+              await Effect.runPromise(Queue.offer(runtimeEvents, event));
+            return;
+          }
           if (operation.type !== "steer.add" && operation.type !== "follow-up.add")
             throw new ProviderAdapterValidationError({
               provider: PROVIDER,
@@ -846,7 +873,17 @@ export const makePrimeAdapter = (
       capabilities: {
         sessionModelSwitch: "in-session",
         conversationRollback: "unsupported",
-        runtimeExtensions: { steer: true, followUps: true, followUpCancel: false },
+        // `compact` and `get_session_stats` are declaration-verified 0.7.2
+        // commands. Prime exposes no compaction-cancel RPC, so that flag stays
+        // false rather than mapping cancellation onto the turn-wide `abort`.
+        runtimeExtensions: {
+          steer: true,
+          followUps: true,
+          followUpCancel: false,
+          compaction: true,
+          compactionCancel: false,
+          usageAndRetry: true,
+        },
       },
       startSession,
       sendTurn,
