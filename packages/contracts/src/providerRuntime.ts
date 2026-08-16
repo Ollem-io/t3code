@@ -14,6 +14,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { GoalId, HeartbeatId } from "./providerCapabilities.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -200,6 +201,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "session.commands.updated",
   "session.notices.updated",
   "session.agents.updated",
+  "session.goals.updated",
 ]);
 export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 
@@ -257,6 +259,7 @@ const SessionContextUpdatedType = Schema.Literal("session.context.updated");
 const SessionCommandsUpdatedType = Schema.Literal("session.commands.updated");
 const SessionNoticesUpdatedType = Schema.Literal("session.notices.updated");
 const SessionAgentsUpdatedType = Schema.Literal("session.agents.updated");
+const SessionGoalsUpdatedType = Schema.Literal("session.goals.updated");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
@@ -1103,6 +1106,89 @@ export const reduceProviderSessionAgentRoster = (
   return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_AGENT_ROSTER : current;
 };
 
+/**
+ * Provider-neutral goal and owned-heartbeat board.
+ *
+ * Two different things share one snapshot because a client must never see one
+ * without the other: a heartbeat that keeps a session resident is only honest
+ * next to the goal it serves, and the reverse controls for both live together.
+ *
+ * Everything here is current state, replaced whole, and deliberately narrow:
+ *
+ * - **Only T3-created heartbeats exist.** The runtime may host any number of
+ *   schedules created elsewhere. None of them appears here and none is a legal
+ *   action target, so no client can enumerate or touch another owner's work.
+ * - **Titles, never prompts.** A heartbeat's prompt and a goal's instructions
+ *   are content; the board carries a bounded label, a schedule, and a state.
+ * - **Residency is disclosed, not implied.** When owned schedules keep this
+ *   session resident, the board says so and names the exact owner, so the
+ *   reverse control has an unambiguous target and never a global shutdown.
+ */
+const SessionGoalStatus = Schema.Literals(["active", "completed", "cancelled"]);
+export type ProviderSessionGoalStatus = typeof SessionGoalStatus.Type;
+const SessionGoalEntry = Schema.Struct({
+  /** Opaque runtime-owned identity. T3 invents none. */
+  goalId: GoalId,
+  title: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)),
+  status: SessionGoalStatus,
+  /** Bounded runtime-reported progress line; a status, not transcript. */
+  detail: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+});
+export type ProviderSessionGoal = typeof SessionGoalEntry.Type;
+
+const SessionHeartbeatStatus = Schema.Literals(["active", "paused"]);
+export type ProviderSessionHeartbeatStatus = typeof SessionHeartbeatStatus.Type;
+const SessionHeartbeatEntry = Schema.Struct({
+  /** Opaque runtime-owned identity of a heartbeat this environment created. */
+  heartbeatId: HeartbeatId,
+  title: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)),
+  intervalSeconds: PositiveInt,
+  status: SessionHeartbeatStatus,
+  /** Runtime-reported next run; absent while paused or not yet scheduled. */
+  nextRunAt: Schema.optional(IsoDateTime),
+});
+export type ProviderSessionHeartbeat = typeof SessionHeartbeatEntry.Type;
+
+export const PROVIDER_SESSION_HEARTBEAT_LIMIT = 8;
+const SessionGoalsUpdatedPayload = Schema.Struct({
+  goal: Schema.optional(SessionGoalEntry),
+  heartbeats: Schema.Array(SessionHeartbeatEntry).check(
+    Schema.isMaxLength(PROVIDER_SESSION_HEARTBEAT_LIMIT),
+  ),
+  /** Present only while owned schedules keep this session resident. */
+  resident: Schema.optional(
+    Schema.Struct({ owner: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)) }),
+  ),
+});
+export type SessionGoalsUpdatedPayload = typeof SessionGoalsUpdatedPayload.Type;
+
+export interface ProviderSessionGoalBoard {
+  readonly goal?: ProviderSessionGoal | undefined;
+  readonly heartbeats: ReadonlyArray<ProviderSessionHeartbeat>;
+  readonly resident?: { readonly owner: string } | undefined;
+}
+export const EMPTY_PROVIDER_SESSION_GOAL_BOARD: ProviderSessionGoalBoard = Object.freeze({
+  heartbeats: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so every
+ * attached client converges on the same board no matter which device acted, and
+ * a session that exits keeps no board: a control whose session is gone cannot
+ * be operated and must not be offered.
+ */
+export const reduceProviderSessionGoalBoard = (
+  current: ProviderSessionGoalBoard = EMPTY_PROVIDER_SESSION_GOAL_BOARD,
+  event: ProviderRuntimeEvent,
+): ProviderSessionGoalBoard => {
+  if (event.type === "session.goals.updated")
+    return {
+      ...(event.payload.goal ? { goal: event.payload.goal } : {}),
+      heartbeats: [...event.payload.heartbeats],
+      ...(event.payload.resident ? { resident: event.payload.resident } : {}),
+    };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_GOAL_BOARD : current;
+};
+
 const ProviderRuntimeSessionStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionStartedType,
@@ -1503,6 +1589,14 @@ const ProviderRuntimeSessionAgentsUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionAgentsUpdatedEvent =
   typeof ProviderRuntimeSessionAgentsUpdatedEvent.Type;
 
+const ProviderRuntimeSessionGoalsUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionGoalsUpdatedType,
+  payload: SessionGoalsUpdatedPayload,
+});
+export type ProviderRuntimeSessionGoalsUpdatedEvent =
+  typeof ProviderRuntimeSessionGoalsUpdatedEvent.Type;
+
 export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
@@ -1558,6 +1652,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionCommandsUpdatedEvent,
   ProviderRuntimeSessionNoticesUpdatedEvent,
   ProviderRuntimeSessionAgentsUpdatedEvent,
+  ProviderRuntimeSessionGoalsUpdatedEvent,
 ]);
 export type ProviderRuntimeEventV2 = typeof ProviderRuntimeEventV2.Type;
 

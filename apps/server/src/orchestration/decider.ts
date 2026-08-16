@@ -1130,6 +1130,57 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // Scheduled work is bound to a live session: a heartbeat cannot be created
+    // in, or removed from, a dead process, and pretending otherwise would leave
+    // a control that never resolves.
+    case "thread.heartbeat.create":
+    case "thread.heartbeat.pause":
+    case "thread.heartbeat.resume":
+    case "thread.heartbeat.delete": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null || thread.session.status === "stopped") {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Owning a Prime Agent heartbeat requires a live provider session.",
+          }),
+        );
+      }
+      const base = yield* withEventBase({
+        aggregateKind: "thread",
+        aggregateId: command.threadId,
+        occurredAt: command.createdAt,
+        commandId: command.commandId,
+      });
+      if (command.type === "thread.heartbeat.create") {
+        return {
+          ...base,
+          type: "thread.heartbeat-create-requested" as const,
+          payload: {
+            threadId: command.threadId,
+            title: command.title,
+            intervalSeconds: command.intervalSeconds,
+            createdAt: command.createdAt,
+          },
+        };
+      }
+      return {
+        ...base,
+        type: "thread.heartbeat-action-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          heartbeatId: command.heartbeatId,
+          intent:
+            command.type === "thread.heartbeat.pause"
+              ? ("pause" as const)
+              : command.type === "thread.heartbeat.resume"
+                ? ("resume" as const)
+                : ("delete" as const),
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.commands.refresh": {
       const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
       if (thread.session === null) {

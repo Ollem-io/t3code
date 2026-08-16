@@ -48,6 +48,26 @@ export const PrimeRpcModel = Schema.Struct({
   compat: Schema.optional(Schema.Unknown),
 });
 
+// Heartbeats and goal state arrive as bounded native snapshots, never as logs.
+// As with the action and task stores, `onExcessProperty: error` keeps an
+// unrecognized shape incompatible rather than silently reinterpreted.
+const PrimeRpcHeartbeatEntry = Schema.Struct({
+  heartbeatId: Schema.String.check(Schema.isMaxLength(128)),
+  title: Schema.String.check(Schema.isMaxLength(512)),
+  intervalSeconds: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 31_536_000 })),
+  paused: Schema.optional(Schema.Boolean),
+  nextRunAt: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+// The daemon may host schedules for other owners; T3 filters the store down to
+// the ids it created, so this bound is a protocol guard, not an ownership one.
+const PrimeRpcHeartbeatList = Schema.Array(PrimeRpcHeartbeatEntry).check(Schema.isMaxLength(64));
+const PrimeRpcGoal = Schema.Struct({
+  goalId: Schema.String.check(Schema.isMaxLength(128)),
+  title: Schema.String.check(Schema.isMaxLength(512)),
+  status: Schema.Literals(["active", "completed", "cancelled"]),
+  detail: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+
 const CommandEnvelope = Schema.Struct({ id: Schema.optional(RequestId), type: Schema.String });
 export const PrimeRpcExtensionUiResponse = Schema.Union([
   Schema.Struct({
@@ -119,8 +139,32 @@ const ObservationCommand = Schema.Struct({
   type: Schema.Literals(["observe", "unobserve"]),
   taskId: Schema.String,
 });
+/**
+ * Heartbeat lifecycle. Creation carries only a bounded label and an interval —
+ * never a prompt body — and every other command takes an exact runtime-owned
+ * heartbeat id that T3 created and recorded. There is no list-all variant here
+ * on purpose: T3 has no business enumerating schedules it does not own.
+ */
+const HeartbeatCreateCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("heartbeat_create"),
+  title: Schema.String,
+  intervalSeconds: Schema.Int,
+});
+const HeartbeatTargetCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literals(["heartbeat_pause", "heartbeat_resume", "heartbeat_stop"]),
+  heartbeatId: Schema.String,
+});
+const HeartbeatGetCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("heartbeat_get"),
+});
 export const PrimeRpcCommand = Schema.Union([
   ObservationCommand,
+  HeartbeatCreateCommand,
+  HeartbeatTargetCommand,
+  HeartbeatGetCommand,
   PromptCommand,
   QueuedPromptCommand,
   NoArgumentCommand,
@@ -136,6 +180,23 @@ export const PrimeRpcAvailableModelsResponse = Schema.Struct({
   command: Schema.Literal("get_available_models"),
   success: Schema.Literal(true),
   data: Schema.Struct({ models: Schema.Array(PrimeRpcModel) }),
+});
+/**
+ * `heartbeat_create` and `heartbeat_get` answer with the whole owned-relevant
+ * store. Creation also names the id it just made, which is the only way T3
+ * learns which heartbeat is its own — an id T3 never receives is an id T3 never
+ * claims to own.
+ */
+export const PrimeRpcHeartbeatResponse = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("response"),
+  command: Schema.Literals(["heartbeat_create", "heartbeat_get"]),
+  success: Schema.Literal(true),
+  data: Schema.Struct({
+    heartbeatId: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
+    heartbeats: PrimeRpcHeartbeatList,
+    resident: Schema.optional(Schema.Boolean),
+  }),
 });
 const SuccessResponse = Schema.Struct({
   id: Schema.optional(RequestId),
@@ -155,8 +216,10 @@ const PrimeRpcAvailableModelsResult = Schema.Union([
   PrimeRpcAvailableModelsResponse,
   FailureResponse,
 ]);
+const PrimeRpcHeartbeatResult = Schema.Union([PrimeRpcHeartbeatResponse, FailureResponse]);
 export const PrimeRpcResponse = Schema.Union([
   PrimeRpcAvailableModelsResponse,
+  PrimeRpcHeartbeatResponse,
   SuccessResponse,
   FailureResponse,
 ]);
@@ -262,6 +325,24 @@ const PrimeRpcTaskEntry = Schema.Struct({
   // Newest observed line for this task. Bounded here and clamped again on the way out.
   detail: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
+/**
+ * Goal state is reported, never negotiated: 0.7.2 has no goal-change command,
+ * so this event is the only goal surface and T3 keeps it read-only.
+ */
+const GoalUpdateEvent = Schema.Struct({
+  type: Schema.Literal("goal_update"),
+  goal: Schema.optional(PrimeRpcGoal),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+/**
+ * The whole heartbeat store plus whether the session is currently resident in
+ * the daemon because of it. Residency is reported by the runtime rather than
+ * inferred from the fact that a heartbeat exists.
+ */
+const HeartbeatUpdateEvent = Schema.Struct({
+  type: Schema.Literal("heartbeat_update"),
+  heartbeats: PrimeRpcHeartbeatList,
+  resident: Schema.optional(Schema.Boolean),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
 const TaskUpdateEvent = Schema.Struct({
   type: Schema.Literal("task_update"),
   tasks: Schema.Array(PrimeRpcTaskEntry).check(Schema.isMaxLength(64)),
@@ -349,6 +430,8 @@ export const PrimeRpcKnownEvent = Schema.Union([
   CompactionUpdateEvent,
   RetryUpdateEvent,
   TaskUpdateEvent,
+  GoalUpdateEvent,
+  HeartbeatUpdateEvent,
 ]);
 export type PrimeRpcCommand = typeof PrimeRpcCommand.Type;
 export type PrimeRpcResponse = typeof PrimeRpcResponse.Type;
@@ -404,7 +487,9 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     const response =
       object.command === "get_available_models"
         ? decode(PrimeRpcAvailableModelsResult, value)
-        : decode(PrimeRpcResponse, value);
+        : object.command === "heartbeat_create" || object.command === "heartbeat_get"
+          ? decode(PrimeRpcHeartbeatResult, value)
+          : decode(PrimeRpcResponse, value);
     return response
       ? { _tag: "response", value: response }
       : { _tag: "malformed", error: new PrimeRpcCompatibilityError("response") };
@@ -434,6 +519,11 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "get_commands",
     "observe",
     "unobserve",
+    "heartbeat_create",
+    "heartbeat_get",
+    "heartbeat_pause",
+    "heartbeat_resume",
+    "heartbeat_stop",
   ]);
   const knownEventTypes = new Set([
     "agent_start",
@@ -451,6 +541,8 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "compaction_update",
     "retry_update",
     "task_update",
+    "goal_update",
+    "heartbeat_update",
   ]);
   if (knownCommandTypes.has(envelope.type))
     return { _tag: "malformed", error: new PrimeRpcCompatibilityError("command") };

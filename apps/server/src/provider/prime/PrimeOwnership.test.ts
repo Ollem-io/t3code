@@ -5,6 +5,7 @@ import {
   open,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
@@ -16,6 +17,8 @@ import { basename, join } from "node:path";
 import {
   cleanupPrimeOwnership as cleanupPrimeOwnershipDelegated,
   unsafePathnameCleanupPrimeOwnershipForTests as cleanupPrimeOwnership,
+  primeThreadOwnershipRecord,
+  readPrimeOwnedHeartbeatIds,
   unsafePathnameRecoverPrimeOwnershipForTests as recoverPrimeOwnership,
   writePrimeOwnership,
 } from "./PrimeOwnership.ts";
@@ -84,6 +87,33 @@ describe("PrimeOwnership", () => {
     await stat(b.ownership);
     await stat(b.thread);
     assert.strictEqual(await readFile(sentinel, "utf8"), "safe");
+  });
+  it("reads back owned heartbeat handles for the same thread and nothing else", async () => {
+    const home = await mkdtemp(join(tmpdir(), "prime-rehydrate-"));
+    const a = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "a" });
+    const b = primeResourceLayout({ home, environmentId: "env", instanceId: "one", threadId: "b" });
+    const record = primeThreadOwnershipRecord({
+      environmentId: "env",
+      instanceId: "one",
+      threadId: "a",
+      process: { pid: 71, startToken: "captured-start" },
+      ownedHeartbeatIds: ["hb-1", "hb-2"],
+    });
+    await writePrimeOwnership(a.ownership, record);
+    // The handles survive the session that wrote them: this read is what lets
+    // the next session keep a resident schedule listable and stoppable.
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(a.ownership), ["hb-1", "hb-2"]);
+    // No record, another thread's record, and an already-cleaned record all
+    // yield nothing. Ownership is never inferred.
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(b.ownership), []);
+    await writeFile(a.ownership, JSON.stringify({ ...record, heartbeatsCleaned: true }));
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(a.ownership), []);
+    // A record that does not belong at this path, and a corrupt one, are
+    // refused rather than partially trusted.
+    await writeFile(a.ownership, JSON.stringify({ ...record, threadId: "b" }));
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(a.ownership), []);
+    await writeFile(a.ownership, "{ not json");
+    assert.deepStrictEqual(await readPrimeOwnedHeartbeatIds(a.ownership), []);
   });
   it("binds record identity to decoded path and rejects symlink parents/targets", async () => {
     const home = await mkdtemp(join(tmpdir(), "prime-"));
@@ -723,5 +753,106 @@ describe("PrimeOwnership", () => {
     assert.strictEqual(await readFile(join(outside, "sentinel"), "utf8"), "attacker");
     assert.strictEqual(await readFile(join(moved, "session", "owned"), "utf8"), "owned");
     assert.ok(actions.some((x) => x.kind === "warning"));
+  });
+});
+
+/**
+ * Heartbeats are the one owned resource that deliberately outlives a turn, so
+ * their handles have to survive in the record and be spent exactly.
+ */
+describe("PrimeOwnership heartbeat handles", () => {
+  const heartbeatRecord = (threadId: string, heartbeatIds: readonly string[]) => ({
+    ...rec("one", threadId),
+    heartbeatIds,
+  });
+  const heartbeatProofs = {
+    ...proofs,
+    heartbeatMatches: async (id: string) => id.startsWith("hb-t3-"),
+  };
+  const heartbeatCallbacks = (events: string[]) => ({
+    ...callbacks(events),
+    cleanupHeartbeat: async (id: string) => {
+      events.push(`heartbeat:${id}`);
+    },
+  });
+
+  it("stops exactly the recorded heartbeats, before the session that hosts them", async () => {
+    const home = await mkdtemp(join(await realpath(tmpdir()), "prime-heartbeat-own-"));
+    const layout = primeResourceLayout({
+      home,
+      environmentId: "env",
+      instanceId: "one",
+      threadId: "a",
+    });
+    await writePrimeOwnership(layout.ownership, heartbeatRecord("a", ["hb-t3-1", "hb-t3-2"]));
+    await mkdir(layout.session, { recursive: true });
+    await writeFile(layout.config, "config");
+    const events: string[] = [];
+    const actions = await cleanupPrimeOwnership(
+      layout.ownership,
+      heartbeatProofs,
+      heartbeatCallbacks(events),
+    );
+    // Process first, then every owned schedule, then the RPC session: a
+    // schedule must never be orphaned pointing at a session that is gone.
+    assert.deepStrictEqual(events, [
+      "stop:71",
+      "heartbeat:hb-t3-1",
+      "heartbeat:hb-t3-2",
+      "rpc:rpc-a",
+    ]);
+    assert.strictEqual(actions.filter((x) => x.kind === "heartbeat-stopped").length, 2);
+    assert.ok(actions.some((x) => x.kind === "record-removed"));
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("leaves everything alone when one heartbeat cannot be proven", async () => {
+    const home = await mkdtemp(join(await realpath(tmpdir()), "prime-heartbeat-own-"));
+    const layout = primeResourceLayout({
+      home,
+      environmentId: "env",
+      instanceId: "one",
+      threadId: "a",
+    });
+    // The second id is a schedule this record has no business stopping.
+    await writePrimeOwnership(layout.ownership, heartbeatRecord("a", ["hb-t3-1", "hb-sentinel"]));
+    await mkdir(layout.session, { recursive: true });
+    const events: string[] = [];
+    const actions = await cleanupPrimeOwnership(
+      layout.ownership,
+      heartbeatProofs,
+      heartbeatCallbacks(events),
+    );
+    assert.deepStrictEqual(events, ["stop:71", "heartbeat:hb-t3-1"]);
+    assert.ok(
+      actions.some(
+        (x) => x.kind === "warning" && x.warning.reason.includes("heartbeat identity cannot"),
+      ),
+    );
+    // Proof-before-action: nothing further ran and the record is retained for a
+    // later pass rather than removed on a half-finished cleanup.
+    assert.ok(!actions.some((x) => x.kind === "record-removed"));
+    assert.ok(!events.includes("rpc:rpc-a"));
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("refuses a record whose heartbeat handles are unbounded or ambiguous", async () => {
+    const home = await mkdtemp(join(await realpath(tmpdir()), "prime-heartbeat-own-"));
+    const layout = primeResourceLayout({
+      home,
+      environmentId: "env",
+      instanceId: "one",
+      threadId: "a",
+    });
+    for (const heartbeatIds of [
+      Array.from({ length: 9 }, (_unused, index) => `hb-t3-${index}`),
+      ["hb-t3-1", "hb-t3-1"],
+      [""],
+    ]) {
+      await rejects(() =>
+        writePrimeOwnership(layout.ownership, heartbeatRecord("a", heartbeatIds)),
+      );
+    }
+    await rm(home, { recursive: true, force: true });
   });
 });

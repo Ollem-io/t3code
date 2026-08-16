@@ -123,6 +123,14 @@ export interface ThreadDetailScreenProps {
     agentId: string,
     action: "task.observe" | "task.unobserve",
   ) => Promise<boolean>;
+  readonly onCreateHeartbeat?: (draft: {
+    readonly title: string;
+    readonly intervalSeconds: number;
+  }) => Promise<boolean>;
+  readonly onHeartbeatAction?: (
+    heartbeatId: string,
+    action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
+  ) => Promise<boolean>;
   readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
@@ -750,6 +758,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onRequestCompaction={props.onRequestCompaction}
                 onRefreshUsage={props.onRefreshUsage}
                 onToggleAgentObservation={props.onToggleAgentObservation}
+                onCreateHeartbeat={props.onCreateHeartbeat}
+                onHeartbeatAction={props.onHeartbeatAction}
                 onRefreshCommands={props.onRefreshCommands}
                 onSendMessage={handleSendMessage}
                 onReconnectEnvironment={props.onReconnectEnvironment}

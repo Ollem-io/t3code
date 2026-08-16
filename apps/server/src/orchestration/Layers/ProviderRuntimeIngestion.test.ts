@@ -20,6 +20,7 @@ import {
   ProjectId,
   ProviderItemId,
   RuntimeTaskId,
+  HeartbeatId,
   type ServerSettings,
   ThreadId,
   TurnId,
@@ -691,6 +692,116 @@ describe("ProviderRuntimeIngestion", () => {
     await waitForThread(
       harness.readModel,
       (thread) => (thread.session?.agentRoster?.agents.length ?? 0) === 0,
+    );
+  });
+
+  // PA-A07: owned schedules and goal progress reach every attached client as
+  // one replaced board, write nothing when unchanged, and do not survive the
+  // session that owned them — a Pause inside a dead process cannot work.
+  it("projects the goal board, coalesces repeats, and clears it on exit", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-goals-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-goals"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "running");
+
+    const board = {
+      goal: {
+        goalId: HeartbeatId.make("goal-1"),
+        title: "Finish provider adapter review",
+        status: "active",
+        detail: "3 of 8",
+      },
+      heartbeats: [
+        {
+          heartbeatId: HeartbeatId.make("hb-t3-1"),
+          title: "Check CI",
+          intervalSeconds: 1_200,
+          status: "active",
+          nextRunAt: "2026-01-01T00:20:00.000Z",
+        },
+      ],
+      resident: { owner: "T3 thread thread-1" },
+    } as const;
+    harness.emit({
+      type: "session.goals.updated",
+      eventId: asEventId("evt-goals-first"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-goals"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: board,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => (thread.session?.goalBoard?.heartbeats.length ?? 0) === 1,
+    );
+    const projected = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    // Two clients read the same projected board, so they cannot disagree about
+    // what is scheduled or about who owns the resident session.
+    expect(projected?.session?.goalBoard?.goal?.goalId).toBe("goal-1");
+    expect(projected?.session?.goalBoard?.resident?.owner).toBe("T3 thread thread-1");
+    const updatedAt = projected?.session?.updatedAt;
+
+    // Byte-identical repeat: no projection write at all.
+    harness.emit({
+      type: "session.goals.updated",
+      eventId: asEventId("evt-goals-repeat"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-goals"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: board,
+    });
+    harness.emit({
+      type: "session.goals.updated",
+      eventId: asEventId("evt-goals-paused"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-goals"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {
+        heartbeats: [
+          {
+            heartbeatId: HeartbeatId.make("hb-t3-1"),
+            title: "Check CI",
+            intervalSeconds: 1_200,
+            status: "paused",
+          },
+        ],
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.goalBoard?.heartbeats[0]?.status === "paused",
+    );
+    const replaced = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    // Replacement, not accumulation: the finished goal and the residency claim
+    // disappear with the snapshot that stopped reporting them.
+    expect(replaced?.session?.goalBoard?.goal).toBeUndefined();
+    expect(replaced?.session?.goalBoard?.resident).toBeUndefined();
+    expect(replaced?.session?.updatedAt).not.toBe(updatedAt);
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-goals-session-exited"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      payload: { reason: "exited" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => (thread.session?.goalBoard?.heartbeats.length ?? 0) === 0,
     );
   });
 

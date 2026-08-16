@@ -247,11 +247,23 @@ Delivered: runtime-owned subagent roster (migration 045, 16-row bound, clamped s
 
 Accepted non-blocker to carry forward: the roster title fallback can exceed the 120-char contract cap for 121–128-char task ids with no title, causing roster updates for that thread to roll back until the agent disappears (one-line clamp fix); visual evidence still pending UI-launch permission.
 
+## PA-A07 (implemented, awaiting review)
+
+**PA-A07 — T3-owned goals and heartbeats with daemon-promotion disclosure** is implemented on `dev/prime-agent-perfect-integration-20260813/pa-a07` and has not been reviewed or merged.
+
+Delivered: provider-neutral goal and owned-heartbeat board (`session.goals.updated`, migration 046, 8-row bound, one-minute-to-one-day intervals, byte-identical dedupe); create/pause/resume/delete for heartbeats this environment created, with ownership double-enforced (reactor before the host, adapter against its own live board) so an unrelated daemon schedule is never listed or targeted; resident-daemon promotion disclosed and confirmed before creation on web and mobile, with the exact owner shown afterwards and the reverse limited to stopping that one T3-owned session; goal state read-only because 0.7.2 exposes no goal-change RPC; owned heartbeat ids persisted as ownership handles and spent one at a time behind per-id proof during cleanup; runnable artifact `packages/contracts/fixtures/pa-a07-prime-goals-heartbeats-transcript.mjs`.
+
+Review round 2 repairs: every thread ownership write now builds its record through one shared `primeThreadOwnershipRecord` helper, so the write that happens when the Prime child exits on its own keeps the owned heartbeat ids instead of erasing the only handle cleanup could later prove; a `heartbeat_get` re-read now prunes owned ids the runtime no longer reports, the same way the `heartbeat_update` event path already did; and the web/mobile draft check states the 120-character title cap inline rather than letting the wire schema reject it.
+
+Review round 3 repairs: the ownership record is per thread and outlives any one session, so a new session for the same thread now reads the recorded heartbeat ids back before it rewrites the record — previously the start-of-session write replaced them with `[]`, leaving a still-resident T3-created schedule with no handle anywhere: no board row, no pause/resume/stop target, and nothing for cleanup to prove. After rehydrating, the session re-reads the runtime's schedule once so the surviving heartbeat reappears and stale ids are pruned. Two adjacent holes closed with it: a created id the board could not state exactly is no longer adopted as a permanent unusable handle, and creation is capped against the owned-handle set rather than only the renderable board, so the ownership write can no longer fail after a heartbeat really exists. Regression coverage is `apps/server/src/provider/Layers/PrimeAdapter.heartbeat-ownership.test.ts` (all three verified to fail with the fixes reverted) plus a fail-closed read-back test in `PrimeOwnership.test.ts`.
+
+Known gaps to raise at review: visual evidence is still pending UI-launch permission; the native heartbeat command and event names are the declaration baseline this repository has been building against and could not be re-verified against an installed `prime-agent` on this host; ownership handles are recorded only where the platform can prove a process incarnation (Linux `/proc`), matching the existing PA-M06 ownership boundary.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Next                            |
+| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Implemented, awaiting review    |
 | PA-A08    | Session naming/forking and Alpha integration/docs                | Pending                         |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                         |
 | PA-B03    | Server-side single-writer arbitration and conflict receipts      | Pending after B01; precedes B02 |

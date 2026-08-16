@@ -23,6 +23,7 @@ import {
   Platform,
   Pressable,
   StyleSheet,
+  TextInput,
   useColorScheme,
   View,
   type ViewStyle,
@@ -115,6 +116,15 @@ import {
   primeAgentsView,
   renderPrimeAgent,
 } from "./primeAgents";
+import {
+  PRIME_GOAL_READ_ONLY,
+  PRIME_HEARTBEAT_OWNERSHIP_NOTE,
+  primeGoalBoardView,
+  primeHeartbeatControls,
+  primeHeartbeatDraftDecision,
+  renderPrimeGoal,
+  renderPrimeHeartbeat,
+} from "./primeHeartbeat";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -165,6 +175,15 @@ export interface ThreadComposerProps {
   readonly onToggleAgentObservation?: (
     agentId: string,
     action: "task.observe" | "task.unobserve",
+  ) => Promise<boolean>;
+  /** Owned scheduled work. Creating one may keep the session resident. */
+  readonly onCreateHeartbeat?: (draft: {
+    readonly title: string;
+    readonly intervalSeconds: number;
+  }) => Promise<boolean>;
+  readonly onHeartbeatAction?: (
+    heartbeatId: string,
+    action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
   ) => Promise<boolean>;
   /** Explicit, bounded re-read of the runtime command catalog. Never polled. */
   readonly onRefreshCommands?: () => Promise<boolean>;
@@ -333,6 +352,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
+  // Heartbeat draft state. The confirmation is a deliberate second step: the
+  // resident-daemon consequence is read before it happens, not after.
+  const [heartbeatTitle, setHeartbeatTitle] = useState("");
+  const [heartbeatIntervalSeconds, setHeartbeatIntervalSeconds] = useState(1_200);
+  const [heartbeatConfirming, setHeartbeatConfirming] = useState(false);
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
     isEditorFocused: isFocused,
@@ -368,6 +392,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session?.runtimeCapabilities,
     props.selectedThread.session?.agentRoster,
     props.selectedThread.session,
+  );
+  // Goal state and the heartbeats this environment owns. Creation discloses the
+  // resident-daemon consequence before anything is dispatched.
+  const primeGoalsSurface = primeGoalBoardView(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+    props.selectedThread.session?.goalBoard,
+    props.selectedThread.session,
+  );
+  const primeHeartbeatDraft = primeHeartbeatDraftDecision(
+    props.selectedThread.session?.goalBoard,
+    props.selectedThread.session,
+    props.selectedThread.session?.runtimeCapabilities,
+    { title: heartbeatTitle, intervalSeconds: heartbeatIntervalSeconds },
   );
   const primeCommands = props.selectedThread.session?.commandCatalog?.commands;
   const primeCommandCatalogRef = useRef(primeCommands);
@@ -1358,6 +1396,146 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 <Text className="mt-1 text-xs text-foreground-muted">
                   {PRIME_AGENTS_ARE_NOT_TRANSCRIPT}
                 </Text>
+              </>
+            ) : null}
+          </View>
+        )}
+        {/* Goals and owned heartbeats: an older runtime explains itself here
+            instead of rendering nothing, and every schedule shown is one this
+            environment created. Creation always passes through the disclosure
+            below, so residency is never a surprise. */}
+        {primeGoalsSurface.kind === "hidden" ? null : (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            {primeGoalsSurface.kind === "unavailable" ? (
+              <Text className="mt-1 text-xs text-foreground-muted">{primeGoalsSurface.reason}</Text>
+            ) : null}
+            {primeGoalsSurface.kind === "board" ? (
+              <>
+                {primeGoalsSurface.goal ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {`${renderPrimeGoal(primeGoalsSurface.goal)} · ${PRIME_GOAL_READ_ONLY}`}
+                  </Text>
+                ) : null}
+                {primeGoalsSurface.resident ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {`Resident Prime Agent session owned by ${primeGoalsSurface.resident.owner}. Stopping the session ends only this T3-owned session.`}
+                  </Text>
+                ) : null}
+                {primeGoalsSurface.heartbeats.map((heartbeat) => (
+                  <View key={heartbeat.heartbeatId} className="mt-1 flex-row items-center gap-2">
+                    <Text className="text-xs text-foreground-muted">
+                      {renderPrimeHeartbeat(heartbeat)}
+                    </Text>
+                    {primeHeartbeatControls(
+                      heartbeat,
+                      props.selectedThread.session,
+                      props.selectedThread.session?.runtimeCapabilities,
+                    ).map((control) => (
+                      <Pressable
+                        key={control.action}
+                        accessibilityRole="button"
+                        accessibilityLabel={control.label}
+                        accessibilityState={{ disabled: !control.enabled }}
+                        disabled={!control.enabled}
+                        onPress={() => {
+                          void props.onHeartbeatAction?.(heartbeat.heartbeatId, control.action);
+                        }}
+                        className={
+                          control.enabled
+                            ? "rounded-md border border-border px-2 py-1"
+                            : "rounded-md border border-border px-2 py-1 opacity-50"
+                        }
+                      >
+                        <Text className="text-xs text-foreground">{control.label}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ))}
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {PRIME_HEARTBEAT_OWNERSHIP_NOTE}
+                </Text>
+                <View className="mt-1 flex-row items-center gap-2">
+                  <TextInput
+                    accessibilityLabel="Heartbeat name"
+                    value={heartbeatTitle}
+                    onChangeText={(next) => {
+                      setHeartbeatTitle(next);
+                      setHeartbeatConfirming(false);
+                    }}
+                    className="flex-1 rounded-md border border-border px-2 py-1 text-xs text-foreground"
+                  />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Heartbeat interval"
+                    onPress={() => {
+                      // A short cycle of sane intervals beats a free-form field
+                      // on a phone, and every value stays inside the bounds the
+                      // host enforces anyway.
+                      setHeartbeatIntervalSeconds((current) =>
+                        current === 900 ? 1_200 : current === 1_200 ? 3_600 : 900,
+                      );
+                      setHeartbeatConfirming(false);
+                    }}
+                    className="rounded-md border border-border px-2 py-1"
+                  >
+                    <Text className="text-xs text-foreground">
+                      {`Every ${Math.round(heartbeatIntervalSeconds / 60)} min`}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Create heartbeat"
+                    accessibilityState={{ disabled: !primeHeartbeatDraft.canCreate }}
+                    disabled={!primeHeartbeatDraft.canCreate}
+                    onPress={() => {
+                      setHeartbeatConfirming(true);
+                    }}
+                    className={
+                      primeHeartbeatDraft.canCreate
+                        ? "rounded-md border border-border px-2 py-1"
+                        : "rounded-md border border-border px-2 py-1 opacity-50"
+                    }
+                  >
+                    <Text className="text-xs text-foreground">Create heartbeat</Text>
+                  </Pressable>
+                </View>
+                {primeHeartbeatDraft.canCreate ? null : (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeHeartbeatDraft.reason}
+                  </Text>
+                )}
+                {primeHeartbeatDraft.canCreate && heartbeatConfirming ? (
+                  <View className="mt-1 flex-row items-center gap-2">
+                    <Text className="flex-1 text-xs text-foreground-muted">
+                      {primeHeartbeatDraft.disclosure}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Create and keep resident"
+                      onPress={() => {
+                        setHeartbeatConfirming(false);
+                        void props.onCreateHeartbeat?.({
+                          title: heartbeatTitle.trim(),
+                          intervalSeconds: heartbeatIntervalSeconds,
+                        });
+                        setHeartbeatTitle("");
+                      }}
+                      className="rounded-md border border-border px-2 py-1"
+                    >
+                      <Text className="text-xs text-foreground">Create and keep resident</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel heartbeat creation"
+                      onPress={() => {
+                        setHeartbeatConfirming(false);
+                      }}
+                      className="rounded-md border border-border px-2 py-1"
+                    >
+                      <Text className="text-xs text-foreground">Cancel</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
               </>
             ) : null}
           </View>

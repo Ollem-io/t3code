@@ -1154,6 +1154,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ...(event.payload.session.agentRoster
           ? { agentRoster: event.payload.session.agentRoster }
           : {}),
+        ...(event.payload.session.goalBoard ? { goalBoard: event.payload.session.goalBoard } : {}),
         ...(event.payload.session.contextState
           ? { contextState: event.payload.session.contextState }
           : {}),

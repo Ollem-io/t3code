@@ -23,11 +23,11 @@ T3 launches Prime Agent in the selected project's workspace. Prompts and support
 
 ## Phase summary
 
-| Phase | User-visible contract |
-| --- | --- |
-| **MVP** | Install and authenticate on the host; add and health-check an instance; discover a model and thinking level; run, stream, interrupt, continue, and stop a normal thread; use supported attachments and tools; see actionable failures across web, desktop, and mobile. No durable Prime resume guarantee. |
-| **Alpha** | Prime-native live steering and queued follow-up, compaction, commands/skills, richer extension interactions, subagent observation, goals, and heartbeats, with visible state and reverse controls. Resident-daemon promotion is allowed only where a required T3-owned feature needs it. |
-| **Beta** | Durable Prime session loading and exact-resume recovery, explicit fallback choices, and single-writer conflict handling across devices. |
+| Phase     | User-visible contract                                                                                                                                                                                                                                                                                     |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **MVP**   | Install and authenticate on the host; add and health-check an instance; discover a model and thinking level; run, stream, interrupt, continue, and stop a normal thread; use supported attachments and tools; see actionable failures across web, desktop, and mobile. No durable Prime resume guarantee. |
+| **Alpha** | Prime-native live steering and queued follow-up, compaction, commands/skills, richer extension interactions, subagent observation, goals, and heartbeats, with visible state and reverse controls. Resident-daemon promotion is allowed only where a required T3-owned feature needs it.                  |
+| **Beta**  | Durable Prime session loading and exact-resume recovery, explicit fallback choices, and single-writer conflict handling across devices.                                                                                                                                                                   |
 
 # MVP
 
@@ -245,21 +245,21 @@ Two devices viewing one thread see the same projected state. A second connection
 
 **MVP**
 
-| What you see | Meaning | Recovery |
-| --- | --- | --- |
-| **Missing binary** | Host cannot execute configured path. | Install on the host or correct **Binary path**, then refresh. |
-| **Setup required** | Installation is present but no usable auth/model setup was detected. | Authenticate/configure on the host, then refresh. |
-| **Incompatible** | Required RPC semantics are known to be unavailable. | Follow shown upgrade/downgrade guidance; do not force-start a session. |
-| **Compatibility advisory** | An unknown newer version passed the required handshake and capability probes but is outside the tested baseline. | It may start with the warning visible; update/refresh if operation later proves incompatible. |
-| **Model refresh failed / Stale** | Discovery timed out or failed. | Retry; use a current confirmed model. No silent fallback. |
-| **Selected model unavailable** | A saved choice disappeared or cannot be selected. | Deliberately choose another discovered model or wait for it to return. |
-| **Unsupported thinking level** | Choice is not advertised for the model. | Select an offered level. |
-| **Unsupported attachment** | Type/size/count/model capability does not match. | Remove it or choose a capable model before resending. |
-| **Start timed out / process exited** | Handshake failed or Prime stopped. | Read bounded diagnostics, retry or stop; other providers remain available. |
-| **Malformed/incompatible protocol response** | Prime output could not safely be understood. | Stop/retry after version check; report diagnostics without prompt or secrets. |
-| **Interaction unsupported** | Prime requested UI T3 cannot represent. | Cancel/fail the request; retry without that extension/action. |
-| **Cleanup warning** | T3 cannot prove a resource is its own. | Leave it running and show guidance; never kill speculatively. |
-| **Conversation continuity unavailable** | Exact Prime state cannot be loaded in MVP. | Continue as fresh with explicit context or create a new thread. |
+| What you see                                 | Meaning                                                                                                          | Recovery                                                                                      |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **Missing binary**                           | Host cannot execute configured path.                                                                             | Install on the host or correct **Binary path**, then refresh.                                 |
+| **Setup required**                           | Installation is present but no usable auth/model setup was detected.                                             | Authenticate/configure on the host, then refresh.                                             |
+| **Incompatible**                             | Required RPC semantics are known to be unavailable.                                                              | Follow shown upgrade/downgrade guidance; do not force-start a session.                        |
+| **Compatibility advisory**                   | An unknown newer version passed the required handshake and capability probes but is outside the tested baseline. | It may start with the warning visible; update/refresh if operation later proves incompatible. |
+| **Model refresh failed / Stale**             | Discovery timed out or failed.                                                                                   | Retry; use a current confirmed model. No silent fallback.                                     |
+| **Selected model unavailable**               | A saved choice disappeared or cannot be selected.                                                                | Deliberately choose another discovered model or wait for it to return.                        |
+| **Unsupported thinking level**               | Choice is not advertised for the model.                                                                          | Select an offered level.                                                                      |
+| **Unsupported attachment**                   | Type/size/count/model capability does not match.                                                                 | Remove it or choose a capable model before resending.                                         |
+| **Start timed out / process exited**         | Handshake failed or Prime stopped.                                                                               | Read bounded diagnostics, retry or stop; other providers remain available.                    |
+| **Malformed/incompatible protocol response** | Prime output could not safely be understood.                                                                     | Stop/retry after version check; report diagnostics without prompt or secrets.                 |
+| **Interaction unsupported**                  | Prime requested UI T3 cannot represent.                                                                          | Cancel/fail the request; retry without that extension/action.                                 |
+| **Cleanup warning**                          | T3 cannot prove a resource is its own.                                                                           | Leave it running and show guidance; never kill speculatively.                                 |
+| **Conversation continuity unavailable**      | Exact Prime state cannot be loaded in MVP.                                                                       | Continue as fresh with explicit context or create a new thread.                               |
 
 Every accepted turn must leave the UI in a terminal state exactly once. A provider failure is isolated to its instance/thread; T3 and other providers continue to work.
 
@@ -324,17 +324,19 @@ Reverse actions are **Stop observation** for a view and **Stop subagent** for ow
 
 ## 15. Goals and heartbeats
 
-Goals and heartbeats ship in Alpha after ownership, scheduling, persistence, and multi-device conflicts are explicit. Alpha may promote a session to Prime's resident daemon only when a required T3-owned feature needs that promotion. Before promotion, T3 discloses the change; afterward it keeps the resident state and exact owner visible and provides scoped reverse controls. Current goal/progress or heartbeat schedule/state remains visible.
+Prime's current goal and the heartbeats you create in T3 appear together in the **Agents** surface. Only heartbeats created here are listed: schedules made elsewhere in Prime Agent are never shown and never changed by T3.
 
-Required reverse actions:
+Creating a heartbeat keeps the Prime session resident so the schedule can run while the thread is closed. T3 states that before you confirm, and afterwards names the exact owner of the resident session.
 
-- goal: cancel/complete/clear where Prime semantics permit;
-- heartbeat: pause, resume, run now, and stop/delete;
-- resident activity: stop the exact T3-owned session, never global Prime shutdown.
+Available actions:
 
-**Example 1 — goal:** create `Finish provider adapter review` with a visible token budget. Progress is shown in the Agents/goal surface; choose **Cancel goal** to stop further goal-driven work without deleting the T3 transcript.
+- goal: read-only. Prime reports progress; this version of Prime Agent has no goal-change command, and T3 says so instead of offering a button that would do something else.
+- heartbeat: **Pause**, **Resume**, and **Delete**, always available on the row.
+- resident activity: stop the exact T3-owned session — never a global Prime shutdown.
 
-**Example 2 — heartbeat:** schedule a T3-owned heartbeat to check CI every 20 minutes. The UI shows next run and owner; **Pause** stops runs, **Resume** restarts them, and **Delete** removes that schedule only.
+**Example 1 — goal:** Prime reports `Finish provider adapter review` with its progress. The line stays visible in the Agents surface while the goal runs; there is no goal control to press, and none is shown.
+
+**Example 2 — heartbeat:** schedule a heartbeat to check CI every 20 minutes. Confirm the residency notice, then the row shows the interval, the next run, and the owner. **Pause** stops runs, **Resume** restarts them, and **Delete** removes that one schedule. Delete the last one and T3 stops claiming the session is resident on your behalf.
 
 ## 16. Prime session naming or forking
 
