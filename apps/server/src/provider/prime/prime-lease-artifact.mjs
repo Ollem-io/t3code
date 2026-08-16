@@ -35153,6 +35153,10 @@ effectDiscard(
  *    caller acquires at a higher generation, and the crashed holder's fence is
  *    permanently behind. Expiry is evaluated lazily on each call — nothing
  *    polls and nothing sleeps.
+ * 5. **Only a crash looks like a crash.** A holder that is merely busy renews
+ *    on a bounded schedule for as long as it owns the session, so a long turn
+ *    can never be mistaken for a vanished writer and handed to a second
+ *    process.
  *
  * Nothing here activates, adopts or resumes a session (that is PA-B02); this
  * is only the gate such a path must pass through first.
@@ -35165,6 +35169,11 @@ const primeLeaseIso = (millis) =>
   });
 /** How long an acquisition stays valid without a renewal. */
 const PRIME_SESSION_LEASE_TTL_MS = 3e4;
+const defaultRenewalScheduler = (run, intervalMs) => {
+  const timer = setInterval(run, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+};
 /** Process-local store. Used by fixtures and by the review artifact. */
 const makeInMemoryPrimeSessionLeaseStore = () => {
   const rows = /* @__PURE__ */ new Map();
@@ -35369,6 +35378,15 @@ const makePrimeSessionLeaseService = (options) => {
 };
 const makePrimeSessionWriteGate = (input) => {
   const handles = /* @__PURE__ */ new Map();
+  const renewals = /* @__PURE__ */ new Map();
+  const scheduleRenewal = input.scheduleRenewal ?? defaultRenewalScheduler;
+  const renewIntervalMs = input.renewIntervalMs ?? 1e4;
+  const stopRenewal = (threadId) => {
+    const stop = renewals.get(threadId);
+    if (stop === void 0) return;
+    renewals.delete(threadId);
+    stop();
+  };
   const serviceFor = async (threadId) => {
     if (input.service !== void 0) return input.service;
     if (input.serviceForThread === void 0)
@@ -35380,11 +35398,60 @@ const makePrimeSessionWriteGate = (input) => {
     writer: input.writer,
     operation,
   });
+  /**
+   * Keeps a held lease alive for as long as this server owns the session. The
+   * lease is only released by an explicit teardown or by this process dying, so
+   * a busy writer is never mistaken for a crashed one. A renewal that is
+   * refused means arbitration already moved on: the handle is dropped and the
+   * schedule stops rather than trying to take the scope back.
+   */
+  const startRenewal = (threadId) => {
+    if (renewals.has(threadId)) return;
+    let inFlight = false;
+    const tick = () => {
+      if (inFlight) return;
+      const handle = handles.get(threadId);
+      if (handle === void 0) {
+        stopRenewal(threadId);
+        return;
+      }
+      inFlight = true;
+      (async () => {
+        try {
+          const request = await requestFor(threadId, "renew");
+          const outcome = await (await serviceFor(threadId)).renew(handle, request);
+          if (outcome.status === "granted") {
+            if (handles.get(threadId) === handle) handles.set(threadId, outcome.handle);
+            return;
+          }
+          if (handles.get(threadId) === handle) handles.delete(threadId);
+          stopRenewal(threadId);
+        } catch {
+        } finally {
+          inFlight = false;
+        }
+      })();
+    };
+    renewals.set(threadId, scheduleRenewal(tick, renewIntervalMs));
+  };
   const acquire = async ({ threadId, operation }) => {
+    const service = await serviceFor(threadId);
+    const existing = handles.get(threadId);
+    if (existing !== void 0) {
+      const renewed = await service.renew(existing, await requestFor(threadId, operation));
+      if (renewed.status === "granted") {
+        handles.set(threadId, renewed.handle);
+        startRenewal(threadId);
+        return;
+      }
+      handles.delete(threadId);
+      stopRenewal(threadId);
+    }
     const request = await requestFor(threadId, operation);
-    const outcome = await (await serviceFor(threadId)).acquire(request);
+    const outcome = await service.acquire(request);
     if (outcome.status === "conflict") throw new PrimeSessionLeaseConflictError(outcome.receipt);
     handles.set(threadId, outcome.handle);
+    startRenewal(threadId);
   };
   return {
     acquire,
@@ -35403,6 +35470,7 @@ const makePrimeSessionWriteGate = (input) => {
       const outcome = await (await serviceFor(threadId)).authorizeWrite(handle, request);
       if (outcome.status === "conflict") {
         handles.delete(threadId);
+        stopRenewal(threadId);
         if (outcome.receipt.reason === "expired") {
           await acquire({
             threadId,
@@ -35413,9 +35481,11 @@ const makePrimeSessionWriteGate = (input) => {
         throw new PrimeSessionLeaseConflictError(outcome.receipt);
       }
       handles.set(threadId, outcome.handle);
+      startRenewal(threadId);
     },
     release: async ({ threadId }) => {
       const handle = handles.get(threadId);
+      stopRenewal(threadId);
       if (handle === void 0) return;
       handles.delete(threadId);
       await serviceFor(threadId)
@@ -35836,6 +35906,75 @@ check(
   "the superseded writer's receipt must be redacted",
 );
 line("adapter gate: own lapsed lease retaken, superseded lease never retaken");
+const busyStore = makeInMemoryPrimeSessionLeaseStore();
+let busyTime = 1e3;
+const busyService = () =>
+  makePrimeSessionLeaseService({
+    store: busyStore,
+    now: () => busyTime,
+    authorize: () => true,
+  });
+const busyTicks = /* @__PURE__ */ new Set();
+const busyWriter = makePrimeSessionWriteGate({
+  service: busyService(),
+  writer: clientA,
+  scopeForThread: (threadId) => scopeFor({ threadId }),
+  now: () => busyTime,
+  scheduleRenewal: (run) => {
+    busyTicks.add(run);
+    return () => busyTicks.delete(run);
+  },
+});
+const busyRival = makePrimeSessionWriteGate({
+  service: busyService(),
+  writer: clientB,
+  scopeForThread: (threadId) => scopeFor({ threadId }),
+  now: () => busyTime,
+});
+await busyWriter.acquire({
+  threadId: "thread-busy",
+  operation: "activate",
+});
+await busyWriter.authorizeWrite({
+  threadId: "thread-busy",
+  operation: "send",
+});
+for (let elapsed = 0; elapsed < PRIME_SESSION_LEASE_TTL_MS * 3; elapsed += 1e4) {
+  busyTime += 1e4;
+  for (const run of Array.from(busyTicks)) run();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  let busyRefusal;
+  try {
+    await busyRival.acquire({
+      threadId: "thread-busy",
+      operation: "activate",
+    });
+  } catch (error) {
+    busyRefusal = error;
+  }
+  check(
+    busyRefusal instanceof PrimeSessionLeaseConflictError &&
+      busyRefusal.receipt.reason === "heldByAnotherWriter",
+    "a second process must never be granted a session whose writer is still alive",
+  );
+}
+let busyOwnerRefusal;
+try {
+  await busyWriter.authorizeWrite({
+    threadId: "thread-busy",
+    operation: "send",
+  });
+} catch (error) {
+  busyOwnerRefusal = error;
+}
+check(
+  busyOwnerRefusal === void 0,
+  "the busy writer must still own its session when the turn lands",
+);
+await busyWriter.release({ threadId: "thread-busy" });
+check(busyTicks.size === 0, "teardown must stop the renewal schedule");
+line("adapter gate: a busy writer renews, so a live session is never taken over");
 const slot = migrationManifest.filter(([, name]) => name === "PrimeResumeCursors");
 check(slot.length === 1, "the lease columns must live in exactly one migration");
 check(slot[0][0] === 48, "the lease columns belong to slot 48");

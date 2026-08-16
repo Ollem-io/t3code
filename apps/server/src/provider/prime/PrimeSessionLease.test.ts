@@ -15,6 +15,7 @@ import {
   primeLeaseScopeDigest,
   primeSessionWriterToken,
   redactPrimeLeaseDiagnostics,
+  type PrimeLeaseRenewalScheduler,
   type PrimeSessionLeaseStore,
 } from "./PrimeSessionLease.ts";
 
@@ -67,6 +68,29 @@ const barrierStore = (inner: PrimeSessionLeaseStore) => {
       for (const gate of gates.splice(0)) gate();
     },
     waiting: () => gates.length,
+  };
+};
+
+/**
+ * Manual renewal schedule. Renewal is the one thing in this module that is
+ * time-driven in production, so the fixture owns the ticks: no timer runs and
+ * no test waits on one.
+ */
+const manualRenewals = () => {
+  const ticks = new Set<() => void>();
+  const schedule: PrimeLeaseRenewalScheduler = (run) => {
+    ticks.add(run);
+    return () => ticks.delete(run);
+  };
+  return {
+    schedule,
+    scheduled: () => ticks.size,
+    tick: async () => {
+      for (const run of Array.from(ticks)) run();
+      // Two macrotask hops: the renewal body awaits scope, service and store.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    },
   };
 };
 
@@ -427,5 +451,118 @@ describe("PrimeSessionLease", () => {
       .catch((error: unknown) => error);
     assert.ok(refused instanceof PrimeSessionLeaseConflictError);
     assert.equal(refused.receipt.retryable, true);
+  });
+
+  it("keeps a busy writer's lease alive so a live session is never handed to a second process", async () => {
+    const time = clock();
+    const store = makeInMemoryPrimeSessionLeaseStore();
+    const scopeForThread = (threadId: string) =>
+      scope({ threadId } as Partial<PrimeResumeCursorScope>);
+    const renewals = manualRenewals();
+    const gateA = makePrimeSessionWriteGate({
+      service: service(store, time.now),
+      writer: clientA,
+      scopeForThread,
+      now: time.now,
+      scheduleRenewal: renewals.schedule,
+    });
+    const gateB = makePrimeSessionWriteGate({
+      service: service(store, time.now),
+      writer: clientB,
+      scopeForThread,
+      now: time.now,
+    });
+    await gateA.acquire({ threadId: "thread-a", operation: "activate" });
+    // The turn starts here and the model works for longer than a whole TTL.
+    await gateA.authorizeWrite({ threadId: "thread-a", operation: "send" });
+    for (let elapsed = 0; elapsed < PRIME_SESSION_LEASE_TTL_MS * 3; elapsed += 10_000) {
+      time.advance(10_000);
+      await renewals.tick();
+      // The incumbent is busy, not gone: no window ever opens for writer B.
+      const stolen = await gateB
+        .acquire({ threadId: "thread-a", operation: "activate" })
+        .then(() => undefined)
+        .catch((error: unknown) => error);
+      assert.ok(stolen instanceof PrimeSessionLeaseConflictError);
+      assert.equal(stolen.receipt.reason, "heldByAnotherWriter");
+    }
+    // And the busy writer is still the holder when its turn finally lands.
+    await gateA.authorizeWrite({ threadId: "thread-a", operation: "send" });
+    assert.equal(
+      (await service(store, time.now).inspect(scopeForThread("thread-a"))).status,
+      "held",
+    );
+    assert.equal(renewals.scheduled(), 1);
+    // Teardown stops the schedule; nothing keeps renewing a released scope.
+    await gateA.release({ threadId: "thread-a" });
+    assert.equal(renewals.scheduled(), 0);
+  });
+
+  it("stops renewing instead of stealing back a scope another writer owns", async () => {
+    const time = clock();
+    const store = makeInMemoryPrimeSessionLeaseStore();
+    const scopeForThread = (threadId: string) =>
+      scope({ threadId } as Partial<PrimeResumeCursorScope>);
+    const renewals = manualRenewals();
+    const gateA = makePrimeSessionWriteGate({
+      service: service(store, time.now),
+      writer: clientA,
+      scopeForThread,
+      now: time.now,
+      scheduleRenewal: renewals.schedule,
+    });
+    const gateB = makePrimeSessionWriteGate({
+      service: service(store, time.now),
+      writer: clientB,
+      scopeForThread,
+      now: time.now,
+    });
+    await gateA.acquire({ threadId: "thread-a", operation: "activate" });
+    // A crashed writer renews nothing; B legitimately takes the lapsed scope.
+    time.advance(PRIME_SESSION_LEASE_TTL_MS + 1);
+    await gateB.acquire({ threadId: "thread-a", operation: "activate" });
+    const beforeTick = await service(store, time.now).inspect(scopeForThread("thread-a"));
+    await renewals.tick();
+    const afterTick = await service(store, time.now).inspect(scopeForThread("thread-a"));
+    assert.ok(beforeTick.status === "held" && afterTick.status === "held");
+    assert.equal(afterTick.snapshot.holderToken, beforeTick.snapshot.holderToken);
+    assert.equal(afterTick.snapshot.generation, beforeTick.snapshot.generation);
+    // The dead schedule cleans itself up rather than ticking forever.
+    assert.equal(renewals.scheduled(), 0);
+    const refused = await gateA
+      .authorizeWrite({ threadId: "thread-a", operation: "send" })
+      .then(() => undefined)
+      .catch((error: unknown) => error);
+    assert.ok(refused instanceof PrimeSessionLeaseConflictError);
+    assert.equal(refused.receipt.reason, "notHolder");
+  });
+
+  it("treats re-activating a thread it already holds as a renewal, not a new claim", async () => {
+    const time = clock();
+    const store = makeInMemoryPrimeSessionLeaseStore();
+    const scopeForThread = (threadId: string) =>
+      scope({ threadId } as Partial<PrimeResumeCursorScope>);
+    const renewals = manualRenewals();
+    const gate = makePrimeSessionWriteGate({
+      service: service(store, time.now),
+      writer: clientA,
+      scopeForThread,
+      now: time.now,
+      scheduleRenewal: renewals.schedule,
+    });
+    await gate.acquire({ threadId: "thread-a", operation: "activate" });
+    const first = await service(store, time.now).inspect(scopeForThread("thread-a"));
+    time.advance(1_000);
+    await gate.acquire({ threadId: "thread-a", operation: "activate" });
+    const second = await service(store, time.now).inspect(scopeForThread("thread-a"));
+    assert.ok(first.status === "held" && second.status === "held");
+    assert.equal(second.snapshot.generation, first.snapshot.generation);
+    assert.equal(second.snapshot.fence, first.snapshot.fence);
+    // The idempotent re-activation still pushed the expiry out, and still runs
+    // exactly one renewal schedule.
+    assert.ok(second.snapshot.expiresAtMs > first.snapshot.expiresAtMs);
+    assert.equal(renewals.scheduled(), 1);
+    // The handle held by the gate is the one the store agrees with.
+    await gate.authorizeWrite({ threadId: "thread-a", operation: "send" });
   });
 });

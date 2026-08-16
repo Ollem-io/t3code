@@ -32,6 +32,10 @@ import {
  *    caller acquires at a higher generation, and the crashed holder's fence is
  *    permanently behind. Expiry is evaluated lazily on each call — nothing
  *    polls and nothing sleeps.
+ * 5. **Only a crash looks like a crash.** A holder that is merely busy renews
+ *    on a bounded schedule for as long as it owns the session, so a long turn
+ *    can never be mistaken for a vanished writer and handed to a second
+ *    process.
  *
  * Nothing here activates, adopts or resumes a session (that is PA-B02); this
  * is only the gate such a path must pass through first.
@@ -46,6 +50,31 @@ export const primeLeaseIso = (millis: number): string =>
 
 /** How long an acquisition stays valid without a renewal. */
 export const PRIME_SESSION_LEASE_TTL_MS = 30_000;
+
+/**
+ * How often a held lease is renewed while its session is alive. A TTL only
+ * decides what happens when a writer *disappears*; a writer that is merely busy
+ * — a Prime turn routinely runs for minutes — must keep proving it is alive, or
+ * the TTL would hand its live session to a second process. Comfortably below
+ * the TTL so a skipped tick is survivable.
+ */
+export const PRIME_SESSION_LEASE_RENEW_INTERVAL_MS = 10_000;
+
+/**
+ * Starts a repeating renewal. Injected so tests drive ticks explicitly instead
+ * of sleeping. The returned function must stop the schedule and be safe to call
+ * more than once.
+ */
+export type PrimeLeaseRenewalScheduler = (run: () => void, intervalMs: number) => () => void;
+
+const defaultRenewalScheduler: PrimeLeaseRenewalScheduler = (run, intervalMs) => {
+  // The gate is a promise-facing port the adapter drives; no fiber carries a Schedule here.
+  // @effect-diagnostics-next-line globalTimers:off
+  const timer = setInterval(run, intervalMs);
+  // Renewal must never be the reason a process refuses to exit.
+  timer.unref?.();
+  return () => clearInterval(timer);
+};
 
 export type PrimeSessionLeaseRecord = {
   readonly holderToken: string;
@@ -446,8 +475,20 @@ export const makePrimeSessionWriteGate = (input: {
   ) => PrimeResumeCursorScope | Promise<PrimeResumeCursorScope>;
   /** Same clock the service uses, so a receipt this gate mints is comparable. */
   readonly now: () => number;
+  /** Defaults to an unref'd interval; fixtures pass a manual ticker. */
+  readonly scheduleRenewal?: PrimeLeaseRenewalScheduler;
+  readonly renewIntervalMs?: number;
 }): PrimeSessionWriteGate => {
   const handles = new Map<string, PrimeSessionLeaseHandle>();
+  const renewals = new Map<string, () => void>();
+  const scheduleRenewal = input.scheduleRenewal ?? defaultRenewalScheduler;
+  const renewIntervalMs = input.renewIntervalMs ?? PRIME_SESSION_LEASE_RENEW_INTERVAL_MS;
+  const stopRenewal = (threadId: string) => {
+    const stop = renewals.get(threadId);
+    if (stop === undefined) return;
+    renewals.delete(threadId);
+    stop();
+  };
   const serviceFor = async (threadId: string): Promise<PrimeSessionLeaseService> => {
     if (input.service !== undefined) return input.service;
     if (input.serviceForThread === undefined)
@@ -462,11 +503,68 @@ export const makePrimeSessionWriteGate = (input: {
     writer: input.writer,
     operation,
   });
+  /**
+   * Keeps a held lease alive for as long as this server owns the session. The
+   * lease is only released by an explicit teardown or by this process dying, so
+   * a busy writer is never mistaken for a crashed one. A renewal that is
+   * refused means arbitration already moved on: the handle is dropped and the
+   * schedule stops rather than trying to take the scope back.
+   */
+  const startRenewal = (threadId: string) => {
+    if (renewals.has(threadId)) return;
+    let inFlight = false;
+    const tick = () => {
+      if (inFlight) return;
+      const handle = handles.get(threadId);
+      if (handle === undefined) {
+        stopRenewal(threadId);
+        return;
+      }
+      inFlight = true;
+      void (async () => {
+        try {
+          const request = await requestFor(threadId, "renew");
+          const service = await serviceFor(threadId);
+          const outcome = await service.renew(handle, request);
+          if (outcome.status === "granted") {
+            if (handles.get(threadId) === handle) handles.set(threadId, outcome.handle);
+            return;
+          }
+          if (handles.get(threadId) === handle) handles.delete(threadId);
+          stopRenewal(threadId);
+        } catch {
+          // A transient store failure must not kill the schedule; the next tick
+          // retries, and the TTL still bounds the damage if it never recovers.
+        } finally {
+          inFlight = false;
+        }
+      })();
+    };
+    renewals.set(threadId, scheduleRenewal(tick, renewIntervalMs));
+  };
   const acquire: PrimeSessionWriteGate["acquire"] = async ({ threadId, operation }) => {
+    const service = await serviceFor(threadId);
+    const existing = handles.get(threadId);
+    if (existing !== undefined) {
+      // Re-activating a thread this process already holds is not a new claim:
+      // renewing keeps the generation stable so an idempotent re-activation
+      // cannot invalidate a handle or inflate the durable counter.
+      const renewed = await service.renew(existing, await requestFor(threadId, operation));
+      if (renewed.status === "granted") {
+        handles.set(threadId, renewed.handle);
+        startRenewal(threadId);
+        return;
+      }
+      // The handle is provably dead. Fall through to a fresh acquire, which
+      // still refuses if another writer claimed the scope in the meantime.
+      handles.delete(threadId);
+      stopRenewal(threadId);
+    }
     const request = await requestFor(threadId, operation);
-    const outcome = await (await serviceFor(threadId)).acquire(request);
+    const outcome = await service.acquire(request);
     if (outcome.status === "conflict") throw new PrimeSessionLeaseConflictError(outcome.receipt);
     handles.set(threadId, outcome.handle);
+    startRenewal(threadId);
   };
   return {
     acquire,
@@ -488,6 +586,7 @@ export const makePrimeSessionWriteGate = (input: {
         // A fenced or expired handle is dead: dropping it here stops the
         // adapter from re-presenting a lease it provably no longer owns.
         handles.delete(threadId);
+        stopRenewal(threadId);
         // A lease that merely lapsed while this writer sat idle — nobody else
         // took it — is *our* lease to take again, at a higher generation. Only
         // that one reason may retry: `fenced`, `notHolder` and `unauthorized`
@@ -504,9 +603,11 @@ export const makePrimeSessionWriteGate = (input: {
       // The successful write-slot CAS pushed the expiry out; keep the handle
       // in step so the next call presents the lease as the store sees it.
       handles.set(threadId, outcome.handle);
+      startRenewal(threadId);
     },
     release: async ({ threadId }) => {
       const handle = handles.get(threadId);
+      stopRenewal(threadId);
       if (handle === undefined) return;
       handles.delete(threadId);
       // Teardown must never fail because arbitration moved on: the lease has

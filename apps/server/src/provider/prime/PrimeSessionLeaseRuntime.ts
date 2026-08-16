@@ -83,6 +83,11 @@ export const makePrimeServerWriteGate = (input: {
         threadId,
         homeFingerprint,
       } as PrimeResumeCursorScope;
+      // Cached unconditionally, including the unresolved fallback: a scope is
+      // the identity a live handle was issued against, so changing it under a
+      // held lease would fence this server out of its own session. Upgrading an
+      // unresolved thread to durable arbitration therefore has to happen at
+      // activation boundaries, not mid-session (tracked for PA-B05).
       scopes.set(threadId, scope);
       return scope;
     };

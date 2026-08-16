@@ -406,6 +406,68 @@ check(
 );
 line("adapter gate: own lapsed lease retaken, superseded lease never retaken");
 
+// 7c. A writer that is merely busy is never mistaken for a crashed one. The
+// TTL alone would hand a live session to a second process the moment a turn
+// outran it, so a held lease renews on a bounded schedule for as long as this
+// server owns the session.
+const busyStore = makeInMemoryPrimeSessionLeaseStore();
+let busyTime = 1_000;
+const busyService = () =>
+  makePrimeSessionLeaseService({
+    store: busyStore,
+    now: () => busyTime,
+    authorize: () => true,
+  });
+const busyTicks = new Set<() => void>();
+const busyWriter = makePrimeSessionWriteGate({
+  service: busyService(),
+  writer: clientA,
+  scopeForThread: (threadId) => scopeFor({ threadId }),
+  now: () => busyTime,
+  scheduleRenewal: (run) => {
+    busyTicks.add(run);
+    return () => busyTicks.delete(run);
+  },
+});
+const busyRival = makePrimeSessionWriteGate({
+  service: busyService(),
+  writer: clientB,
+  scopeForThread: (threadId) => scopeFor({ threadId }),
+  now: () => busyTime,
+});
+await busyWriter.acquire({ threadId: "thread-busy", operation: "activate" });
+await busyWriter.authorizeWrite({ threadId: "thread-busy", operation: "send" });
+for (let elapsed = 0; elapsed < PRIME_SESSION_LEASE_TTL_MS * 3; elapsed += 10_000) {
+  busyTime += 10_000;
+  for (const run of Array.from(busyTicks)) run();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  let busyRefusal: unknown;
+  try {
+    await busyRival.acquire({ threadId: "thread-busy", operation: "activate" });
+  } catch (error) {
+    busyRefusal = error;
+  }
+  check(
+    busyRefusal instanceof PrimeSessionLeaseConflictError &&
+      busyRefusal.receipt.reason === "heldByAnotherWriter",
+    "a second process must never be granted a session whose writer is still alive",
+  );
+}
+let busyOwnerRefusal: unknown;
+try {
+  await busyWriter.authorizeWrite({ threadId: "thread-busy", operation: "send" });
+} catch (error) {
+  busyOwnerRefusal = error;
+}
+check(
+  busyOwnerRefusal === undefined,
+  "the busy writer must still own its session when the turn lands",
+);
+await busyWriter.release({ threadId: "thread-busy" });
+check(busyTicks.size === 0, "teardown must stop the renewal schedule");
+line("adapter gate: a busy writer renews, so a live session is never taken over");
+
 // 8. The arbitration schema is the one PA-B01 registered; B03 adds no slot.
 const slot = migrationManifest.filter(([, name]) => name === "PrimeResumeCursors");
 check(slot.length === 1, "the lease columns must live in exactly one migration");

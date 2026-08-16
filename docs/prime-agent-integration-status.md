@@ -320,7 +320,9 @@ with `namingAndForking` on and off, plus the fork-origin row on the forked threa
 PA-B03 (server-side single-writer arbitration) has landed: `PrimeDriver` constructs the
 lease gate for every Prime instance, so activation, sends, aborts, compaction, runtime
 actions and dialog answers all prove the lease in the shipped server, and stop/teardown
-release it only once the process it authorized is gone.
+release it only once the process it authorized is gone. A held lease also renews on a
+bounded schedule for as long as this server owns the session, so a turn that outruns the
+30s TTL is never mistaken for a crashed writer and handed to a second T3 process.
 
 ## Pending milestones
 
