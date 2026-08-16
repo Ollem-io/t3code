@@ -46,8 +46,10 @@ the Beta certification bundle in eight sections. Both homes are removed at the e
 5. **Rollback.** A cursor written with a newer version decodes as
    `unsupportedVersion`/`unavailable` (not corrupt), its bytes are byte-identical after the read,
    and every rollout transition — enable, disable, rollback — reports `deletesDurableData=false`.
-6. **Performance counts.** Scenario count, the cursor reads and writes this artifact performed, and
-   the largest cursor on disk, asserted under `PRIME_RESUME_MAX_BYTES`.
+6. **Performance counts.** Scenario count, the cursor reads and writes this artifact performed
+   _directly_, a stated lower bound including the reads the recovery coordinator does internally
+   (those are not instrumented, so no total is claimed), and the largest cursor on disk, asserted
+   under `PRIME_RESUME_MAX_BYTES`.
 7. **Client surface.** Each scenario's published state is pushed through the reducer web, desktop
    and mobile all share. Every refusal blocks the composer and offers at least one way out; no
    refusal copy contains a path.

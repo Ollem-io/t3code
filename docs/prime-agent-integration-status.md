@@ -363,17 +363,24 @@ callback until PA-B04 renders them.
 | --------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Implemented on `dev/prime-agent-perfect-integration-20260813/pa-b06`; awaiting dual review |
 
-**PA-B06 (implemented, in review).** Adds `apps/server/integration/primeAgentBeta.integration.test.ts`:
-eleven scenarios composing B01–B05 against real subprocesses and disposable T3 homes — graceful stop
+**PA-B06 (implemented, round 2 repair in review).** Adds `apps/server/integration/primeAgentBeta.integration.test.ts`:
+thirteen scenarios composing B01–B05 against real subprocesses and disposable T3 homes — graceful stop
 and abrupt loss, disable/re-enable, compatible-advisory upgrade and incompatible downgrade, a missing
 runtime binary, two environments on one host, a two-client race, retention across every lifecycle
 event, a newer-build cursor read back as `unsupportedVersion` with its bytes intact, the shared
-client refusal surfaces (including the web composer gate), and Alpha capability gating on a
-capability-limited build. The review artifact is
+client refusal surfaces (including the web composer gate), Alpha capability gating on a
+capability-limited build, the fork/fresh row (a forked thread is durable and exact-resumes on its
+own while its source thread's cursor is untouched), and a documentation interlock that fails if
+`docs/usage.md` promises a durable-cleanup control no client, desktop, mobile or contract source
+reaches — and that will fail again, demanding the warning be removed, once one does. The review
+artifact is
 `apps/server/src/provider/prime/prime-beta-artifact.mjs` (78 source-derived assertions, deterministic
-regeneration via `generate-prime-beta-artifact.sh --check`). Documentation graduates: `docs/usage.md`
-now records Beta as shipped, and `docs/operations/prime-agent-cleanup.md` no longer promises a
-PA-B06 confirmation UI (the milestone deliberately adds no capability). **Evidence gaps, stated
+regeneration via `generate-prime-beta-artifact.sh --check`). Documentation graduates only what is
+reachable: `docs/usage.md` records Beta durable resume, recovery and arbitration as shipped, while
+section 20's permanent-deletion controls stay explicitly **proposed and not yet shipped** — the
+round-1 product review's blocker, since no product control deletes durable Prime data and the
+runbook said so in the same commit. `docs/operations/prime-agent-cleanup.md` likewise no longer
+promises a PA-B06 confirmation UI (the milestone deliberately adds no capability). **Evidence gaps, stated
 truthfully:** the real-binary lane is opt-in through `PRIME_AGENT_BIN` and was **not executed** —
 `prime-agent` is not installed in this environment — and no browser, Electron process or simulator
 was launched, so the milestone's UI evidence clause stays on the standing visual-evidence debt.

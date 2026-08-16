@@ -3,7 +3,17 @@
 // @effect-diagnostics instanceOfSchema:off
 // @effect-diagnostics preferSchemaOverJson:off
 import { assert, describe, it } from "@effect/vitest";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -179,20 +189,20 @@ const adapterFor = (input: Fixture, writerToken: string, enabled = true) =>
     } as never,
   );
 
-const startInput = (input: Fixture) => ({
-  threadId: ThreadId.make(THREAD),
+const startInput = (input: Fixture, threadId = THREAD) => ({
+  threadId: ThreadId.make(threadId),
   provider: PROVIDER,
   providerInstanceId: INSTANCE,
   cwd: input.cwd,
   runtimeMode: "approval-required" as const,
 });
 
-const layoutFor = (input: Fixture) =>
+const layoutFor = (input: Fixture, threadId = THREAD) =>
   primeResourceLayout({
     home: input.home,
     environmentId: input.environmentId,
     instanceId: INSTANCE,
-    threadId: THREAD,
+    threadId,
   });
 
 const bootCount = async (input: Fixture) =>
@@ -204,8 +214,8 @@ const bootCount = async (input: Fixture) =>
     .filter((line) => line.type === "BOOT").length;
 
 /** Content-free identity of the stored cursor, for before/after comparison. */
-const cursorIdentity = async (input: Fixture) => {
-  const { state } = await readPrimeResumeCursor(layoutFor(input).resumeCursor);
+const cursorIdentity = async (input: Fixture, threadId = THREAD) => {
+  const { state } = await readPrimeResumeCursor(layoutFor(input, threadId).resumeCursor);
   if (state.status !== "available") return { status: state.status, reason: state.reason };
   return {
     status: state.status,
@@ -220,12 +230,12 @@ const cursorIdentity = async (input: Fixture) => {
 };
 
 /** Seeds one durable session and stops it, leaving a recoverable cursor. */
-const seedDurableSession = (input: Fixture, writer = "process-one") =>
+const seedDurableSession = (input: Fixture, writer = "process-one", threadId = THREAD) =>
   Effect.scoped(
     Effect.gen(function* () {
       const adapter = yield* adapterFor(input, writer);
-      yield* adapter.startSession(startInput(input));
-      yield* adapter.stopSession(ThreadId.make(THREAD));
+      yield* adapter.startSession(startInput(input, threadId));
+      yield* adapter.stopSession(ThreadId.make(threadId));
     }),
   );
 
@@ -604,6 +614,128 @@ describe("PA-B06 Beta gate: durable continuity matrix", () => {
     assert.equal(classifyPrimeCompatibility("0.7.2"), "compatible");
     assert.equal(classifyPrimeCompatibility("0.7.1"), "incompatible");
   });
+
+  /**
+   * The fork/fresh row of the matrix. A fork is a *new* session now — the
+   * point of this test is that being new does not make it second-class:
+   * docs/usage.md promises a forked thread is durable and resumable from that
+   * point on, and that the thread it came from is untouched.
+   */
+  it.effect("a forked thread is durable on its own and leaves its source thread untouched", () =>
+    withFixture("fork", "env-a", (input) =>
+      Effect.gen(function* () {
+        yield* seedDurableSession(input);
+        const sourceSeeded = yield* Effect.promise(() => cursorIdentity(input));
+        assert.equal(sourceSeeded.status, "available");
+
+        const forkThread = "thread-beta-fork";
+        yield* seedDurableSession(input, "fork-process-one", forkThread);
+        const forkSeeded = yield* Effect.promise(() => cursorIdentity(input, forkThread));
+        assert.equal(forkSeeded.status, "available");
+        if (sourceSeeded.status !== "available" || forkSeeded.status !== "available")
+          return assert.fail("expected durable cursors for source and fork");
+        // A fork owns its durable state instead of borrowing the source's.
+        assert.notEqual(forkSeeded.sessionPathToken, sourceSeeded.sessionPathToken);
+        assert.notEqual(forkSeeded.scopeDigest, sourceSeeded.scopeDigest);
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const adapter = yield* adapterFor(input, "fork-process-two");
+            yield* adapter.startSession(startInput(input, forkThread));
+          }),
+        );
+        assert.deepStrictEqual(
+          yield* Effect.promise(() => cursorIdentity(input, forkThread)),
+          forkSeeded,
+        );
+        // The resume is published against the fork, not against its source.
+        assert.deepStrictEqual(input.published.at(-1), [
+          forkThread,
+          { status: "resumed", mode: "relaunched" },
+        ]);
+        // Resuming the fork cannot rewrite the thread it came from.
+        assert.deepStrictEqual(yield* Effect.promise(() => cursorIdentity(input)), sourceSeeded);
+      }),
+    ),
+  );
+
+  /**
+   * The documentation gate. PA-B06 graduates `docs/usage.md` to shipped, and
+   * the one way that can go wrong is graduating a *claim* instead of a
+   * behavior: section 20 describes a permanent-delete control and a
+   * retain-or-delete choice on environment removal, and no such control is
+   * reachable anywhere in the product. This test is the interlock. It does not
+   * hard-code which way the answer goes — it asks the client and contract
+   * sources whether an entry point exists, and requires the prose to match.
+   * When a later milestone ships the control, this test starts demanding the
+   * "not yet shipped" warning be *removed*.
+   */
+  it.effect("never claims a durable-cleanup control the product does not expose", () =>
+    Effect.gen(function* () {
+      const repoRoot = join(import.meta.dirname, "..", "..", "..");
+      // Everything a user could touch: the three clients, the shared client
+      // runtime, and the wire contract that any control would have to cross.
+      const surfaceRoots = [
+        join(repoRoot, "apps", "web", "src"),
+        join(repoRoot, "apps", "mobile", "src"),
+        join(repoRoot, "apps", "desktop", "src"),
+        join(repoRoot, "packages", "client-runtime", "src"),
+        join(repoRoot, "packages", "contracts", "src"),
+      ];
+      const walk = async (dir: string): Promise<ReadonlyArray<string>> => {
+        const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+        const found: Array<string> = [];
+        for (const entry of entries) {
+          const path = join(dir, entry.name);
+          if (entry.isDirectory()) found.push(...(await walk(path)));
+          else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name))
+            found.push(path);
+        }
+        return found;
+      };
+      // The names any user-facing deletion would have to go through: the two
+      // server APIs, or a wire op / label naming the action.
+      const entryPoint = /planPrimeCleanup|executePrimeCleanup|prime\.cleanup|Delete Prime session/;
+      let reachable = false;
+      for (const root of surfaceRoots)
+        for (const file of yield* Effect.promise(() => walk(root))) {
+          const source = yield* Effect.promise(() => readFile(file, "utf8"));
+          if (entryPoint.test(source)) reachable = true;
+        }
+
+      const usage = yield* Effect.promise(() =>
+        readFile(join(repoRoot, "docs", "usage.md"), "utf8"),
+      );
+      const section = usage.slice(usage.indexOf("## 20. Durable cleanup and retention"));
+      assert.ok(section.length > 0, "docs/usage.md lost section 20");
+      const marked = section.includes("### Permanent deletion — proposed, not yet shipped");
+
+      // The interlock, in both directions.
+      assert.equal(
+        marked,
+        !reachable,
+        reachable
+          ? "a cleanup control is now reachable: drop the 'not yet shipped' warning from docs/usage.md section 20"
+          : "docs/usage.md section 20 must mark permanent deletion as not yet shipped while no client, desktop, mobile or contract surface reaches planPrimeCleanup/executePrimeCleanup",
+      );
+      if (!reachable) {
+        // The banner has to agree with the section, or a reader stops at line 1.
+        assert.ok(
+          usage
+            .slice(0, usage.indexOf("## What runs where"))
+            .includes("no control in the product deletes durable Prime data today"),
+          "the usage.md banner still graduates cleanup that has no control",
+        );
+        // And the shipped half must not present the absent action as a step.
+        const shipped = section.slice(0, section.indexOf("### Permanent deletion"));
+        assert.equal(
+          /\*\*Delete Prime session permanently\*\*/.test(shipped),
+          false,
+          "the shipped half of section 20 still tells the user to choose a delete control",
+        );
+      }
+    }),
+  );
 
   /**
    * The real-binary lane. It is opt-in, it installs nothing, and when

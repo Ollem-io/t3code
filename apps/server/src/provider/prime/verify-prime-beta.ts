@@ -73,7 +73,11 @@ const AGENT_VERSION = "0.7.2";
 const CAPABILITY_DIGEST = "sha256:pa-b06-capabilities";
 let cursorReads = 0;
 let cursorWrites = 0;
-/** Every cursor read this artifact performs goes through here, so the count is real. */
+/**
+ * Reads this file performs *directly*. The recovery coordinator opens the
+ * cursor itself on every resume, and those reads are not counted here — the
+ * report below states the direct number and a lower bound, never a total.
+ */
 const readCursor = async (path: string) => {
   cursorReads++;
   return await readPrimeResumeCursor(path);
@@ -414,8 +418,14 @@ for (const path of cursorFiles) {
   check(size < PRIME_RESUME_MAX_BYTES, "cursor exceeded PRIME_RESUME_MAX_BYTES");
 }
 line(`- scenarios: ${scenarios.length}`);
-line(`- cursor reads by this artifact: ${cursorReads}`);
-line(`- cursor writes by this artifact: ${cursorWrites}`);
+line(`- direct cursor reads by this artifact: ${cursorReads}`);
+line(`- direct cursor writes by this artifact: ${cursorWrites}`);
+// The coordinator reads the cursor itself, at least once per resume, so the
+// two numbers above are floors and not an I/O total. Say so rather than let a
+// reader treat a partial count as the bound.
+line(
+  `- total cursor reads including the coordinator's own: >= ${cursorReads + scenarios.length} (not instrumented inside the coordinator)`,
+);
 line(`- largest cursor: ${largestCursorBytes} bytes`);
 equal(scenarios.length, 8, "scenario count");
 check(largestCursorBytes < PRIME_RESUME_MAX_BYTES, "largest cursor is not bounded");

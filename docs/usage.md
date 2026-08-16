@@ -1,6 +1,6 @@
 # Use Prime Agent in T3 Code
 
-> **MVP, Alpha and Beta shipped.** This guide records the delivered contract for all three phases. Capability/version gating still applies: every Alpha control below appears only when the installed Prime Agent advertises the capability it needs, and explains itself when it does not. Beta durable resume, recovery choices, single-writer arbitration and scoped cleanup are certified by the automated Beta recovery matrix; an integrated visual pass and a lane against a real installed `prime-agent` binary have not been executed here and remain outstanding evidence, not withdrawn behavior.
+> **MVP and Alpha shipped. Beta shipped apart from the durable-cleanup controls.** This guide records the delivered contract for MVP, Alpha, and Beta durable resume. Capability/version gating still applies: every Alpha control below appears only when the installed Prime Agent advertises the capability it needs, and explains itself when it does not. Beta durable resume, recovery choices, and single-writer arbitration are certified by the automated Beta recovery matrix. **Section 20 is the exception:** T3's retention rules are enforced, but the deletion controls that section describes are still proposed — no control in the product deletes durable Prime data today. An integrated visual pass and a lane against a real installed `prime-agent` binary have also not been executed here; both are outstanding evidence, not withdrawn behavior.
 
 ## What runs where
 
@@ -27,7 +27,7 @@ T3 launches Prime Agent in the selected project's workspace. Prompts and support
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **MVP**   | Install and authenticate on the host; add and health-check an instance; discover a model and thinking level; run, stream, interrupt, continue, and stop a normal thread; use supported attachments and tools; see actionable failures across web, desktop, and mobile. No durable Prime resume guarantee. |
 | **Alpha** | Prime-native live steering and queued follow-up, compaction, commands/skills, richer extension interactions, subagent observation, goals, and heartbeats, with visible state and reverse controls. Resident-daemon promotion is allowed only where a required T3-owned feature needs it.                  |
-| **Beta**  | Durable Prime session loading and exact-resume recovery, explicit fallback choices, single-writer conflict handling across devices, and scoped, confirmed durable cleanup. Shipped.                                                                                                                       |
+| **Beta**  | Durable Prime session loading and exact-resume recovery, explicit fallback choices, and single-writer conflict handling across devices. Shipped. Scoped, confirmed durable cleanup is specified and its retention rules are enforced, but it has no user-facing control yet — see section 20.             |
 
 # MVP
 
@@ -390,13 +390,19 @@ The server is the single writer for one durable Prime session. Two clients canno
 
 ## 20. Durable cleanup and retention
 
-Beta durable Prime sessions live beneath **T3 home**, scoped by T3 environment and Prime Agent provider instance. Archiving a thread retains its durable Prime session. Permanent deletion requires confirmation, targets only the selected T3-owned session files/resources, and reports success or failure. Removing an environment offers an explicit choice to retain or delete its durable Prime sessions; deletion requires confirmation and remains scoped to that environment's T3-owned resources. A future-version cursor read by an older T3 build remains preserved as unavailable instead of being discarded.
-
-Retention duration, backup integration, migration mechanics, and final confirmation wording may be selected during implementation, but cannot weaken the retain/archive/delete behavior above.
+**Shipped.** Beta durable Prime sessions live beneath **T3 home**, scoped by T3 environment and Prime Agent provider instance. Archiving a thread retains its durable Prime session, and so does stopping it. Removing or reconfiguring a provider instance retains it too: T3 tells you the durable data was left untouched instead of clearing it. A future-version cursor read by an older T3 build remains preserved as unavailable instead of being discarded. Nothing in the shipped product deletes a durable Prime session.
 
 **Example 1 — archive:** archive a durable thread. Its Prime session remains beneath the environment/instance scope in T3 home and is available when the thread is restored or unarchived.
 
-**Example 2 — permanent delete:** choose **Delete Prime session permanently**, review the owned-resource scope, and confirm. T3 deletes only the selected T3-owned durable resource, not all Prime sessions on the host.
+**Example 2 — remove an instance:** remove `Prime Test`. T3 removes the configuration and reports that the durable Prime data was retained; the session directory is still there if you reconfigure the instance later.
+
+### Permanent deletion — proposed, not yet shipped
+
+> The deletion contract below is approved product behavior that **no current control reaches**. There is no permanent-delete action in the chat view, in Settings, in the command palette, or on any keybinding, and removing an environment does not offer a retain-or-delete choice. Deleting durable Prime data today means deleting the files on the host yourself. Contributors: the planning and execution semantics exist as a server-side API with no operator entry point; see `docs/operations/prime-agent-cleanup.md`.
+
+When it ships, permanent deletion will require confirmation, will target only the selected T3-owned session files/resources, and will report success or failure. Removing an environment will offer an explicit choice to retain or delete its durable Prime sessions; deletion will require confirmation and will remain scoped to that environment's T3-owned resources.
+
+Retention duration, backup integration, migration mechanics, and final confirmation wording may be selected during implementation, but cannot weaken the retain/archive/delete behavior above.
 
 # Updates, compatibility, cleanup, and privacy
 
@@ -462,7 +468,7 @@ The current host Prime Agent installation is explicitly available for developmen
 9. Watch streamed text/tool activity; answer supported inputs or interrupt as needed.
 10. Send follow-up prompts while the live session remains healthy.
 11. Review workspace diff/checkpoint separately from Prime conversation state.
-12. Stop the live provider session when finished. Do not assume it can durably resume in MVP.
+12. Stop the live provider session when finished. Durable resume of that exact session is Beta behavior (section 7); on an MVP-only path, treat the stop as final.
 
 ## MVP failed-start recovery
 
@@ -476,7 +482,7 @@ The current host Prime Agent installation is explicitly available for developmen
 
 # Remaining implementation details
 
-The product behavior above is approved and shipped through Beta. Implementation may still choose details that do not alter the approved usage contract, including:
+The product behavior above is approved, and shipped through Beta except for the permanent-deletion controls in section 20, which remain proposed. Implementation may still choose details that do not alter the approved usage contract, including:
 
 - exact labels, status copy, warning placement, confirmation wording, and visual layout;
 - bounded timeouts, cache freshness intervals, diagnostics limits, and retry presentation;
