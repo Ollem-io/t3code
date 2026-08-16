@@ -1,6 +1,6 @@
 # Use Prime Agent in T3 Code
 
-> **MVP and Alpha shipped. Beta remains proposed.** This guide records the delivered MVP and Alpha contract and the proposed Beta phase. Capability/version gating still applies: every Alpha control below appears only when the installed Prime Agent advertises the capability it needs, and explains itself when it does not. Beta text is not a current-product promise.
+> **MVP, Alpha and Beta shipped.** This guide records the delivered contract for all three phases. Capability/version gating still applies: every Alpha control below appears only when the installed Prime Agent advertises the capability it needs, and explains itself when it does not. Beta durable resume, recovery choices, single-writer arbitration and scoped cleanup are certified by the automated Beta recovery matrix; an integrated visual pass and a lane against a real installed `prime-agent` binary have not been executed here and remain outstanding evidence, not withdrawn behavior.
 
 ## What runs where
 
@@ -27,7 +27,7 @@ T3 launches Prime Agent in the selected project's workspace. Prompts and support
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **MVP**   | Install and authenticate on the host; add and health-check an instance; discover a model and thinking level; run, stream, interrupt, continue, and stop a normal thread; use supported attachments and tools; see actionable failures across web, desktop, and mobile. No durable Prime resume guarantee. |
 | **Alpha** | Prime-native live steering and queued follow-up, compaction, commands/skills, richer extension interactions, subagent observation, goals, and heartbeats, with visible state and reverse controls. Resident-daemon promotion is allowed only where a required T3-owned feature needs it.                  |
-| **Beta**  | Durable Prime session loading and exact-resume recovery, explicit fallback choices, and single-writer conflict handling across devices.                                                                                                                                                                   |
+| **Beta**  | Durable Prime session loading and exact-resume recovery, explicit fallback choices, single-writer conflict handling across devices, and scoped, confirmed durable cleanup. Shipped.                                                                                                                       |
 
 # MVP
 
@@ -99,7 +99,7 @@ Changing configuration or turning **Enabled** off stops only live T3-owned Prime
 - **Reconfigure:** validates the new values, tears down only affected T3-owned work, then rechecks the instance.
 - **Remove:** removes the instance configuration after warning about bound threads. Removal does not delete arbitrary Prime Agent sessions or credentials.
 
-**Example 1 — reverse action:** Sam disables `Prime Work` during maintenance. Its bound thread reads **Provider disabled**. Sam enables it and refreshes status; in MVP, a later prompt may start a fresh Prime conversation rather than resume the old one.
+**Example 1 — reverse action:** Sam disables `Prime Work` during maintenance. Its bound thread reads **Provider disabled**. Sam enables it and refreshes status; the next prompt resumes the exact durable session, or says why it could not — it never quietly starts a new conversation in its place.
 
 **Example 2 — cleanup isolation:** Sam removes `Prime Test` while a separate `prime-agent` terminal session is running. T3 cleans up only the child/session identities it created; the terminal session continues.
 
@@ -140,7 +140,7 @@ If a previously selected model disappears, it remains identified as unavailable 
 6. Choose the normal T3 workspace mode and permission controls that apply to the project.
 7. Enter the first prompt, optionally add supported attachments, and send.
 
-The resulting thread binds to the specific Prime Agent **instance**, not just the generic Prime Agent driver. T3 launches one owned Prime RPC process/session for that live thread in its effective host workspace and stores its Prime session data in a T3-scoped Prime session directory. Concurrent T3 threads remain isolated. That scoped directory supports safe ownership and isolation in MVP; it does **not** create a durable resume promise before Beta.
+The resulting thread binds to the specific Prime Agent **instance**, not just the generic Prime Agent driver. T3 launches one owned Prime RPC process/session for that live thread in its effective host workspace and stores its Prime session data in a T3-scoped Prime session directory. Concurrent T3 threads remain isolated. That scoped directory supports safe ownership and isolation, and is the durable session Beta resume reopens.
 
 **Example 1 — analysis task:** In project `billing-api`, choose `Prime Work` → `anthropic/claude-sonnet` → **High** thinking, enter `Find why refunds can be duplicated and propose a fix`, then send.
 
@@ -214,14 +214,14 @@ T3 checkpoints capture and restore the **workspace** through T3's existing sourc
 
 - Restoring a checkpoint can rewind files.
 - It does **not** rewind what the live Prime conversation has already seen or said.
-- MVP and Alpha do **not** guarantee durable loading of that Prime conversation after a server restart, child crash, disable/re-enable, upgrade, or stop.
+- Beta durable resume reopens the exact Prime session after a server restart, child crash, disable/re-enable, or upgrade; it does not rewind that session to match a restored checkpoint.
 - T3's projected transcript remains readable, but replaying it is not the same as restoring Prime's internal session.
 
-After a checkpoint restore, T3 warns that the workspace was restored but the Prime conversation did **not** rewind, and recommends starting a new or forked conversation before continuing. Until Beta, process loss may also require a fresh Prime conversation; T3 must disclose that loss rather than imply an exact resume.
+After a checkpoint restore, T3 warns that the workspace was restored but the Prime conversation did **not** rewind, and recommends starting a new or forked conversation before continuing. Process loss is recovered by durable resume where the exact session can be proven; where it cannot, T3 discloses the refusal and offers a choice rather than implying an exact resume.
 
 **Example 1 — restore divergence:** Prime edits three files and discusses them. You restore the pre-turn checkpoint. The files revert, but the live agent may still remember having edited them. Tell it `The workspace was restored; re-read current files before continuing`, or start fresh.
 
-**Example 2 — server restart:** a thread has a visible T3 transcript, then the server restarts. MVP may be unable to reload the exact Prime session. T3 shows that continuity is unavailable rather than silently labeling a fresh process **Resumed**.
+**Example 2 — server restart:** a thread has a visible T3 transcript, then the server restarts. T3 reopens the exact Prime session and shows **Resumed**; when it cannot prove that session, it shows that continuity is unavailable rather than silently labeling a fresh process **Resumed**.
 
 ## 8. Web, desktop, mobile, and remote connections
 
@@ -348,7 +348,7 @@ Name the Prime session behind a thread, and fork it into a new thread when you w
 
 The new thread records where it came from: the thread it was forked from, the label of the point it was forked at, and that thread's latest checkpoint at that moment. A forked thread shows that line at the top on web and desktop, and above the composer on mobile, with **Open source thread** next to it to take you back. That ancestry is a T3 record and sits outside the Prime Agent controls, so it stays readable and navigable even with Prime Agent uninstalled and every session long gone. The original thread is untouched.
 
-**This is not durable resume.** A fork starts a _new_ session now. It does not reopen a past session, and nothing about it survives a server restart as a resumable conversation; durable resume is Beta.
+**This is not durable resume.** A fork starts a _new_ session now; it does not reopen a past session. The forked thread is itself durable and resumable from that point on, the same as any other Prime thread.
 
 **Example 1 — rename:** rename the session to `Migration work`. The session name and the thread title both read `Migration work`; rename it again whenever you like.
 
@@ -445,7 +445,7 @@ Remote clients receive only the canonical state needed to render the product. T3
 
 # Development and integration verification
 
-The current host Prime Agent installation is explicitly available for development and integration verification of this proposed integration. Tests must still isolate T3/Prime session directories, configuration, and daemon resources whenever the operation could mutate them. Verification may exercise the installed binary and its bounded read-only state/model probes, but must never destructively modify live authentication, unrelated Prime sessions, or live daemon state. Production-oriented tests use isolated session/config/daemon resources rather than treating the maintainer's live installation as disposable test state.
+The current host Prime Agent installation is explicitly available for development and integration verification of this integration. Tests must still isolate T3/Prime session directories, configuration, and daemon resources whenever the operation could mutate them. Verification may exercise the installed binary and its bounded read-only state/model probes, but must never destructively modify live authentication, unrelated Prime sessions, or live daemon state. Production-oriented tests use isolated session/config/daemon resources rather than treating the maintainer's live installation as disposable test state.
 
 # End-to-end checklists
 
@@ -476,7 +476,7 @@ The current host Prime Agent installation is explicitly available for developmen
 
 # Remaining implementation details
 
-The product behavior above is approved, but remains proposed and unshipped until implementation lands. Implementation planning may still choose details that do not alter the approved usage contract, including:
+The product behavior above is approved and shipped through Beta. Implementation may still choose details that do not alter the approved usage contract, including:
 
 - exact labels, status copy, warning placement, confirmation wording, and visual layout;
 - bounded timeouts, cache freshness intervals, diagnostics limits, and retry presentation;
