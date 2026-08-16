@@ -5559,6 +5559,7 @@ function ChatViewContent(props: ChatViewProps) {
   // PA-B04 — the durable resume outcome this thread is showing, and the one
   // place its recovery choices are dispatched from.
   const primeResume = usePrimeResumeModel({
+    threadId: activeThread?.id,
     state: activeThread?.session?.resumeState,
     sessionStatus: activeThread?.session?.status,
     connected: !activeEnvironmentUnavailable,

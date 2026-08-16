@@ -558,6 +558,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // PA-B04 — the durable resume outcome for this thread and the recovery it
   // offers, derived from the same shared model the web banner uses.
   const primeResume = usePrimeResumeModel({
+    threadId: props.selectedThread?.id,
     state: props.selectedThread?.session?.resumeState,
     sessionStatus: props.selectedThread?.session?.status,
     connected: props.connectionStateLabel === "connected",

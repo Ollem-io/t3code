@@ -20,6 +20,7 @@ import type { PrimeResumeState } from "@t3tools/contracts";
  * in flight. Nothing in here invents a resume outcome.
  */
 export function usePrimeResumeModel(input: {
+  readonly threadId: string | null | undefined;
   readonly state: PrimeResumeState | undefined;
   readonly sessionStatus: PrimeResumeSessionStatus | undefined;
   readonly connected: boolean;
@@ -30,8 +31,15 @@ export function usePrimeResumeModel(input: {
   const [model, dispatch] = useReducer(primeResumeReduce, initialPrimeResumeModel);
 
   useEffect(() => {
+    // Resume state is a per-thread fact: switching threads resets the model so
+    // thread A's refusal can never block thread B's composer. The next effect
+    // re-applies whatever state the new thread actually has.
+    dispatch({ type: "thread" });
+  }, [input.threadId]);
+
+  useEffect(() => {
     if (input.state !== undefined) dispatch({ type: "state", state: input.state });
-  }, [input.state]);
+  }, [input.state, input.threadId]);
 
   useEffect(() => {
     if (input.sessionStatus !== undefined)

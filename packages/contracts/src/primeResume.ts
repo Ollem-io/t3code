@@ -263,6 +263,13 @@ export const PRIME_RESUME_FAILURE_REASONS = [
   "conflict",
   /** The caller is not permitted to become the writer for this session. */
   "unauthorized",
+  /**
+   * Validation passed but the process launch (or adoption) itself failed.
+   * Terminal by construction: a published `reconnecting` must never be the
+   * last word on a thread, even when what failed is the launch rather than
+   * the cursor.
+   */
+  "launchFailed",
 ] as const;
 
 export const PrimeResumeFailureReason = Schema.Literals(PRIME_RESUME_FAILURE_REASONS);

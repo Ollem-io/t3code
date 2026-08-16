@@ -123,6 +123,39 @@ describe("prime resume client model", () => {
     expect(primeResumeIntentFor(stalled, "fresh")).toEqual({ kind: "fresh", discardCursor: true });
   });
 
+  // PA-B04 regression: resume state is per-thread. A refusal on thread A must
+  // not survive a switch to thread B — a false banner there would block a
+  // composer with nothing to recover.
+  it("resets when the viewer switches threads", () => {
+    const refused = primeResumeReduce(model(), {
+      type: "state",
+      state: { status: "unavailable", reason: "corrupt" },
+    });
+    expect(primeResumeSurface("prime-agent", refused).composerBlocked).toBe(true);
+    const switched = primeResumeReduce(refused, { type: "thread" });
+    expect(switched).toEqual(initialPrimeResumeModel);
+    expect(primeResumeSurface("prime-agent", switched).kind).toBe("hidden");
+    expect(primeResumeBlocksComposer("prime-agent", switched)).toBe(false);
+  });
+
+  // PA-B04 regression: a launch that fails after validation publishes a
+  // terminal refusal instead of leaving `reconnecting` as the last word, and
+  // the launchFailed reason surfaces the full recovery set.
+  it("offers full recovery when the relaunch itself failed", () => {
+    const announced = primeResumeReduce(model(), {
+      type: "state",
+      state: { status: "reconnecting" },
+    });
+    const failed = primeResumeReduce(announced, {
+      type: "state",
+      state: { status: "unavailable", reason: "launchFailed" },
+    });
+    const surface = primeResumeSurface("prime-agent", failed);
+    expect(surface.kind).toBe("unavailable");
+    expect(surface.composerBlocked).toBe(true);
+    expect(surface.choices.map((choice) => choice.kind)).toEqual(["retry", "fork", "fresh"]);
+  });
+
   // PA-B04 regression: the retry that answers with the *same* refusal.
   // The host publishes `reconnecting` before it revalidates, so a refusal that
   // repeats itself still arrives as a transition; without it the client sat on

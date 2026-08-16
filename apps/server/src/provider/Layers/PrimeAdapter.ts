@@ -1177,6 +1177,29 @@ export const makePrimeAdapter = (
               const releaseOnFailure = async (cause: unknown): Promise<never> => {
                 if (!sessions.has(input.threadId) && !pending.has(input.threadId))
                   await options.writeGate?.release({ threadId: String(input.threadId) });
+                // A published `reconnecting` must always get its terminal
+                // answer: a launch that fails after resume validation passed
+                // publishes the refusal before the error propagates, so the
+                // banner offers recovery instead of spinning forever.
+                if (decision?.plan.kind === "adopt" || decision?.plan.kind === "relaunch") {
+                  options.onResumeState?.(String(input.threadId), {
+                    status: "unavailable",
+                    reason: "launchFailed",
+                  });
+                  resumePublishes = resumePublishes.then(
+                    () =>
+                      publishResumeState(String(input.threadId), {
+                        status: "unavailable",
+                        reason: "launchFailed",
+                      }),
+                    () =>
+                      publishResumeState(String(input.threadId), {
+                        status: "unavailable",
+                        reason: "launchFailed",
+                      }),
+                  );
+                  await resumePublishes.catch(() => undefined);
+                }
                 throw cause;
               };
               const key = startKey(input, cwd);

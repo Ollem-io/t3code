@@ -230,7 +230,13 @@ export type PrimeResumeEvent =
   | { readonly type: "state"; readonly state: PrimeResumeState }
   | { readonly type: "choice"; readonly intent: PrimeResumeIntent }
   | { readonly type: "sessionStatus"; readonly status: PrimeResumeSessionStatus }
-  | { readonly type: "disconnected" };
+  | { readonly type: "disconnected" }
+  /**
+   * The viewer moved to a different thread. Resume state is a per-thread fact:
+   * carrying thread A's refusal into thread B would show a false banner and
+   * block a composer that has nothing to recover.
+   */
+  | { readonly type: "thread" };
 
 export function primeResumeReduce(
   model: PrimeResumeModel,
@@ -271,6 +277,8 @@ export function primeResumeReduce(
       return model.state?.status === "resumed"
         ? { state: { status: "reconnecting" }, stalled: false, pending: undefined }
         : model;
+    case "thread":
+      return initialPrimeResumeModel;
   }
 }
 

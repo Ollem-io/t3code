@@ -385,4 +385,38 @@ describe("PA-B02 Prime exact adoption and resume", () => {
       }
     }).pipe(Effect.scoped, Effect.orDie),
   );
+
+  // PA-B04 regression: a relaunch whose validation passed but whose process
+  // launch failed must publish a terminal refusal — `reconnecting` is never
+  // the last word on a thread, so the banner offers recovery instead of
+  // spinning forever with the composer shut.
+  it.effect("publishes a terminal refusal when the relaunch itself fails", () =>
+    Effect.gen(function* () {
+      const input = yield* Effect.promise(fixture);
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => rm(input.root, { recursive: true, force: true })),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const adapter = yield* adapterFor(input, "process-one");
+          yield* adapter.startSession(startInput(input));
+          yield* adapter.stopSession(ThreadId.make(THREAD));
+        }),
+      );
+      // The recorded cursor still validates, but the runtime now dies at boot.
+      yield* Effect.promise(() =>
+        writeFile(input.binary, "#!/usr/bin/env node\nprocess.exit(17);\n"),
+      );
+      const outcome = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const adapter = yield* adapterFor(input, "process-two");
+          return yield* Effect.exit(adapter.startSession(startInput(input)));
+        }),
+      );
+      assert.equal(outcome._tag, "Failure", "a dead runtime must fail the start");
+      const states = input.published.map(([, state]) => state);
+      assert.deepStrictEqual(states.at(-2), { status: "reconnecting" });
+      assert.deepStrictEqual(states.at(-1), { status: "unavailable", reason: "launchFailed" });
+    }).pipe(Effect.scoped, Effect.orDie),
+  );
 });
