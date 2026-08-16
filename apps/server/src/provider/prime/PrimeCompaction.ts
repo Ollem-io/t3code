@@ -105,18 +105,30 @@ export class PrimeContextTracker {
       const usedTokens = boundedInt(event.usedTokens, 0);
       const maxTokens = boundedInt(event.maxTokens, 1);
       // Post-compaction usage may legitimately be absent; keep the prior value
-      // rather than fabricating one.
+      // rather than fabricating one. A partial update merges over the last known
+      // snapshot, because the runtime omitting `maxTokens` is not the runtime
+      // retracting the context window it already reported.
       const usage =
         usedTokens === undefined
           ? this.#state.usage
-          : { usedTokens, ...(maxTokens === undefined ? {} : { maxTokens }) };
+          : {
+              ...this.#state.usage,
+              usedTokens,
+              ...(maxTokens === undefined ? {} : { maxTokens }),
+            };
+      const status = COMPACTION_STATUS[event.phase];
       this.#state = {
         compaction: {
-          status: COMPACTION_STATUS[event.phase],
+          status,
           trigger: event.trigger,
           ...(reason === undefined ? {} : { reason }),
         },
-        ...(this.#state.retry === undefined ? {} : { retry: this.#state.retry }),
+        // Retry status belongs to the attempt that is still in flight. Once
+        // compaction reaches a terminal phase nothing is retrying, so carrying
+        // the last attempt forward would display a lie until session exit.
+        ...(status === "running" && this.#state.retry !== undefined
+          ? { retry: this.#state.retry }
+          : {}),
         ...(usage === undefined ? {} : { usage }),
       };
       return this.#publish();

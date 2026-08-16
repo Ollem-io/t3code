@@ -153,6 +153,9 @@ describe("ProviderCommandReactor", () => {
           readonly steer?: boolean;
           readonly followUps?: boolean;
           readonly followUpCancel?: boolean;
+          readonly compaction?: boolean;
+          readonly compactionCancel?: boolean;
+          readonly usageAndRetry?: boolean;
         }
       | undefined;
     readonly requiresNewThreadForModelChange?: boolean;
@@ -675,6 +678,125 @@ describe("ProviderCommandReactor", () => {
     );
     expect(failure).toBeDefined();
     expect(JSON.stringify(failure)).not.toContain("secret rejected runtime text");
+  });
+
+  // PA-A03 blocker regression: manual compaction and on-demand usage refresh must
+  // be reachable end to end. Before this, no command or event produced either
+  // operation, so the adapter handlers were dead paths.
+  it("dispatches compaction and usage-refresh requests as provider runtime operations", async () => {
+    const harness = await createHarness({
+      runtimeExtensions: { compaction: true, usageAndRetry: true },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-context-actions-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "prime-agent",
+          providerInstanceId: ProviderInstanceId.make("prime-agent"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-context-actions"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.compaction.request",
+        commandId: CommandId.make("cmd-compaction-request"),
+        threadId: ThreadId.make("thread-1"),
+        compactionId: "compaction-1",
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.usage.refresh",
+        commandId: CommandId.make("cmd-usage-refresh"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: "usage-1",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation.mock.calls.map(([operation]) => operation)).toEqual([
+      expect.objectContaining({
+        type: "compaction.request",
+        threadId: ThreadId.make("thread-1"),
+        compactionId: "compaction-1",
+      }),
+      expect.objectContaining({
+        type: "usage.snapshot.retry",
+        threadId: ThreadId.make("thread-1"),
+        requestId: "usage-1",
+      }),
+    ]);
+  });
+
+  it("fails closed when the runtime does not advertise the context capability", async () => {
+    const harness = await createHarness({ runtimeExtensions: { steer: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-context-ungated-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "prime-agent",
+          providerInstanceId: ProviderInstanceId.make("prime-agent"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-context-ungated"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.compaction.request",
+        commandId: CommandId.make("cmd-compaction-ungated"),
+        threadId: ThreadId.make("thread-1"),
+        compactionId: "compaction-ungated",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+    expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.compaction.failed"),
+    ).toBe(true);
+  });
+
+  it("rejects context actions without an active running session", async () => {
+    const harness = await createHarness({
+      runtimeExtensions: { compaction: true, usageAndRetry: true },
+    });
+    await expect(
+      harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.compaction.request",
+          commandId: CommandId.make("cmd-compaction-inactive"),
+          threadId: ThreadId.make("thread-1"),
+          compactionId: "compaction-inactive",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      ),
+    ).rejects.toThrow("Context runtime actions require an active running provider turn");
+    expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
   });
 
   it("rejects runtime actions without an active running session without projecting their text", async () => {

@@ -8,6 +8,9 @@ import {
   resolvePrimeCompactionRequest,
   resolvePrimeUsageRefresh,
 } from "./primeContext";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { PrimeContextStatus } from "./PrimeContextStatus";
 
 describe("prime context controls", () => {
   it("is unavailable without prime-agent or a negotiated capability", () => {
@@ -101,5 +104,55 @@ describe("prime context controls", () => {
     expect(renderPrimeContext({ compaction: { status: "succeeded", trigger: "manual" } })).toEqual([
       "Compacted (manual)",
     ]);
+  });
+});
+
+/**
+ * Blocker regression: the helpers above must be reachable from a real rendered
+ * surface, not only from this test. A dead module cannot satisfy "current
+ * context/compaction/retry state is visible".
+ */
+describe("PrimeContextStatus", () => {
+  const noop = async () => true;
+
+  it("renders current context status and both controls for a capable runtime", () => {
+    const markup = renderToStaticMarkup(
+      <PrimeContextStatus
+        providerName="prime-agent"
+        capabilities={{ compaction: true, compactionCancel: false, usageAndRetry: true }}
+        state={{
+          compaction: { status: "running", trigger: "manual" },
+          retry: { attempt: 1, maxAttempts: 3 },
+          usage: { usedTokens: 100, maxTokens: 200_000 },
+        }}
+        onRequestCompaction={noop}
+        onRefreshUsage={noop}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="prime-context-status"');
+    expect(markup).toContain("Context: 100/200000 tokens used");
+    expect(markup).toContain("Compacting (manual)");
+    expect(markup).toContain("Retrying: attempt 1 of 3");
+    expect(markup).toContain("Compact context");
+    expect(markup).toContain("Refresh usage");
+    // Compaction is explicitly distinguished from a checkpoint/revert, and no
+    // revert affordance is offered alongside it.
+    expect(markup).toContain("It is not a checkpoint and does not revert your work.");
+    expect(markup).not.toMatch(/>\s*(Revert|Restore|Roll back)/i);
+  });
+
+  it("renders nothing for a runtime that advertises no context capability", () => {
+    expect(
+      renderToStaticMarkup(
+        <PrimeContextStatus
+          providerName="codex"
+          capabilities={undefined}
+          state={undefined}
+          onRequestCompaction={noop}
+          onRefreshUsage={noop}
+        />,
+      ),
+    ).toBe("");
   });
 });

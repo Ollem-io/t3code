@@ -49,6 +49,8 @@ export type StartThreadTurnInput = CommandInput<"thread.turn.start">;
 export type InterruptThreadTurnInput = CommandInput<"thread.turn.interrupt">;
 export type SteerThreadInput = CommandInput<"thread.steer.add">;
 export type AddThreadFollowUpInput = CommandInput<"thread.follow-up.add">;
+export type RequestThreadCompactionInput = CommandInput<"thread.compaction.request">;
+export type RefreshThreadUsageInput = CommandInput<"thread.usage.refresh">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
@@ -277,13 +279,51 @@ export const startThreadTurn: (input: StartThreadTurnInput) => CommandEffect = E
   });
 });
 
-export const steerThread: (input: SteerThreadInput) => CommandEffect = Effect.fn("EnvironmentCommands.steerThread")(function* (input) {
+export const steerThread: (input: SteerThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.steerThread",
+)(function* (input) {
   const metadata = yield* timestampedCommandMetadata(input);
-  return yield* dispatch({ ...input, type: "thread.steer.add", commandId: metadata.commandId, createdAt: metadata.createdAt });
+  return yield* dispatch({
+    ...input,
+    type: "thread.steer.add",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
 });
-export const addThreadFollowUp: (input: AddThreadFollowUpInput) => CommandEffect = Effect.fn("EnvironmentCommands.addThreadFollowUp")(function* (input) {
+export const addThreadFollowUp: (input: AddThreadFollowUpInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.addThreadFollowUp",
+)(function* (input) {
   const metadata = yield* timestampedCommandMetadata(input);
-  return yield* dispatch({ ...input, type: "thread.follow-up.add", commandId: metadata.commandId, createdAt: metadata.createdAt });
+  return yield* dispatch({
+    ...input,
+    type: "thread.follow-up.add",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+/** Manual runtime compaction. Never a T3 checkpoint and never a revert. */
+export const requestThreadCompaction: (input: RequestThreadCompactionInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.requestThreadCompaction")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.compaction.request",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+/** On-demand re-read of the runtime's authoritative usage snapshot. */
+export const refreshThreadUsage: (input: RefreshThreadUsageInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.refreshThreadUsage",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.usage.refresh",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
 });
 
 export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEffect = Effect.fn(

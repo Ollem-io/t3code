@@ -158,13 +158,41 @@ Implemented:
   vocabulary; mobile composer copy states explicitly that compacting is not a checkpoint and does
   not revert work.
 - Runnable artifact `packages/contracts/fixtures/pa-a03-prime-context-transcript.mjs`, which
-  verifies its mapping tables against the shipped source, proves coalescing, and proves its own
-  convergence check is falsifiable.
+  verifies its mapping tables against the shipped source, proves coalescing, proves its own
+  convergence check is falsifiable, and walks the whole client-to-adapter chain so the two
+  operations cannot silently become dead paths again.
+
+Round-2 review repairs (both reviews rejected the first round):
+
+- **Manual compaction and usage refresh are reachable end to end.** New client commands
+  `thread.compaction.request` and `thread.usage.refresh` flow through the decider
+  (`thread.compaction-requested` / `thread.usage-refresh-requested`) into the provider command
+  reactor, which builds the `compaction.request` / `usage.snapshot.retry` operations. Both
+  require a live running turn and are gated on the _negotiated_ capability read at dispatch time,
+  never on a stored flag; a runtime that does not advertise the capability produces a
+  user-visible failure activity and no native call. Client-supplied identifiers are validated
+  against the branded runtime-extension shape, so no identifier is ever invented.
+- **Context state is projected as current status.** `session.context.updated` now folds into
+  `OrchestrationSession.contextState` (new nullable `context_state_json` column, migration 042).
+  Snapshots replace, so attached clients converge; byte-identical snapshots write nothing; and
+  terminal turn/session/runtime-error transitions clear the snapshot so a stale "Compacting" can
+  never survive.
+- **Both clients render it.** Web mounts `PrimeContextStatus` above the composer with the
+  context/compaction/retry lines and the Compact context / Refresh usage controls; mobile renders
+  the same lines and controls in the composer runtime block. Controls are disabled with a stated
+  reason rather than hidden, and the not-a-checkpoint copy is shared source on both surfaces.
+- **Retry status no longer outlives its attempt**, and a partial `compaction_update` merges over
+  the last known usage instead of dropping a `maxTokens` the runtime never retracted.
+- **The runtime-capability publication gate** now covers every flag the session contract can
+  carry, so a runtime advertising only context management is no longer stripped.
+- Focused-verification test paths now match the frozen contract exactly:
+  `apps/web/src/components/chat/prime-context.test.tsx` and
+  `apps/mobile/src/features/threads/prime-context.test.tsx`.
 
 Visual evidence is truthfully **not captured**: UI-launch permission was not granted. Exact steps
 once granted — web: `vp run dev` in a worktree, open the printed `pairingUrl:`, start a Prime
-Agent thread, run a turn, trigger compaction, and screenshot the context/compaction status rows
-in the work log; mobile: `test-t3-mobile` against the same server and screenshot the composer
+Agent thread, run a turn, press **Compact context** in the status row above the composer, and
+screenshot the context/compaction status rows; mobile: `test-t3-mobile` against the same server and screenshot the composer
 runtime block with `compaction` on and off.
 
 ## Pending milestones

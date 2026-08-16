@@ -154,7 +154,53 @@ export function verifyDerivedFromSource() {
   return true;
 }
 
+/**
+ * The transcript is only meaningful if a user can actually produce it. Walk the
+ * whole chain for both manual operations: client command -> decider event ->
+ * reactor operation -> adapter, plus the read-model projection and the two
+ * client surfaces that render it.
+ */
+export function verifyReachable() {
+  const link = (file, needles) => {
+    const source = read(file);
+    for (const needle of needles) {
+      if (!source.includes(needle)) throw new Error(`unreachable: ${file} is missing ${needle}`);
+    }
+  };
+  link("packages/contracts/src/orchestration.ts", [
+    '"thread.compaction.request"',
+    '"thread.usage.refresh"',
+    '"thread.compaction-requested"',
+    '"thread.usage-refresh-requested"',
+    "OrchestrationSessionContextState",
+  ]);
+  link("packages/client-runtime/src/operations/commands.ts", [
+    "requestThreadCompaction",
+    "refreshThreadUsage",
+  ]);
+  link("apps/server/src/orchestration/decider.ts", [
+    'case "thread.compaction.request":',
+    'case "thread.usage.refresh":',
+  ]);
+  link("apps/server/src/orchestration/Layers/ProviderCommandReactor.ts", [
+    '"compaction.request"',
+    '"usage.snapshot.retry"',
+  ]);
+  link("apps/server/src/provider/Layers/PrimeAdapter.ts", [
+    '"compaction.request"',
+    '"usage.snapshot.retry"',
+  ]);
+  link("apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts", [
+    "session-context-snapshot",
+    "contextState: nextContextState",
+  ]);
+  link("apps/web/src/components/ChatView.tsx", ["<PrimeContextStatus"]);
+  link("apps/mobile/src/features/threads/ThreadComposer.tsx", ["renderPrimeContext"]);
+  return true;
+}
+
 export function verifyTranscript() {
+  verifyReachable();
   verifyDerivedFromSource();
   verifyConvergence();
   verifyFalsifiable();
@@ -164,6 +210,6 @@ export function verifyTranscript() {
 if (process.argv[1] !== undefined && NodeURL.fileURLToPath(import.meta.url) === process.argv[1]) {
   verifyTranscript();
   console.log(
-    "PA-A03 Prime context transcript verified (source-derived, coalesced, proven falsifiable)",
+    "PA-A03 Prime context transcript verified (reachable end-to-end, source-derived, coalesced, proven falsifiable)",
   );
 }

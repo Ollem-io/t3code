@@ -324,6 +324,89 @@ describe("ProviderRuntimeIngestion", () => {
     };
   }
 
+  // PA-A03 blocker regression: the canonical context snapshot must reach the read
+  // model as current state. Before this it produced only append-only scrollback,
+  // so no client could show current context/compaction/retry status.
+  it("projects the authoritative context snapshot onto the session and clears it on terminal events", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-context-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-context"),
+      createdAt: now,
+    });
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "running");
+
+    harness.emit({
+      type: "session.context.updated",
+      eventId: asEventId("evt-context-running"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-context"),
+      createdAt: now,
+      payload: {
+        compaction: { status: "running", trigger: "manual" },
+        retry: { attempt: 1, maxAttempts: 3 },
+        usage: { usedTokens: 100, maxTokens: 200_000 },
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.contextState?.compaction.status === "running",
+    );
+    const running = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(running?.session?.contextState).toEqual({
+      compaction: { status: "running", trigger: "manual" },
+      retry: { attempt: 1, maxAttempts: 3 },
+      usage: { usedTokens: 100, maxTokens: 200_000 },
+    });
+
+    // Snapshots replace, so every attached client converges on the same value.
+    harness.emit({
+      type: "session.context.updated",
+      eventId: asEventId("evt-context-succeeded"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-context"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: {
+        compaction: { status: "succeeded", trigger: "manual" },
+        usage: { usedTokens: 4_200, maxTokens: 200_000 },
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.contextState?.compaction.status === "succeeded",
+    );
+    const succeeded = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(succeeded?.session?.contextState?.retry).toBeUndefined();
+    expect(succeeded?.session?.contextState?.usage).toEqual({
+      usedTokens: 4_200,
+      maxTokens: 200_000,
+    });
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-context-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-context"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: { state: "completed" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.contextState?.compaction.status === "idle",
+    );
+  });
+
   it("replaces authoritative action snapshots for independent reads and clears them on terminal events", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -107,6 +107,48 @@ describe("prime context tracker", () => {
     expect(tracker.applyUsage({ usedTokens: 3 })).toBeUndefined();
   });
 
+  // Review regression: a terminal compaction phase must not keep showing a retry
+  // attempt that is no longer in flight.
+  it("clears retry status once compaction reaches a terminal phase", () => {
+    const { tracker } = trackerWithClock();
+    tracker.apply({ type: "retry_update", attempt: 1, maxAttempts: 3 } as never);
+    const published = tracker.apply({
+      type: "compaction_update",
+      phase: "completed",
+      trigger: "manual",
+    } as never);
+    expect(published?.retry).toBeUndefined();
+  });
+
+  it("keeps retry status visible while compaction is still running", () => {
+    const { tracker } = trackerWithClock();
+    tracker.apply({ type: "retry_update", attempt: 2, maxAttempts: 3 } as never);
+    const published = tracker.apply({
+      type: "compaction_update",
+      phase: "started",
+      trigger: "automatic",
+    } as never);
+    expect(published?.retry).toEqual({ attempt: 2, maxAttempts: 3 });
+  });
+
+  // Review regression: omitting maxTokens is not the runtime retracting the
+  // context window it already reported.
+  it("merges partial compaction usage over the last known snapshot", () => {
+    const { tracker } = trackerWithClock();
+    tracker.applyUsage({ usedTokens: 100, maxTokens: 200_000, compactsAutomatically: true });
+    const published = tracker.apply({
+      type: "compaction_update",
+      phase: "completed",
+      trigger: "manual",
+      usedTokens: 4_200,
+    } as never);
+    expect(published?.usage).toEqual({
+      usedTokens: 4_200,
+      maxTokens: 200_000,
+      compactsAutomatically: true,
+    });
+  });
+
   it("tracks retry attempts", () => {
     const { tracker } = trackerWithClock();
     expect(tracker.apply({ type: "retry_update", attempt: 1, maxAttempts: 3 } as never)).toEqual({

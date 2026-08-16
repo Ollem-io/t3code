@@ -326,6 +326,38 @@ export type OrchestrationSessionActionState = typeof OrchestrationSessionActionS
 export const EMPTY_ORCHESTRATION_SESSION_ACTION_STATE: OrchestrationSessionActionState =
   Object.freeze({ queuedCount: 0, steering: Object.freeze([]), followUps: Object.freeze([]) });
 
+/**
+ * Runtime context management state. Deliberately mirrors the canonical
+ * `session.context.updated` snapshot: replacement is the only reconciliation,
+ * and compaction here is never a T3 checkpoint.
+ */
+export const OrchestrationSessionContextState = Schema.Struct({
+  compaction: Schema.Struct({
+    status: Schema.Literals(["idle", "running", "succeeded", "failed", "cancelled"]),
+    trigger: Schema.Literals(["manual", "automatic"]),
+    reason: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+  }),
+  retry: Schema.optional(
+    Schema.Struct({
+      attempt: NonNegativeInt.check(Schema.isLessThanOrEqualTo(64)),
+      maxAttempts: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(64))),
+      reason: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+    }),
+  ),
+  usage: Schema.optional(
+    Schema.Struct({
+      usedTokens: NonNegativeInt,
+      maxTokens: Schema.optional(PositiveInt),
+      inputTokens: Schema.optional(NonNegativeInt),
+      outputTokens: Schema.optional(NonNegativeInt),
+      compactsAutomatically: Schema.optional(Schema.Boolean),
+    }),
+  ),
+});
+export type OrchestrationSessionContextState = typeof OrchestrationSessionContextState.Type;
+export const EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE: OrchestrationSessionContextState =
+  Object.freeze({ compaction: Object.freeze({ status: "idle", trigger: "automatic" }) });
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -348,6 +380,8 @@ export const OrchestrationSession = Schema.Struct({
   updatedAt: IsoDateTime,
   /** Native authoritative action snapshot; absent means this runtime has not supplied one. */
   actionState: Schema.optional(OrchestrationSessionActionState),
+  /** Native authoritative context/compaction/retry snapshot; absent means none supplied. */
+  contextState: Schema.optional(OrchestrationSessionContextState),
   runtimeCapabilities: Schema.optional(
     Schema.Struct({
       steer: Schema.optional(Schema.Boolean),
@@ -931,6 +965,25 @@ const ThreadFollowUpAddCommand = Schema.Struct({
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)),
   createdAt: IsoDateTime,
 });
+/**
+ * Manual runtime compaction. This is the runtime's own context management and
+ * never a T3 checkpoint, so it carries no revert target.
+ */
+const ThreadCompactionRequestCommand = Schema.Struct({
+  type: Schema.Literal("thread.compaction.request"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  compactionId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+/** On-demand re-read of the runtime's authoritative usage snapshot. */
+const ThreadUsageRefreshCommand = Schema.Struct({
+  type: Schema.Literal("thread.usage.refresh"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -999,6 +1052,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnStartCommand,
   ThreadSteerAddCommand,
   ThreadFollowUpAddCommand,
+  ThreadCompactionRequestCommand,
+  ThreadUsageRefreshCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1029,6 +1084,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnStartCommand,
   ThreadSteerAddCommand,
   ThreadFollowUpAddCommand,
+  ThreadCompactionRequestCommand,
+  ThreadUsageRefreshCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1151,6 +1208,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-interrupt-requested",
   "thread.steer-add-requested",
   "thread.follow-up-add-requested",
+  "thread.compaction-requested",
+  "thread.usage-refresh-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1348,6 +1407,16 @@ export const ThreadFollowUpAddRequestedPayload = Schema.Struct({
   followUpId: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
+export const ThreadCompactionRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  compactionId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadUsageRefreshRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
 
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -1536,6 +1605,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.follow-up-add-requested"),
     payload: ThreadFollowUpAddRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.compaction-requested"),
+    payload: ThreadCompactionRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.usage-refresh-requested"),
+    payload: ThreadUsageRefreshRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

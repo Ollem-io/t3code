@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vite-plus/test";
 import {
   PRIME_COMPACTION_NOT_CHECKPOINT,
@@ -101,5 +103,33 @@ describe("prime context controls", () => {
     expect(renderPrimeContext({ compaction: { status: "succeeded", trigger: "manual" } })).toEqual([
       "Compacted (manual)",
     ]);
+  });
+});
+
+/**
+ * Blocker regression: these helpers must have a production caller. React Native
+ * has no render harness in this suite, so reachability is asserted against the
+ * composer source and the screen that supplies its handlers — a dead module is
+ * exactly the defect this guards.
+ */
+describe("prime context wiring", () => {
+  const read = (relative: string) => readFileSync(new URL(relative, import.meta.url), "utf8");
+
+  it("renders context status and both controls from the composer", () => {
+    const composer = read("./ThreadComposer.tsx");
+    expect(composer).toContain("renderPrimeContext");
+    expect(composer).toContain("resolvePrimeCompactionRequest");
+    expect(composer).toContain("resolvePrimeUsageRefresh");
+    expect(composer).toContain("session?.contextState");
+    expect(composer).toContain("Compact context");
+    expect(composer).toContain("Refresh usage");
+  });
+
+  it("dispatches real compaction and usage-refresh commands from the thread screen", () => {
+    const screen = read("./ThreadRouteScreen.tsx");
+    expect(screen).toContain("threadEnvironment.requestCompaction");
+    expect(screen).toContain("threadEnvironment.refreshUsage");
+    expect(screen).toContain("onRequestCompaction={handleRequestCompaction}");
+    expect(screen).toContain("onRefreshUsage={handleRefreshUsage}");
   });
 });
