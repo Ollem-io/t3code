@@ -87,6 +87,13 @@ describe("prime goals and heartbeats surface", () => {
       "Sweep flaky tests · every hour · Paused",
       "Resident Prime Agent session owned by T3 thread thread-1 · Stop session to end it",
     ]);
+    // A resident board with no renderable rows still discloses its cause.
+    expect(
+      renderPrimeGoalBoard({ heartbeats: [], resident: { owner: "T3 thread thread-1" } }, live),
+    ).toEqual([
+      "An owned schedule keeps this session resident but cannot be displayed exactly",
+      "Resident Prime Agent session owned by T3 thread thread-1 · Stop session to end it",
+    ]);
   });
 
   it("always offers the exact reverse of every state", () => {

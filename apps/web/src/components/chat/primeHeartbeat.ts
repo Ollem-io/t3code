@@ -151,6 +151,11 @@ export function renderPrimeGoalBoard(
   return [
     ...(board.goal ? [renderPrimeGoal(board.goal)] : []),
     ...board.heartbeats.map(renderPrimeHeartbeat),
+    // Residency with no rendered rows means an owned schedule exists whose
+    // identity the contract cannot display; the cause must still be disclosed.
+    ...(board.resident && board.heartbeats.length === 0
+      ? ["An owned schedule keeps this session resident but cannot be displayed exactly"]
+      : []),
     ...(board.resident
       ? [`Resident Prime Agent session owned by ${board.resident.owner} · Stop session to end it`]
       : []),

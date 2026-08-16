@@ -159,7 +159,9 @@ export const primeOwnedHeartbeats = (
  *
  * Residency is reported only while an owned heartbeat actually needs it: a
  * disclosure that outlives its cause would leave a "stop resident session"
- * control pointing at nothing.
+ * control pointing at nothing. The gate is the owned set, not the rendered
+ * rows — an owned schedule whose id the contract cannot brand is dropped from
+ * the list, but the daemon it keeps resident is real and must stay disclosed.
  */
 export const primeGoalBoard = (input: {
   readonly goal?: PrimeNativeGoal | undefined;
@@ -174,7 +176,7 @@ export const primeGoalBoard = (input: {
   return {
     ...(goal ? { goal } : {}),
     heartbeats,
-    ...(input.resident === true && heartbeats.length > 0 && owner ? { resident: { owner } } : {}),
+    ...(input.resident === true && input.owned.size > 0 && owner ? { resident: { owner } } : {}),
   };
 };
 

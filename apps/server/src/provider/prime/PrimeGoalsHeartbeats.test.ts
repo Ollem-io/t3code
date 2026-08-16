@@ -179,6 +179,17 @@ describe("Prime goal and heartbeat mapping", () => {
       }).resident,
       undefined,
     );
+    // An owned schedule whose id the contract cannot brand is dropped from the
+    // rendered list, but the daemon it keeps resident is real: residency stays
+    // disclosed even when nothing is renderable.
+    const unbrandable = primeGoalBoard({
+      heartbeats: [heartbeat({ heartbeatId: "1hb" })],
+      owned: owned("1hb"),
+      resident: true,
+      owner: "T3 thread t",
+    });
+    assert.deepStrictEqual(unbrandable.heartbeats, []);
+    assert.deepStrictEqual(unbrandable.resident, { owner: "T3 thread t" });
   });
 
   it("produces a board the canonical contract accepts", () => {
