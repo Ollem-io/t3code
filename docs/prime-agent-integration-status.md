@@ -52,8 +52,9 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-A02.1  | PA-A02 review-debt cleanup                                         | Done — `2d8772c1` |
 | PA-A03    | Context usage, compaction, retry, bounded status UI                | Done — `f8218111` |
 | PA-A04    | Prime commands, skills, prompt templates                           | Done — `44c23c2c` |
+| PA-A05    | Rich extension UI and transient status integration                 | Done — `251b823c` |
 
-Completed total: **21 of 31 milestones** (PA-A02.1 added to the original 30).
+Completed total: **22 of 31 milestones** (PA-A02.1 added to the original 30).
 
 Note on "merged to main": the run's milestone merges advance the run `main`
 lineage descending from public `origin/main` commit `9e201941a`. By maintainer
@@ -229,12 +230,19 @@ Delivered: Prime command/skill/prompt-template discovery normalized into a per-s
 
 Accepted non-blockers to carry forward: stale-command error copy promises a refresh no client can trigger (no `command.discover` producer after session start); `commandDiscovery: true` over-advertises `command.invoke`/`skill.*` operations the adapter truthfully refuses; a latent bind-vs-ingestion ordering race could drop a session's catalog with no re-discovery path; visual evidence still pending UI-launch permission.
 
+## PA-A05 (merged)
+
+**PA-A05 — Rich extension UI and transient status integration** was dual-approved on exact SHA `c2f9537a` (two workflow rounds: round 1 rejected by code/security because cancelled/timed-out dialogs were rendered as "User input submitted" — the truthful-resolution fields never reached the projection or clients — repaired; final round dual APPROVE with zero blockers, Luna-verified watch passes) and merged to `main` at `251b823c` on 2026-08-16.
+
+Delivered: bounded per-session extension notice board (migration 044, 8-entry cap, byte-identical dedupe), blocking Prime dialogs with truthful pending/resolved/cancelled states and native timeouts, non-blocking notices routed off the transcript, web `PrimeExtensionStatus` and mobile composer status block; dead sessions show nothing; runnable artifact `packages/contracts/fixtures/pa-a05-prime-extension-ui-transcript.mjs`.
+
+Accepted non-blockers to carry forward: answer-vs-timeout race can double-send an `extension_ui_response` for one correlation id; notice-board updates are deduplicated but not rate-limited; the client liveness gate (`running`/`ready`) is narrower than the server's (anything but `stopped`), hiding boards published between turns; visual evidence still pending UI-launch permission.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A05    | Rich extension UI and transient status integration               | Next                            |
-| PA-A06    | Subagents, observation, Agents-surface controls                  | Pending                         |
+| PA-A06    | Subagents, observation, Agents-surface controls                  | Next                            |
 | PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Pending                         |
 | PA-A08    | Session naming/forking and Alpha integration/docs                | Pending                         |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                         |
