@@ -215,3 +215,50 @@ heartbeat through create/pause/resume/stop) through the shipped mapper
 (`PrimeGoalsHeartbeats.ts`), the shipped canonical contract, and the shipped
 client projection, and prints the confirmation copy.
 `PrimeGoalsHeartbeatsTranscript.test.ts` keeps that wiring honest in CI.
+
+## PA-A08 session naming, forking, and the Alpha gate
+
+Prime 0.7.2 exposes `set_session_name`, `get_fork_messages`, `fork`, and
+`clone`, and reports the current name with a `session_name_update` snapshot. T3
+maps that onto the provider-neutral `session.identity.updated` card and the
+generic `thread.rename` / `thread.fork` runtime operations, gated on
+`namingAndForking`.
+
+- **Exact names or none.** A rename is sent only when the bounded form matches
+  what the user typed after trimming. Anything else is refused with the reason:
+  renaming a session to something other than what was asked is worse than
+  refusing.
+- **Labels, never transcript.** A fork point carries the runtime's own id, a
+  bounded label (its preview, or `User message N` when there is none), and its
+  position in the runtime's ordering. Message bodies never cross the boundary,
+  and an id the wire contract cannot brand is dropped rather than renamed.
+- **The page is bounded and says so.** At most twenty of the most recent
+  representable points are published, with a truncation flag. A longer
+  conversation offers a window, not an unbounded list.
+- **The thread is created after the fork, never before.** The reactor calls the
+  provider first and dispatches `thread.create` only on its confirmation, so a
+  refused, failed, or cancelled fork leaves no half-created thread. The client
+  chooses the new thread id, so a retry resolves to the same thread.
+- **Ancestry is a T3 record, not a cursor.** `forkedFrom` (migration 047) holds
+  the source thread, the fork-point label, and the source thread's latest
+  checkpoint at that moment. It is readable with no Prime Agent installed, and
+  nothing in it can reattach to a provider session.
+- **The forked session is handed over in-process, once.** `fork`/`clone` answer
+  with the new native session id; the adapter keeps it in a bounded, expiring,
+  one-shot map keyed by the new thread and spends it on that thread's first
+  session start (`new_session { parentSession }`). A restart, an expiry, or a
+  thread that is never opened degrades to a fresh session — truthfully, with an
+  empty identity card. Nothing is persisted, and no resume cursor is created.
+- **Reverse states exist.** Rename again, cancel the fork confirmation, and
+  navigate to (or archive) the resulting thread. A dead session offers none of
+  it, and a runtime without `namingAndForking` explains itself instead of
+  hiding.
+
+`packages/contracts/fixtures/pa-a08-prime-fork-transcript.mjs` runs a scripted
+session through the shipped mapper (`PrimeFork.ts`), the shipped canonical
+contract and reducer, the shipped capability gate, and the shipped client
+projection. `PrimeForkTranscript.test.ts` keeps that wiring honest in CI, and
+`apps/server/integration/primeAgentAlpha.integration.test.ts` is the phase gate:
+every Alpha operation is refused without its own flag, every Alpha snapshot
+converges on two independent clients and clears when the session exits, and each
+Alpha surface explains an older runtime rather than hiding.

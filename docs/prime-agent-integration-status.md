@@ -268,11 +268,50 @@ Review round 3 repairs: the ownership record is per thread and outlives any one 
 
 Known gaps to raise at review: visual evidence is still pending UI-launch permission; the native heartbeat command and event names are the declaration baseline this repository has been building against and could not be re-verified against an installed `prime-agent` on this host; ownership handles are recorded only where the platform can prove a process incarnation (Linux `/proc`), matching the existing PA-M06 ownership boundary.
 
+## PA-A08 (implemented, awaiting review)
+
+**PA-A08 — Session naming/fork affordances and Alpha phase integration/docs** is implemented on
+`dev/prime-agent-perfect-integration-20260813/pa-a08` and has not been reviewed or merged.
+
+Delivered: Prime `set_session_name`, `get_fork_messages`, `fork`/`clone`, and the
+`session_name_update` snapshot mapped onto a provider-neutral session identity card
+(`session.identity.updated`, migration 047, twenty most-recent fork points with a truncation flag,
+labels never message bodies, ids dropped rather than renamed); `thread.rename` and `thread.fork`
+runtime operations gated on `namingAndForking`; T3 thread ancestry (`forkedFrom`: source thread,
+fork-point label, and the source thread's latest checkpoint) recorded on the forked thread and
+readable with no Prime Agent installed and rendered on both clients as a fork-origin line with an
+"Open source thread" reverse-navigation control, mounted outside the Prime Agent controls so it
+survives a dead session and an uninstalled provider; the forked thread created only after the provider confirms
+the fork, so a refused or cancelled fork leaves nothing behind; the forked native session handed to
+its new thread by a bounded, expiring, one-shot in-process handoff (`new_session { parentSession }`)
+that degrades to a fresh session rather than to a stale pointer; web Agents-surface panel and mobile
+composer block with rename, fork-point choice, the "this is not durable resume" disclosure, and a
+truthful explanation on runtimes without the capability; the integrated Alpha gate
+(`apps/server/integration/primeAgentAlpha.integration.test.ts`); and graduated user, internals, and
+operations documentation. Runnable artifact:
+`packages/contracts/fixtures/pa-a08-prime-fork-transcript.mjs`.
+
+Known gaps to raise at review: an unopened fork leaves a Prime session record that T3 never deletes
+(destructive deletion is out of scope) — it is disclosed in the operations doc rather than cleaned
+up; the fork handoff is process-local, so a fork taken immediately before a restart degrades to a
+fresh session with an empty identity card; the fork-point page is re-read at session start and at
+each turn end rather than on demand, so a client that has been open across no turns can render a page
+one command behind (the adapter re-checks, and refuses a point it no longer offers); the native
+naming and forking command names are the declaration baseline this repository has been building
+against and could not be re-verified against an installed `prime-agent` on this host; and visual
+evidence is truthfully **not captured** because UI-launch permission was never granted — no browser,
+Electron, or simulator was launched. Exact steps once granted — web: `vp run dev` in a worktree, open
+the printed `pairingUrl:`, start a Prime Agent thread, run one turn, open the Agents panel, and
+screenshot the session-identity block before and after a rename and with the fork disclosure open,
+then open the forked thread and screenshot the fork-origin banner and its "Open source thread"
+control; mobile: `test-t3-mobile` against the same server and screenshot the composer identity block
+with `namingAndForking` on and off, plus the fork-origin row on the forked thread.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A08    | Session naming/forking and Alpha integration/docs                | Next                            |
+| PA-A08    | Session naming/forking and Alpha integration/docs                | Implemented; awaiting review    |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                         |
 | PA-B03    | Server-side single-writer arbitration and conflict receipts      | Pending after B01; precedes B02 |
 | PA-B02    | Exact adoption/resume state machine and compatibility validation | Pending after B01/B03           |

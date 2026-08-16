@@ -611,6 +611,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
+            ...(event.payload.forkedFrom === undefined
+              ? {}
+              : { forkedFrom: event.payload.forkedFrom }),
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1155,6 +1158,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           ? { agentRoster: event.payload.session.agentRoster }
           : {}),
         ...(event.payload.session.goalBoard ? { goalBoard: event.payload.session.goalBoard } : {}),
+        ...(event.payload.session.identityCard
+          ? { identityCard: event.payload.session.identityCard }
+          : {}),
         ...(event.payload.session.contextState
           ? { contextState: event.payload.session.contextState }
           : {}),

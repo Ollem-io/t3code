@@ -125,6 +125,17 @@ import {
   renderPrimeGoal,
   renderPrimeHeartbeat,
 } from "./primeHeartbeat";
+import {
+  PRIME_FORK_OPEN_SOURCE_LABEL,
+  PRIME_FORK_TRUNCATED_NOTE,
+  PRIME_FORK_WHOLE_SESSION_LABEL,
+  primeForkDraftDecision,
+  primeIdentityView,
+  primeRenameDraftDecision,
+  renderPrimeForkOrigin,
+  renderPrimeForkPoint,
+  type PrimeThreadForkOrigin,
+} from "./primeFork";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -185,6 +196,17 @@ export interface ThreadComposerProps {
     heartbeatId: string,
     action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
   ) => Promise<boolean>;
+  /** Rename this thread's provider session. Reversible by renaming again. */
+  readonly onRenameSession?: (name: string) => Promise<boolean>;
+  /** Fork this thread's provider session into a new thread the host creates. */
+  readonly onForkSession?: (forkPointId: string | undefined) => Promise<boolean>;
+  /**
+   * Ancestry of this thread, straight off the thread record. Rendered outside
+   * the Prime Agent block so a fork keeps its origin and its way back with no
+   * live session and no Prime Agent installed.
+   */
+  readonly forkOrigin?: PrimeThreadForkOrigin | null | undefined;
+  readonly onOpenSourceThread?: (threadId: string) => void;
   /** Explicit, bounded re-read of the runtime command catalog. Never polled. */
   readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
@@ -357,6 +379,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const [heartbeatTitle, setHeartbeatTitle] = useState("");
   const [heartbeatIntervalSeconds, setHeartbeatIntervalSeconds] = useState(1_200);
   const [heartbeatConfirming, setHeartbeatConfirming] = useState(false);
+  // Naming and fork draft state. Renaming is reversible, so it commits
+  // directly; forking makes a session and a thread, so it passes through a
+  // disclosure first.
+  const [sessionName, setSessionName] = useState("");
+  const [forkPointId, setForkPointId] = useState<string | undefined>(undefined);
+  const [forkConfirming, setForkConfirming] = useState(false);
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
     isEditorFocused: isFocused,
@@ -406,6 +434,27 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session,
     props.selectedThread.session?.runtimeCapabilities,
     { title: heartbeatTitle, intervalSeconds: heartbeatIntervalSeconds },
+  );
+  // Ancestry is read from the thread, not the session, so it outlives both.
+  const forkOriginThreadId = props.forkOrigin?.threadId ?? null;
+  // The session's own name and the points it can be forked from.
+  const primeIdentitySurface = primeIdentityView(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+    props.selectedThread.session?.identityCard,
+    props.selectedThread.session,
+  );
+  const primeRenameDraft = primeRenameDraftDecision(
+    props.selectedThread.session?.identityCard,
+    props.selectedThread.session,
+    props.selectedThread.session?.runtimeCapabilities,
+    sessionName,
+  );
+  const primeForkDraft = primeForkDraftDecision(
+    props.selectedThread.session?.identityCard,
+    props.selectedThread.session,
+    props.selectedThread.session?.runtimeCapabilities,
+    forkPointId,
   );
   const primeCommands = props.selectedThread.session?.commandCatalog?.commands;
   const primeCommandCatalogRef = useRef(primeCommands);
@@ -1540,6 +1589,170 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             ) : null}
           </View>
         )}
+        {/* Session name and fork points: an older runtime explains itself here
+            instead of rendering nothing. Renaming commits directly because
+            renaming again is its own reverse; forking passes through the
+            "this is not resume" disclosure, and cancelling it dispatches
+            nothing at all. */}
+        {primeIdentitySurface.kind === "hidden" ? null : (
+          <View className="mt-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            {primeIdentitySurface.kind === "unavailable" ? (
+              <Text className="mt-1 text-xs text-foreground-muted">
+                {primeIdentitySurface.reason}
+              </Text>
+            ) : null}
+            {primeIdentitySurface.kind === "identity" ? (
+              <>
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {primeIdentitySurface.name === undefined
+                    ? "This Prime Agent session has no name yet."
+                    : `Session name: ${primeIdentitySurface.name}`}
+                </Text>
+                <View className="mt-1 flex-row items-center gap-2">
+                  <TextInput
+                    accessibilityLabel="Session name"
+                    value={sessionName}
+                    onChangeText={setSessionName}
+                    className="flex-1 rounded-md border border-border px-2 py-1 text-xs text-foreground"
+                  />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Rename session"
+                    accessibilityState={{ disabled: !primeRenameDraft.canRename }}
+                    disabled={!primeRenameDraft.canRename}
+                    onPress={() => {
+                      if (!primeRenameDraft.canRename) return;
+                      void props.onRenameSession?.(primeRenameDraft.name);
+                      setSessionName("");
+                    }}
+                    className={
+                      primeRenameDraft.canRename
+                        ? "rounded-md border border-border px-2 py-1"
+                        : "rounded-md border border-border px-2 py-1 opacity-50"
+                    }
+                  >
+                    <Text className="text-xs text-foreground">Rename session</Text>
+                  </Pressable>
+                </View>
+                {primeRenameDraft.canRename ? null : (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeRenameDraft.reason}
+                  </Text>
+                )}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={PRIME_FORK_WHOLE_SESSION_LABEL}
+                  accessibilityState={{ selected: forkPointId === undefined }}
+                  onPress={() => {
+                    setForkPointId(undefined);
+                    setForkConfirming(false);
+                  }}
+                  className="mt-1 rounded-md border border-border px-2 py-1"
+                >
+                  <Text className="text-xs text-foreground">
+                    {forkPointId === undefined
+                      ? `\u2713 ${PRIME_FORK_WHOLE_SESSION_LABEL}`
+                      : PRIME_FORK_WHOLE_SESSION_LABEL}
+                  </Text>
+                </Pressable>
+                {primeIdentitySurface.forkPoints.map((point) => (
+                  <Pressable
+                    key={point.forkPointId}
+                    accessibilityRole="button"
+                    accessibilityLabel={renderPrimeForkPoint(point)}
+                    accessibilityState={{ selected: forkPointId === point.forkPointId }}
+                    onPress={() => {
+                      setForkPointId(point.forkPointId);
+                      setForkConfirming(false);
+                    }}
+                    className="mt-1 rounded-md border border-border px-2 py-1"
+                  >
+                    <Text className="text-xs text-foreground">
+                      {forkPointId === point.forkPointId
+                        ? `\u2713 ${renderPrimeForkPoint(point)}`
+                        : renderPrimeForkPoint(point)}
+                    </Text>
+                  </Pressable>
+                ))}
+                {primeIdentitySurface.truncated ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {PRIME_FORK_TRUNCATED_NOTE}
+                  </Text>
+                ) : null}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Fork session"
+                  accessibilityState={{ disabled: !primeForkDraft.canFork }}
+                  disabled={!primeForkDraft.canFork}
+                  onPress={() => {
+                    setForkConfirming(true);
+                  }}
+                  className={
+                    primeForkDraft.canFork
+                      ? "mt-1 rounded-md border border-border px-2 py-1"
+                      : "mt-1 rounded-md border border-border px-2 py-1 opacity-50"
+                  }
+                >
+                  <Text className="text-xs text-foreground">Fork session</Text>
+                </Pressable>
+                {primeForkDraft.canFork ? null : (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeForkDraft.reason}
+                  </Text>
+                )}
+                {primeForkDraft.canFork && forkConfirming ? (
+                  <View className="mt-1 flex-row items-center gap-2">
+                    <Text className="flex-1 text-xs text-foreground-muted">
+                      {primeForkDraft.disclosure}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Fork into a new thread"
+                      onPress={() => {
+                        setForkConfirming(false);
+                        void props.onForkSession?.(forkPointId);
+                      }}
+                      className="rounded-md border border-border px-2 py-1"
+                    >
+                      <Text className="text-xs text-foreground">Fork into a new thread</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel fork"
+                      onPress={() => {
+                        setForkConfirming(false);
+                      }}
+                      className="rounded-md border border-border px-2 py-1"
+                    >
+                      <Text className="text-xs text-foreground">Cancel</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </>
+            ) : null}
+          </View>
+        )}
+        {/* Thread ancestry and the way back. Ungated on purpose: this is a T3
+            thread record, so it must survive an exited session, an older
+            runtime, and Prime Agent being uninstalled. */}
+        {props.forkOrigin ? (
+          <View className="mt-2 flex-row items-center gap-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700">
+            <Text className="flex-1 text-xs text-foreground-muted">
+              {renderPrimeForkOrigin(props.forkOrigin)}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={PRIME_FORK_OPEN_SOURCE_LABEL}
+              onPress={() => {
+                if (forkOriginThreadId === null) return;
+                props.onOpenSourceThread?.(forkOriginThreadId);
+              }}
+              className="rounded-md border border-border px-2 py-1"
+            >
+              <Text className="text-xs text-foreground">{PRIME_FORK_OPEN_SOURCE_LABEL}</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {/* Queue count */}
         {props.queueCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>

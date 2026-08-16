@@ -159,6 +159,7 @@ describe("ProviderCommandReactor", () => {
           readonly commandDiscovery?: boolean;
           readonly tasks?: boolean;
           readonly goals?: boolean;
+          readonly namingAndForking?: boolean;
         }
       | undefined;
     readonly requiresNewThreadForModelChange?: boolean;
@@ -1034,6 +1035,153 @@ describe("ProviderCommandReactor", () => {
     await harness.drain();
 
     expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
+  });
+
+  // PA-A08: naming and forking. A rename must leave one name on screen, and a
+  // fork must create a thread only after the runtime actually forked.
+  const namingSession = (now: string, commandId: string) => ({
+    type: "thread.session.set" as const,
+    commandId: CommandId.make(commandId),
+    threadId: ThreadId.make("thread-1"),
+    session: {
+      threadId: ThreadId.make("thread-1"),
+      status: "running" as const,
+      providerName: ProviderDriverKind.make("prime-agent"),
+      providerInstanceId: ProviderInstanceId.make("prime-agent"),
+      runtimeMode: "approval-required" as const,
+      activeTurnId: asTurnId("turn-naming"),
+      lastError: null,
+      updatedAt: now,
+      identityCard: {
+        forkPoints: [
+          {
+            forkPointId: "msg-2",
+            label: "Add the migration",
+            role: "user" as const,
+            index: 1,
+          },
+        ],
+      },
+    },
+    createdAt: now,
+  });
+
+  it("renames the provider session and keeps the thread title in step", async () => {
+    const harness = await createHarness({ runtimeExtensions: { namingAndForking: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(harness.engine.dispatch(namingSession(now, "cmd-naming-session")));
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.rename",
+        commandId: CommandId.make("cmd-session-rename"),
+        threadId: ThreadId.make("thread-1"),
+        name: "Migration work",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation.mock.calls.map(([operation]) => operation)).toEqual([
+      expect.objectContaining({ type: "thread.rename", title: "Migration work" }),
+    ]);
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.title).toBe("Migration work");
+  });
+
+  it("creates the forked thread with its ancestry only after the provider forks", async () => {
+    const harness = await createHarness({ runtimeExtensions: { namingAndForking: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(harness.engine.dispatch(namingSession(now, "cmd-fork-session")));
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.fork",
+        commandId: CommandId.make("cmd-session-fork"),
+        threadId: ThreadId.make("thread-1"),
+        forkThreadId: ThreadId.make("thread-fork-1"),
+        forkPointId: "msg-2",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation.mock.calls.map(([operation]) => operation)).toEqual([
+      expect.objectContaining({
+        type: "thread.fork",
+        forkPointId: "msg-2",
+        forkThreadId: ThreadId.make("thread-fork-1"),
+      }),
+    ]);
+    const forked = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-fork-1"),
+    );
+    // Ancestry is recorded on the thread itself, so it stays readable with no
+    // Prime Agent installed and no session alive.
+    expect(forked?.forkedFrom?.threadId).toBe(ThreadId.make("thread-1"));
+    expect(forked?.forkedFrom?.forkPointLabel).toBe("Add the migration");
+  });
+
+  it("leaves no half-created thread when the provider refuses the fork", async () => {
+    const harness = await createHarness({ runtimeExtensions: { namingAndForking: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch(namingSession(now, "cmd-fork-refused-session")),
+    );
+    harness.executeRuntimeOperation.mockReturnValue(
+      Effect.die(new Error("provider rejected fork")) as never,
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.fork",
+        commandId: CommandId.make("cmd-session-fork-refused"),
+        threadId: ThreadId.make("thread-1"),
+        forkThreadId: ThreadId.make("thread-fork-refused"),
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    const readModel = await harness.readModel();
+    expect(
+      readModel.threads.some((entry) => entry.id === ThreadId.make("thread-fork-refused")),
+    ).toBe(false);
+    const source = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(
+      source?.activities.some((activity) => activity.kind === "provider.session-fork.failed"),
+    ).toBe(true);
+  });
+
+  it("fails closed when the runtime does not advertise naming and forking", async () => {
+    const harness = await createHarness({ runtimeExtensions: { steer: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(harness.engine.dispatch(namingSession(now, "cmd-naming-ungated")));
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.rename",
+        commandId: CommandId.make("cmd-session-rename-ungated"),
+        threadId: ThreadId.make("thread-1"),
+        name: "Migration work",
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.fork",
+        commandId: CommandId.make("cmd-session-fork-ungated"),
+        threadId: ThreadId.make("thread-1"),
+        forkThreadId: ThreadId.make("thread-fork-ungated"),
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
+    expect(
+      (await harness.readModel()).threads.some(
+        (entry) => entry.id === ThreadId.make("thread-fork-ungated"),
+      ),
+    ).toBe(false);
   });
 
   it("fails closed when command discovery is not advertised", async () => {

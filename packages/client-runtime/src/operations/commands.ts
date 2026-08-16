@@ -58,6 +58,8 @@ export type CreateThreadHeartbeatInput = CommandInput<"thread.heartbeat.create">
 export type PauseThreadHeartbeatInput = CommandInput<"thread.heartbeat.pause">;
 export type ResumeThreadHeartbeatInput = CommandInput<"thread.heartbeat.resume">;
 export type DeleteThreadHeartbeatInput = CommandInput<"thread.heartbeat.delete">;
+export type RenameThreadSessionInput = CommandInput<"thread.session.rename">;
+export type ForkThreadSessionInput = CommandInput<"thread.session.fork">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
@@ -418,6 +420,34 @@ export const deleteThreadHeartbeat: (input: DeleteThreadHeartbeatInput) => Comma
       createdAt: metadata.createdAt,
     });
   });
+
+/** Rename the provider session bound to this thread; the thread title follows. */
+export const renameThreadSession: (input: RenameThreadSessionInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.renameThreadSession",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.session.rename",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+/**
+ * Fork this thread's provider session into a new thread the caller names, so a
+ * retry resolves to the same thread instead of creating a second one.
+ */
+export const forkThreadSession: (input: ForkThreadSessionInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.forkThreadSession",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.session.fork",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
 
 export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.interruptThreadTurn",

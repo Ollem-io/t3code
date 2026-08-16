@@ -1,6 +1,6 @@
 # Use Prime Agent in T3 Code
 
-> **MVP shipped. Alpha and Beta remain proposed.** This guide records the delivered MVP contract and proposed later phases. Capability/version gating still applies; later-phase text is not a current-product promise.
+> **MVP and Alpha shipped. Beta remains proposed.** This guide records the delivered MVP and Alpha contract and the proposed Beta phase. Capability/version gating still applies: every Alpha control below appears only when the installed Prime Agent advertises the capability it needs, and explains itself when it does not. Beta text is not a current-product promise.
 
 ## What runs where
 
@@ -269,7 +269,7 @@ Every accepted turn must leave the UI in a terminal state exactly once. A provid
 
 # Alpha
 
-> All capabilities below are approved Alpha target scope and are delivered through Alpha milestones rather than treated as permanently optional omissions. A control is enabled only when the installed Prime version advertises the required capability and T3 provides a suitable entry point, visible current/pending state, remote behavior, and a reverse action. Until its milestone lands—or on an installation that lacks the required capability—it remains disabled with an explanation while MVP continues to work.
+> Everything below has shipped. A control is enabled only when the installed Prime version advertises the required capability, and T3 always provides an entry point, visible current/pending state, remote behavior, and a reverse action. On an installation that lacks a capability, that one control stays disabled with an explanation while everything else — including the whole MVP — keeps working.
 
 ## 10. Steer now or follow up later
 
@@ -338,13 +338,21 @@ Available actions:
 
 **Example 2 — heartbeat:** schedule a heartbeat to check CI every 20 minutes. Confirm the residency notice, then the row shows the interval, the next run, and the owner. **Pause** stops runs, **Resume** restarts them, and **Delete** removes that one schedule. Delete the last one and T3 stops claiming the session is resident on your behalf.
 
-## 16. Prime session naming or forking
+## 16. Prime session naming and forking
 
-Prime-native rename and fork/clone affordances are Alpha target scope, gated on T3 keeping Prime identity, T3 thread ancestry, and checkpoints honest. They do not create a durable restart-resume guarantee.
+Name the Prime session behind a thread, and fork it into a new thread when you want to try something without losing where you are. Both appear in the Agents surface on web and desktop, and in the composer block on mobile, whenever the installed Prime Agent supports them. An older Prime says so in that spot instead of leaving it blank.
 
-**Example 1 — rename:** rename the Prime session from a T3 action; T3 shows the new provider-session label without silently changing the T3 project.
+**Renaming** asks Prime for exactly the name you typed. A name that would have to be shortened or cleaned up is refused with the reason, rather than quietly becoming a different name. The T3 thread title follows the session, so one piece of work never carries two names. Renaming again is the reverse; there is nothing to undo.
 
-**Example 2 — fork:** fork before experimenting. The new T3 thread displays its ancestry and gets its own writable Prime identity. If identity/checkpoint consistency cannot be guaranteed, the control is absent rather than approximate.
+**Forking** starts a new Prime session from a point you choose — one of the recent messages, or the whole session — and creates a new T3 thread for it. The list of fork points is the most recent ones; longer conversations say so rather than listing everything. Forking is disclosed before it happens, and cancelling that confirmation does nothing at all: no session, no thread.
+
+The new thread records where it came from: the thread it was forked from, the label of the point it was forked at, and that thread's latest checkpoint at that moment. A forked thread shows that line at the top on web and desktop, and above the composer on mobile, with **Open source thread** next to it to take you back. That ancestry is a T3 record and sits outside the Prime Agent controls, so it stays readable and navigable even with Prime Agent uninstalled and every session long gone. The original thread is untouched.
+
+**This is not durable resume.** A fork starts a _new_ session now. It does not reopen a past session, and nothing about it survives a server restart as a resumable conversation; durable resume is Beta.
+
+**Example 1 — rename:** rename the session to `Migration work`. The session name and the thread title both read `Migration work`; rename it again whenever you like.
+
+**Example 2 — fork:** pick `Adapter drafted` as the fork point, confirm the notice, and a new thread appears carrying that ancestry. Your original thread keeps running exactly as it was.
 
 # Beta
 

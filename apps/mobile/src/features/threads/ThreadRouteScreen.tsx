@@ -27,6 +27,7 @@ import {
 } from "../../components/AndroidScreenHeader";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { uuidv4 } from "../../lib/uuid";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { connectionTone } from "../connection/connectionTone";
 
@@ -237,6 +238,8 @@ function ThreadRouteContent(
     threadEnvironment.deleteHeartbeat,
     "heartbeat delete",
   );
+  const renameThreadSession = useAtomCommand(threadEnvironment.renameSession, "session rename");
+  const forkThreadSession = useAtomCommand(threadEnvironment.forkSession, "session fork");
   const refreshThreadCommands = useAtomCommand(
     threadEnvironment.refreshCommands,
     "thread command refresh",
@@ -581,6 +584,54 @@ function ThreadRouteContent(
       return result._tag !== "Failure";
     },
     [observeThreadAgent, selectedThread, unobserveThreadAgent],
+  );
+
+  // Renaming the provider session. Reversible by renaming again, so it commits
+  // without a confirmation; the host keeps the T3 thread title in step.
+  const handleRenameSession = useCallback(
+    async (name: string): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const result = await renameThreadSession({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, name },
+      });
+      return result._tag !== "Failure";
+    },
+    [renameThreadSession, selectedThread],
+  );
+
+  // Forking. The thread id is chosen here so a retried fork resolves to the
+  // same thread; the host creates that thread only after the runtime confirms
+  // the fork.
+  const handleForkSession = useCallback(
+    async (forkPointId: string | undefined): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const result = await forkThreadSession({
+        environmentId: selectedThread.environmentId,
+        input: {
+          threadId: selectedThread.id,
+          // A real v4 uuid, never a clock reading: two forks in the same
+          // millisecond must not collide onto one thread id.
+          forkThreadId: ThreadId.make(`fork-${uuidv4()}`),
+          ...(forkPointId === undefined ? {} : { forkPointId }),
+        },
+      });
+      return result._tag !== "Failure";
+    },
+    [forkThreadSession, selectedThread],
+  );
+
+  // Reverse navigation for a fork. Ancestry is a thread record, so this works
+  // with the Prime Agent session gone and the provider uninstalled.
+  const handleOpenSourceThread = useCallback(
+    (sourceThreadId: string) => {
+      if (!selectedThread) return;
+      navigation.navigate("Thread", {
+        environmentId: selectedThread.environmentId,
+        threadId: ThreadId.make(sourceThreadId),
+      });
+    },
+    [navigation, selectedThread],
   );
 
   // Creating owned scheduled work. The disclosure has already been shown and
@@ -954,6 +1005,10 @@ function ThreadRouteContent(
           onToggleAgentObservation={handleToggleAgentObservation}
           onCreateHeartbeat={handleCreateHeartbeat}
           onHeartbeatAction={handleHeartbeatAction}
+          onRenameSession={handleRenameSession}
+          onForkSession={handleForkSession}
+          forkOrigin={selectedThread.forkedFrom ?? null}
+          onOpenSourceThread={handleOpenSourceThread}
           onRefreshCommands={handleRefreshCommands}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}

@@ -19,14 +19,17 @@ import {
   RuntimeTaskId,
   GoalId,
   HeartbeatId,
+  RuntimeExtensionId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
 
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
@@ -40,6 +43,8 @@ import {
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { PrimeRpcClient } from "../prime/PrimeRpcClient.ts";
+import { PrimeRpcForkMessagesResponse } from "../prime/PrimeRpcProtocol.ts";
+import type { PrimeRpcForkMessage } from "../prime/PrimeRpcProtocol.ts";
 import { spawnPrimeRpcTransport } from "../prime/PrimeRpcProcessTransport.ts";
 import { primeHomeFingerprint, primeResourceLayout } from "../prime/PrimeResourceLayout.ts";
 import {
@@ -57,6 +62,16 @@ import {
   normalizePrimeSessionStats,
 } from "../prime/PrimeCompaction.ts";
 import { PRIME_GET_COMMANDS_COMMAND, PrimeCommandCache } from "../prime/PrimeCommands.ts";
+import {
+  EMPTY_PRIME_SESSION_IDENTITY,
+  primeForkDecision,
+  primeForkRefusalMessage,
+  primeRenameDecision,
+  primeRenameRefusalMessage,
+  primeSessionIdentity,
+  primeSessionIdentityFingerprint,
+  type PrimeSessionIdentity,
+} from "../prime/PrimeFork.ts";
 import {
   applyPrimeNotice,
   isBlockingPrimeUiRequest,
@@ -160,6 +175,12 @@ type SessionContext = {
   heartbeatMutations: Promise<void>;
   goalBoard: PrimeGoalBoard;
   goalBoardFingerprint: string;
+  /** The name the runtime last reported for this session, if it has one. */
+  sessionName: string | undefined;
+  /** The runtime's last fork-message list, unfiltered; the card is derived from it. */
+  forkMessages: ReadonlyArray<PrimeRpcForkMessage>;
+  identityCard: PrimeSessionIdentity;
+  identityFingerprint: string;
 };
 type PendingStart = { readonly key: string; readonly promise: Promise<ProviderSession> };
 
@@ -215,6 +236,20 @@ const resolvePrimeAttachmentPath = (
     ? (resolveAttachmentPath({ attachmentsDir, attachment }) ?? undefined)
     : undefined;
 
+/**
+ * Reads the fork-point list out of a native answer, or nothing at all.
+ *
+ * Returning `undefined` rather than throwing at the protocol boundary is the
+ * point: naming and forking are optional, and a runtime that answers this probe
+ * in a shape T3 does not recognize should lose the fork page, not the session.
+ */
+const decodePrimeForkMessages = (
+  response: unknown,
+): ReadonlyArray<PrimeRpcForkMessage> | undefined => {
+  const decoded = Schema.decodeUnknownResult(PrimeRpcForkMessagesResponse)(response);
+  return Result.isSuccess(decoded) ? decoded.success.data.messages : undefined;
+};
+
 export const makePrimeAdapter = (
   settings: PrimeAgentSettings,
   options: PrimeAdapterOptions,
@@ -233,6 +268,44 @@ export const makePrimeAdapter = (
      * same status string constantly; a byte-identical board must not cost a
      * canonical event, a projection write, or a client repaint.
      */
+    /**
+     * Sessions this adapter forked, waiting for the T3 thread they were made
+     * for to open.
+     *
+     * A fork produces a Prime session immediately; the thread that owns it
+     * starts moments later, in this same process. The handoff is therefore
+     * process-local, bounded, and one-shot: it is spent by the first session
+     * start for that thread and expires on its own, so a restart or an
+     * abandoned fork degrades to a fresh session rather than to a stale
+     * pointer. Nothing here is durable and nothing here is a resume cursor.
+     */
+    const forkHandoffs = new Map<
+      string,
+      { readonly sessionId: string; readonly expiresAt: number }
+    >();
+    const FORK_HANDOFF_TTL_MS = 600_000;
+    const MAX_FORK_HANDOFFS = 8;
+    const recordForkHandoff = async (threadId: string, sessionId: string) => {
+      const now = await Effect.runPromise(Clock.currentTimeMillis);
+      for (const [key, handoff] of forkHandoffs)
+        if (handoff.expiresAt <= now) forkHandoffs.delete(key);
+      // Bounded on purpose: an unbounded map of pointers to sessions nobody
+      // opened is a slow leak. The oldest entry loses, and its thread simply
+      // starts a fresh session.
+      while (forkHandoffs.size >= MAX_FORK_HANDOFFS) {
+        const oldest = forkHandoffs.keys().next();
+        if (oldest.done) break;
+        forkHandoffs.delete(oldest.value);
+      }
+      forkHandoffs.set(threadId, { sessionId, expiresAt: now + FORK_HANDOFF_TTL_MS });
+    };
+    const takeForkHandoff = async (threadId: string): Promise<string | undefined> => {
+      const handoff = forkHandoffs.get(threadId);
+      if (!handoff) return undefined;
+      forkHandoffs.delete(threadId);
+      const now = await Effect.runPromise(Clock.currentTimeMillis);
+      return handoff.expiresAt > now ? handoff.sessionId : undefined;
+    };
     const publishNotices = async (context: SessionContext) => {
       const notices = Array.from(context.notices.values());
       const fingerprint = JSON.stringify(notices);
@@ -289,6 +362,52 @@ export const makePrimeAdapter = (
           ...(board.resident ? { resident: board.resident } : {}),
         }),
       );
+    };
+    /**
+     * Rebuilds the identity card and publishes it only when it changed.
+     *
+     * The card is derived, never accumulated: the runtime's current name plus
+     * its current fork-message list produce it every time, so a fork point the
+     * runtime stopped reporting simply stops being offered.
+     */
+    const publishIdentity = async (context: SessionContext) => {
+      const card = primeSessionIdentity({
+        ...(context.sessionName ? { name: context.sessionName } : {}),
+        messages: context.forkMessages,
+      });
+      const fingerprint = primeSessionIdentityFingerprint(card);
+      if (fingerprint === context.identityFingerprint) return;
+      context.identityCard = card;
+      context.identityFingerprint = fingerprint;
+      await offerEvents(
+        context.normalizer.identitySnapshot({
+          ...(card.name ? { name: card.name } : {}),
+          forkPoints: card.forkPoints.map((point) => ({
+            ...point,
+            forkPointId: RuntimeExtensionId.make(point.forkPointId),
+          })),
+          ...(card.truncated ? { truncated: true as const } : {}),
+        }),
+      );
+    };
+    /**
+     * Re-reads the fork-point page from the runtime.
+     *
+     * Called once at session start and once per finished turn rather than
+     * polled: a turn is exactly when new fork points appear, and a page that is
+     * one turn stale would offer a choice the runtime no longer has.
+     */
+    const refreshForkPoints = async (context: SessionContext) => {
+      const response = await context.client.command({ type: "get_fork_messages" });
+      if (!response.success || response.command !== "get_fork_messages")
+        throw new Error("get_fork_messages failed");
+      // An answer this build cannot read leaves the page exactly as it was. The
+      // alternative — failing the envelope closed, the way the heartbeat store
+      // does — would cost the whole session over an optional probe.
+      const messages = decodePrimeForkMessages({ ...response, command: "get_fork_messages" });
+      if (!messages) throw new Error("get_fork_messages answered an unreadable shape");
+      context.forkMessages = messages;
+      await publishIdentity(context);
     };
     /**
      * Records the exact ids of the heartbeats this session owns.
@@ -537,6 +656,10 @@ export const makePrimeAdapter = (
           heartbeatMutations: Promise.resolve(),
           goalBoard: EMPTY_PRIME_GOAL_BOARD,
           goalBoardFingerprint: primeGoalBoardFingerprint(EMPTY_PRIME_GOAL_BOARD),
+          sessionName: undefined,
+          forkMessages: [],
+          identityCard: EMPTY_PRIME_SESSION_IDENTITY,
+          identityFingerprint: primeSessionIdentityFingerprint(EMPTY_PRIME_SESSION_IDENTITY),
           ownershipPath: layout.ownership,
           processIdentity,
         };
@@ -583,6 +706,16 @@ export const makePrimeAdapter = (
               for (const heartbeatId of [...context.ownedHeartbeats])
                 if (!present.has(heartbeatId)) context.ownedHeartbeats.delete(heartbeatId);
               await publishGoals(context);
+            } else if (
+              envelope._tag === "known-event" &&
+              envelope.value.type === "session_name_update"
+            ) {
+              // The session name is identity, not transcript. An absent name
+              // means the session has none; T3 never keeps a name the runtime
+              // dropped.
+              canonicalEnvelope = false;
+              context.sessionName = envelope.value.name;
+              await publishIdentity(context);
             } else if (
               envelope._tag === "known-event" &&
               envelope.value.type === "extension_ui_request"
@@ -640,6 +773,11 @@ export const makePrimeAdapter = (
             for (const event of canonicalEnvelope ? normalizer.drain(envelope) : []) {
               await Effect.runPromise(Queue.offer(runtimeEvents, event));
             }
+            // A finished turn is exactly when new fork points appear. Best
+            // effort: a runtime that does not answer keeps the page it had
+            // rather than losing the ones it already published.
+            if (envelope._tag === "known-event" && envelope.value.type === "turn_end")
+              await refreshForkPoints(context).catch(() => undefined);
           }
         })();
         void transport.terminal.then(async (terminal) => {
@@ -682,10 +820,25 @@ export const makePrimeAdapter = (
             await Effect.runPromise(Queue.offer(runtimeEvents, event));
           }
         });
+        // A fork this adapter made for this thread is adopted now, in the same
+        // process that made it, by asking the runtime for a session whose
+        // parent is that fork. It is spent whether or not it works: a pointer
+        // that failed once must not be retried forever, and a thread whose
+        // handoff expired simply starts fresh — truthfully, with an empty
+        // identity card rather than an inherited one.
+        const forkedParent = await takeForkHandoff(String(input.threadId));
+        if (forkedParent !== undefined)
+          await context.client
+            .command({ type: "new_session", parentSession: forkedParent })
+            .catch(() => undefined);
         // Discovery is best effort and never gates session readiness: a runtime
         // that does not answer `get_commands` simply offers no catalog, and the
         // capability-gated surfaces stay hidden.
         await discoverCommands(context).catch(() => undefined);
+        // The identity card is read once at start for the same reason: a
+        // runtime that does not answer offers no rename or fork controls
+        // instead of empty ones that would fail.
+        await refreshForkPoints(context).catch(() => undefined);
         // A handle carried over from a previous session is only half of the
         // reverse path: the board is derived from the native store, so without
         // a resync the rehydrated heartbeat stays invisible and untargetable
@@ -1315,6 +1468,58 @@ export const makePrimeAdapter = (
               await persistHeartbeatOwnership(context);
               await publishGoals(context);
             });
+          if (operation.type === "thread.rename") {
+            // T3 asks for exactly what the user typed or refuses. A name that
+            // would be clamped is a different name, and silently renaming a
+            // session to something else is worse than saying no.
+            const decision = primeRenameDecision(operation.title);
+            if (!decision.allowed)
+              throw new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "executeRuntimeOperation",
+                issue: primeRenameRefusalMessage(decision.reason),
+              });
+            await expectSuccess(context, { type: "set_session_name", name: decision.name });
+            context.sessionName = decision.name;
+            await publishIdentity(context);
+            return;
+          }
+          if (operation.type === "thread.fork") {
+            const forkPointId =
+              operation.forkPointId === undefined ? undefined : String(operation.forkPointId);
+            // The published page is the authorization list, exactly as the
+            // heartbeat board is: a stale id from a client that rendered an
+            // older page, and an id fished out of somewhere else, both stop
+            // here without reaching the runtime.
+            const decision = primeForkDecision(context.identityCard, forkPointId);
+            if (!decision.allowed)
+              throw new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "executeRuntimeOperation",
+                issue: primeForkRefusalMessage(decision.reason),
+              });
+            const response = await context.client.command(
+              decision.forkPoint
+                ? { type: "fork" as const, messageId: decision.forkPoint.forkPointId }
+                : { type: "clone" as const },
+            );
+            if (!response.success || (response.command !== "fork" && response.command !== "clone"))
+              throw new Error("fork failed");
+            const sessionId = (response.data as { readonly sessionId?: string }).sessionId;
+            // The runtime names the session it just made; that answer is the
+            // only way T3 learns which session the new thread should open. A
+            // fork that answers without one fails rather than leaving the
+            // caller to create a thread pointing at nothing.
+            if (typeof sessionId !== "string" || sessionId.length === 0)
+              throw new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "executeRuntimeOperation",
+                issue: "Prime Agent did not name the session it forked, so the fork was not kept.",
+              });
+            if (operation.forkThreadId !== undefined)
+              await recordForkHandoff(String(operation.forkThreadId), sessionId);
+            return;
+          }
           if (operation.type !== "steer.add" && operation.type !== "follow-up.add")
             throw new ProviderAdapterValidationError({
               provider: PROVIDER,
@@ -1512,6 +1717,10 @@ export const makePrimeAdapter = (
           // Prime 0.7.2 has no goal-change RPC, so `goal.*` operations stay
           // refused rather than mapped onto something that does another thing.
           goals: true,
+          // `set_session_name`, `get_fork_messages`, and `fork`/`clone`. The
+          // fork is handed to the new thread inside this process; it is not a
+          // durable resume cursor and never claims to be one.
+          namingAndForking: true,
         },
       },
       startSession,

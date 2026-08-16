@@ -46,3 +46,21 @@ keeps a Prime session alive past a turn, so it has its own cleanup rules:
 ## Rollback/downgrade
 
 Disable Prime, drain/stop its proven owned work, and deploy the previous T3 version. Preserve Prime settings, ownership records, sessions and unknown/newer fields verbatim for a later compatible re-enable; do not rewrite them to an older schema. A downgrade cannot promise resume of unproved opaque provider state. Re-enable only after a fresh isolated check.
+
+## Forked sessions
+
+Forking asks Prime to make a copy of a session; the new T3 thread opens it in
+the same server process, once, and thereafter owns it like any other session.
+
+- **No new cleanup surface.** The forked session is a Prime session record, the
+  same kind the original is. T3 does not delete Prime session records — that is
+  destructive and out of scope — so nothing here changes the ownership manifest
+  or the drain procedure.
+- **An unopened fork is inert.** If the new thread is never opened, or the
+  server restarts first, the in-process handoff expires and the thread starts a
+  fresh session. The copied Prime session stays where Prime put it and is
+  reported by Prime, not by T3.
+- **Ancestry survives a rollback.** `forked_from_json` is an additive nullable
+  column (migration 047). A downgrade leaves the column in place and every
+  thread readable; a thread with no ancestry is simply a thread that was created
+  rather than forked.

@@ -26,6 +26,7 @@ import {
   type OrchestrationSessionAgentRoster,
   EMPTY_ORCHESTRATION_SESSION_GOAL_BOARD,
   type OrchestrationSessionGoalBoard,
+  type OrchestrationSessionIdentityCard,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -186,6 +187,13 @@ function sameNoticeBoard(
 function sameGoalBoard(
   current: OrchestrationSessionGoalBoard | undefined,
   next: OrchestrationSessionGoalBoard,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
+function sameIdentityCard(
+  current: OrchestrationSessionIdentityCard | undefined,
+  next: OrchestrationSessionIdentityCard,
 ): boolean {
   return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
 }
@@ -1944,6 +1952,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2036,6 +2045,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2094,6 +2104,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2203,6 +2214,7 @@ const make = Effect.gen(function* () {
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               agentRoster: nextAgentRoster,
               ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2270,6 +2282,63 @@ const make = Effect.gen(function* () {
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               goalBoard: nextGoalBoard,
+              ...(thread.session.identityCard ? { identityCard: thread.session.identityCard } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // The session's name and the points a fork may start from. Identity, not
+      // transcript: a rename must not write a line into the conversation, and a
+      // fork-point page is a chooser, not history.
+      if (
+        event.type === "session.identity.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextIdentityCard: OrchestrationSessionIdentityCard = {
+          ...(event.payload.name === undefined ? {} : { name: event.payload.name }),
+          forkPoints: event.payload.forkPoints.map((point) => ({
+            forkPointId: String(point.forkPointId),
+            label: point.label,
+            role: point.role,
+            index: point.index,
+          })),
+          ...(event.payload.truncated ? { truncated: true as const } : {}),
+        };
+        if (!sameIdentityCard(thread.session.identityCard, nextIdentityCard)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-identity-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              identityCard: nextIdentityCard,
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2533,6 +2602,9 @@ const make = Effect.gen(function* () {
               ...(thread.session?.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session?.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
               ...(thread.session?.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session?.identityCard
+                ? { identityCard: thread.session.identityCard }
+                : {}),
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),

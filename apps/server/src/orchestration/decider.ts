@@ -371,6 +371,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          ...(command.forkedFrom === undefined ? {} : { forkedFrom: command.forkedFrom }),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -1176,6 +1177,67 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               : command.type === "thread.heartbeat.resume"
                 ? ("resume" as const)
                 : ("delete" as const),
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    // Naming and forking both act on a live provider session: a name is set on
+    // the running session, and a fork is taken from it. Neither is a durable
+    // operation on a stopped session, so neither pretends to be one.
+    case "thread.session.rename": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null || thread.session.status === "stopped") {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Renaming a provider session requires a live provider session.",
+          }),
+        );
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.session-rename-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          name: command.name,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.session.fork": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null || thread.session.status === "stopped") {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Forking a provider session requires a live provider session.",
+          }),
+        );
+      }
+      // The caller names the thread the fork will become, so a retried fork
+      // resolves to the same thread instead of creating a second one. The
+      // thread itself is created only after the runtime confirms the fork.
+      yield* requireThreadAbsent({ readModel, command, threadId: command.forkThreadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.session-fork-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          forkThreadId: command.forkThreadId,
+          ...(command.forkPointId === undefined ? {} : { forkPointId: command.forkPointId }),
+          ...(command.title === undefined ? {} : { title: command.title }),
           createdAt: command.createdAt,
         },
       };
