@@ -22,6 +22,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { PrimeResumeState } from "./primeResume.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -513,6 +514,13 @@ export const OrchestrationSession = Schema.Struct({
   goalBoard: Schema.optional(OrchestrationSessionGoalBoard),
   /** Native session name and fork-point page; absent means this runtime supplied none. */
   identityCard: Schema.optional(OrchestrationSessionIdentityCard),
+  /**
+   * PA-B04 — the coarse durable-resume outcome for this thread, or absent when
+   * the runtime never had a durable session to reconnect to. Reason codes only;
+   * a client learns *that* an exact session refused to reopen, never where it
+   * lived or who else holds it.
+   */
+  resumeState: Schema.optional(PrimeResumeState),
   runtimeCapabilities: Schema.optional(
     Schema.Struct({
       steer: Schema.optional(Schema.Boolean),
@@ -1253,6 +1261,26 @@ const ThreadSessionForkCommand = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
   createdAt: IsoDateTime,
 });
+/**
+ * PA-B04 — the user's answer to a Prime Agent resume that refused.
+ *
+ * `retry` re-runs the same durable validation, so a refusal that was only
+ * transient (another writer that has since finished) can clear without losing
+ * anything. `fresh` is the explicit, confirmed choice to stop pointing this
+ * thread at its earlier session; `discardCursor` is what makes that honest,
+ * because a cursor that keeps refusing would otherwise leave the thread unable
+ * to start at all. Neither value deletes durable session data, and forking is
+ * deliberately not modelled here: it is already `thread.session.fork`.
+ */
+const ThreadPrimeResumeRecoverCommand = Schema.Struct({
+  type: Schema.Literal("thread.prime-resume.recover"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  intent: Schema.Literals(["retry", "fresh"]),
+  discardCursor: Schema.optional(Schema.Boolean),
+  createdAt: IsoDateTime,
+});
+
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -1332,6 +1360,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadHeartbeatDeleteCommand,
   ThreadSessionRenameCommand,
   ThreadSessionForkCommand,
+  ThreadPrimeResumeRecoverCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1373,6 +1402,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadHeartbeatDeleteCommand,
   ThreadSessionRenameCommand,
   ThreadSessionForkCommand,
+  ThreadPrimeResumeRecoverCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1503,6 +1533,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.heartbeat-action-requested",
   "thread.session-rename-requested",
   "thread.session-fork-requested",
+  "thread.prime-resume-recover-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1749,6 +1780,13 @@ export const ThreadSessionForkRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadPrimeResumeRecoverRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  intent: Schema.Literals(["retry", "fresh"]),
+  discardCursor: Schema.optional(Schema.Boolean),
+  createdAt: IsoDateTime,
+});
+
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
@@ -1976,6 +2014,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.session-fork-requested"),
     payload: ThreadSessionForkRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.prime-resume-recover-requested"),
+    payload: ThreadPrimeResumeRecoverRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

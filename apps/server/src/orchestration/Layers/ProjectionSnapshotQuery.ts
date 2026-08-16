@@ -19,6 +19,7 @@ import {
   OrchestrationSessionIdentityCard,
   OrchestrationSessionContextState,
   ProviderRuntimeCapabilities,
+  PrimeResumeState,
   ProjectScript,
   TurnId,
   type OrchestrationCheckpointSummary,
@@ -128,6 +129,7 @@ const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
     runtimeCapabilities: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(ProviderRuntimeCapabilities)),
     ),
+    resumeState: Schema.optional(Schema.NullOr(Schema.fromJsonString(PrimeResumeState))),
   }),
 );
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
@@ -360,6 +362,9 @@ function mapSessionRow(
       : {}),
     ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined
       ? { runtimeCapabilities: row.runtimeCapabilities }
+      : {}),
+    ...(row.resumeState !== null && row.resumeState !== undefined
+      ? { resumeState: row.resumeState }
       : {}),
   };
 }
@@ -663,7 +668,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           goal_board_json AS "goalBoard",
           identity_card_json AS "identityCard",
           context_state_json AS "contextState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          runtime_capabilities_json AS "runtimeCapabilities",
+          resume_state_json AS "resumeState"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
       `,
@@ -692,7 +698,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           goal_board_json AS "goalBoard",
           identity_card_json AS "identityCard",
           context_state_json AS "contextState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          runtime_capabilities_json AS "runtimeCapabilities",
+          resume_state_json AS "resumeState"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
           ON threads.thread_id = sessions.thread_id
@@ -725,7 +732,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           goal_board_json AS "goalBoard",
           identity_card_json AS "identityCard",
           context_state_json AS "contextState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          runtime_capabilities_json AS "runtimeCapabilities",
+          resume_state_json AS "resumeState"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
           ON threads.thread_id = sessions.thread_id
@@ -1131,7 +1139,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           goal_board_json AS "goalBoard",
           identity_card_json AS "identityCard",
           context_state_json AS "contextState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          runtime_capabilities_json AS "runtimeCapabilities",
+          resume_state_json AS "resumeState"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
         LIMIT 1
@@ -1653,6 +1662,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     : {}),
                   ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined
                     ? { runtimeCapabilities: row.runtimeCapabilities }
+                    : {}),
+                  ...(row.resumeState !== null && row.resumeState !== undefined
+                    ? { resumeState: row.resumeState }
                     : {}),
                 });
               }

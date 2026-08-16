@@ -336,6 +336,112 @@ describe("PrimeResumeCoordinator", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  // PA-B04 regression: a retry the user pressed must produce a visible answer.
+  // Before this, a cursor whose read fails refused *before* anything was
+  // published, so the retry published a state byte-identical to the one already
+  // on the thread, the projection dropped it as unchanged, and the client sat
+  // on its locally-entered "reconnecting" with a blocked composer and disabled
+  // buttons until the app was reloaded.
+  it("answers an announced retry with reconnecting and then the repeated refusal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pa-b04-retry-"));
+    const layout = layoutFor(root);
+    await mkdir(layout.session, { recursive: true });
+    await writeFile(layout.resumeCursor, "{not json");
+    const { coordinator, published } = await harness(
+      { cursorPath: () => layout.resumeCursor },
+      { seedCursor: false },
+    );
+    const first = await coordinator.resume("thread-a");
+    assert.deepStrictEqual(first.plan, { kind: "unavailable", reason: "corrupt" });
+    assert.deepStrictEqual(published, [{ status: "unavailable", reason: "corrupt" }]);
+
+    published.length = 0;
+    coordinator.forget("thread-a");
+    const retried = await coordinator.resume("thread-a", { announce: true });
+    assert.deepStrictEqual(retried.plan, { kind: "unavailable", reason: "corrupt" });
+    assert.deepStrictEqual(published, [
+      { status: "reconnecting" },
+      { status: "unavailable", reason: "corrupt" },
+    ]);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  // PA-B04 regression: a confirmed fresh start used to publish nothing at all
+  // (discarding the cursor makes the next decision a `fresh` plan, and a fresh
+  // plan was silent), so the refusal that the user had just resolved stayed on
+  // the session row and kept the composer shut for good.
+  it("publishes a terminal state when a confirmed fresh start discards the refusing cursor", async () => {
+    const { root, coordinator, published } = await harness({
+      // The capability set moved on since the cursor was written: the
+      // `capabilityMismatch` brick whose only way out is a fresh start.
+      capabilityDigest: () => primeCapabilityDigest({ runtimeExtensions: { steer: false } }),
+    });
+    const refused = await coordinator.resume("thread-a");
+    assert.deepStrictEqual(refused.plan, { kind: "unavailable", reason: "capabilityMismatch" });
+    assert.deepStrictEqual(published.at(-1), {
+      status: "unavailable",
+      reason: "capabilityMismatch",
+    });
+
+    published.length = 0;
+    assert.equal(await coordinator.discardCursor("thread-a"), true);
+    const afterFresh = await coordinator.resume("thread-a", { announce: true });
+    assert.deepStrictEqual(afterFresh.plan, { kind: "fresh" });
+    // `missing` is the only truthful terminal here — there is now no durable
+    // session — and it is the non-blocking surface that reopens the composer.
+    assert.deepStrictEqual(published, [
+      { status: "reconnecting" },
+      { status: "unavailable", reason: "missing" },
+    ]);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  // PA-B04 regression: the fresh start that a slow orphan un-did. `forget` and
+  // `discardCursor` orphan a running validation instead of cancelling it, so a
+  // late verdict from before the discard could land *after* the terminal state
+  // and put the refusal the user just resolved back on the thread.
+  it("silences a superseded attempt so it cannot overwrite a newer answer", async () => {
+    let releaseSlowRead: (() => void) | undefined;
+    const slow = new Promise<void>((resolve) => {
+      releaseSlowRead = resolve;
+    });
+    let reads = 0;
+    const { root, coordinator, published } = await harness({
+      // The first attempt blocks before it reads the cursor; the fresh start
+      // then runs to completion underneath it.
+      scopeForThread: async () => {
+        if ((reads += 1) === 1) await slow;
+        return scopeFor(root);
+      },
+      capabilityDigest: () => primeCapabilityDigest({ runtimeExtensions: { steer: false } }),
+    });
+    const orphan = coordinator.resume("thread-a", { announce: true });
+    coordinator.forget("thread-a");
+    assert.equal(await coordinator.discardCursor("thread-a"), true);
+    const afterFresh = await coordinator.resume("thread-a", { announce: true });
+    assert.deepStrictEqual(afterFresh.plan, { kind: "fresh" });
+    releaseSlowRead?.();
+    assert.deepStrictEqual((await orphan).plan, { kind: "fresh" });
+    // The winning attempt's terminal state is the last word. The orphan may
+    // have announced itself before it was superseded — a repeated
+    // `reconnecting` is deduplicated downstream and changes nothing — but its
+    // verdict never lands.
+    assert.deepStrictEqual(published.at(-1), { status: "unavailable", reason: "missing" });
+    assert.equal(
+      published.filter((state) => state.status === "unavailable").length,
+      1,
+      "a superseded attempt must not publish a verdict",
+    );
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("stays silent for an ordinary start on a thread that never had a session", async () => {
+    const { root, coordinator, published } = await harness({}, { seedCursor: false });
+    assert.deepStrictEqual((await coordinator.resume("thread-a")).plan, { kind: "fresh" });
+    assert.deepStrictEqual(published, []);
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("keeps a cursor recorded under an unreadable runtime version out of the compatible band", async () => {
     const { root, coordinator } = await harness(
       { agentVersion: async () => undefined },

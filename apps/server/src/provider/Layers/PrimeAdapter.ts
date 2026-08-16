@@ -17,6 +17,7 @@ import {
   type ProviderRuntimeOperation,
   type ProviderSession,
   type ProviderSessionStartInput,
+  EventId,
   RuntimeTaskId,
   GoalId,
   HeartbeatId,
@@ -425,10 +426,52 @@ export const makePrimeAdapter = (
             },
             acquireLease: (threadId) => writeGate.acquire({ threadId, operation: "activate" }),
             releaseLease: (threadId) => writeGate.release({ threadId }),
-            ...(options.onResumeState ? { publish: options.onResumeState } : {}),
+            // PA-B04: the coordinator's coarse outcome is what every client
+            // renders, so it is published onto the canonical runtime stream
+            // here rather than left to an optional caller. The extra callback
+            // stays supported for diagnostics; a host that supplies none still
+            // gets the event, which is what makes the state reachable at all.
+            publish: (threadId, state) => {
+              options.onResumeState?.(threadId, state);
+              // Serialised: a recovery publishes `reconnecting` and then its
+              // terminal state back to back, and a client that received them
+              // out of order would read a settled thread as still spinning.
+              resumePublishes = resumePublishes.then(
+                () => publishResumeState(threadId, state),
+                () => publishResumeState(threadId, state),
+              );
+              void resumePublishes;
+            },
           });
     const offerEvents = async (events: ReadonlyArray<ProviderRuntimeEvent>) => {
       for (const event of events) await Effect.runPromise(Queue.offer(runtimeEvents, event));
+    };
+    /** Keeps resume publishes in the order the coordinator produced them. */
+    let resumePublishes: Promise<void> = Promise.resolve();
+    /**
+     * PA-B04 — puts the coarse resume outcome on the canonical runtime stream.
+     *
+     * This cannot go through the session normalizer: the interesting states are
+     * published *before* a session context exists (and, for a refusal, when one
+     * never will), which is exactly when a client most needs to be told. The
+     * payload is the closed PA-B02 state and nothing else, so no path, owner or
+     * native id can ride along.
+     */
+    const publishResumeState = async (threadId: string, resume: PrimeResumeState) => {
+      const createdAt = await Effect.runPromise(nowIso);
+      await offerEvents([
+        {
+          // Unique per event, not per adapter instance: a counter restarts at 1
+          // with the process and would hand two different events one identity.
+          eventId: EventId.make(`prime-resume-${randomUUID()}`),
+          provider: PROVIDER,
+          providerInstanceId: options.instanceId,
+          threadId: ThreadId.make(threadId),
+          createdAt,
+          type: "session.resume.updated",
+          payload: { resume },
+        } as ProviderRuntimeEvent,
+      ]);
     };
     /**
      * Publishes the board only when it actually changed. Extensions repeat the
@@ -1098,7 +1141,22 @@ export const makePrimeAdapter = (
               // start is the data loss this milestone exists to prevent — so a
               // refusal surfaces as a validation error with a reason code and
               // the durable cursor is left exactly as it is.
-              const decision = await resume?.resume(String(input.threadId));
+              // PA-B04: an explicitly confirmed fresh start is the only thing
+              // allowed to stop this thread pointing at its earlier session, and
+              // it does so by discarding *this thread's* cursor before recovery
+              // runs — never by ignoring a cursor that refused. A cursor that
+              // cannot be proved ours is left in place, so the refusal simply
+              // repeats instead of becoming a silent new session.
+              if (input.resumeRecovery !== undefined) resume?.forget(String(input.threadId));
+              if (input.resumeRecovery === "fresh")
+                await resume?.discardCursor(String(input.threadId));
+              // A start the user asked for by pressing retry / start-new must
+              // publish its outcome even when that outcome repeats the refusal
+              // already on the thread; otherwise the client that shut its
+              // composer on the click never gets an answer.
+              const decision = await resume?.resume(String(input.threadId), {
+                announce: input.resumeRecovery !== undefined,
+              });
               if (decision?.plan.kind === "unavailable")
                 throw new ProviderAdapterValidationError({
                   provider: PROVIDER,
@@ -1119,6 +1177,29 @@ export const makePrimeAdapter = (
               const releaseOnFailure = async (cause: unknown): Promise<never> => {
                 if (!sessions.has(input.threadId) && !pending.has(input.threadId))
                   await options.writeGate?.release({ threadId: String(input.threadId) });
+                // A published `reconnecting` must always get its terminal
+                // answer: a launch that fails after resume validation passed
+                // publishes the refusal before the error propagates, so the
+                // banner offers recovery instead of spinning forever.
+                if (decision?.plan.kind === "adopt" || decision?.plan.kind === "relaunch") {
+                  options.onResumeState?.(String(input.threadId), {
+                    status: "unavailable",
+                    reason: "launchFailed",
+                  });
+                  resumePublishes = resumePublishes.then(
+                    () =>
+                      publishResumeState(String(input.threadId), {
+                        status: "unavailable",
+                        reason: "launchFailed",
+                      }),
+                    () =>
+                      publishResumeState(String(input.threadId), {
+                        status: "unavailable",
+                        reason: "launchFailed",
+                      }),
+                  );
+                  await resumePublishes.catch(() => undefined);
+                }
                 throw cause;
               };
               const key = startKey(input, cwd);

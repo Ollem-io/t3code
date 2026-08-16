@@ -58,6 +58,17 @@ export const ProviderSessionStartInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
+  /**
+   * PA-B04 — an explicit user recovery choice for a durable resume that
+   * refused. Absent is the normal path and must behave exactly as before.
+   *
+   * `retry` re-runs the same validation, so a transient refusal (a lease held
+   * by a writer that has since finished) can clear on its own. `fresh` is the
+   * only value that discards this thread's own resume cursor first, and it is
+   * honoured only by a runtime that owns one: nothing else on disk is touched,
+   * and no other thread's cursor is reachable from here.
+   */
+  resumeRecovery: Schema.optional(Schema.Literals(["retry", "fresh"])),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

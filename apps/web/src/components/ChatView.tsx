@@ -32,6 +32,11 @@ import {
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
 import {
+  primeResumeBlocksComposer,
+  primeResumeRecoveryRoute,
+  type PrimeResumeIntent,
+} from "@t3tools/client-runtime/prime-resume";
+import {
   parseScopedThreadKey,
   scopedThreadKey,
   scopeProjectRef,
@@ -249,6 +254,9 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { PrimeContextStatus } from "./chat/PrimeContextStatus";
+import { PrimeResumeBanner } from "./chat/PrimeResumeBanner";
+import { usePrimeResumeModel } from "./chat/usePrimeResumeModel";
+import { resolveSendDisabledReason } from "./chat/sendDisabledReason";
 import { PrimeExtensionStatus } from "./chat/PrimeExtensionStatus";
 import { hasPrimeRunningTurn } from "./chat/primeContext";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -1263,6 +1271,9 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const forkThreadSession = useAtomCommand(threadEnvironment.forkSession, {
+    reportFailure: false,
+  });
+  const recoverPrimeResumeCommand = useAtomCommand(threadEnvironment.recoverPrimeResume, {
     reportFailure: false,
   });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
@@ -5545,6 +5556,52 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThread, environmentId, forkThreadSession, setThreadError],
   );
 
+  // PA-B04 — the durable resume outcome this thread is showing, and the one
+  // place its recovery choices are dispatched from.
+  const primeResume = usePrimeResumeModel({
+    threadId: activeThread?.id,
+    state: activeThread?.session?.resumeState,
+    sessionStatus: activeThread?.session?.status,
+    connected: !activeEnvironmentUnavailable,
+  });
+  const primeResumeComposerBlocked = primeResumeBlocksComposer(
+    activeThread?.session?.providerName,
+    primeResume.model,
+  );
+  const onPrimeResumeRecover = useCallback(
+    (intent: PrimeResumeIntent) => {
+      if (!activeThread) return;
+      // Recorded before dispatch so the banner's buttons go inert immediately;
+      // the host's next published state clears it.
+      primeResume.noteChoice(intent);
+      // Forking is not a resume operation and already has an end-to-end
+      // command, so it is reused rather than duplicated: a fork keeps the
+      // refused session exactly where it is and continues from this thread's
+      // history in a new thread.
+      const route = primeResumeRecoveryRoute(intent);
+      if (route.kind === "fork") {
+        // A fork publishes no resume state for this thread, so its pending
+        // marker is cleared when the command settles: the buttons stay inert
+        // for the whole round trip (one click cannot become two forked
+        // threads) and come back afterwards.
+        const forThreadId = activeThread.id;
+        void Promise.resolve(onForkSession(undefined)).finally(() => {
+          primeResume.noteSettled(forThreadId);
+        });
+        return;
+      }
+      void recoverPrimeResumeCommand({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          intent: route.intent,
+          ...(route.discardCursor ? { discardCursor: true } : {}),
+        },
+      });
+    },
+    [activeThread, environmentId, onForkSession, primeResume, recoverPrimeResumeCommand],
+  );
+
   // Pause, its exact reverse, and delete. Each targets one owned heartbeat, and
   // ownership is re-checked server-side against the board this session reports.
   const onHeartbeatAction = useCallback(
@@ -6628,6 +6685,11 @@ function ChatViewContent(props: ChatViewProps) {
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
                   ) : null}
+                  <PrimeResumeBanner
+                    providerName={activeThread?.session?.providerName}
+                    model={primeResume.model}
+                    onRecover={onPrimeResumeRecover}
+                  />
                   <PrimeContextStatus
                     providerName={activeThread?.session?.providerName}
                     capabilities={activeThread?.session?.runtimeCapabilities}
@@ -6676,17 +6738,17 @@ function ChatViewContent(props: ChatViewProps) {
                             phase={phase}
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
-                            sendDisabledReason={
-                              threadDetailLoading
-                                ? "Messages loading"
-                                : activeThread?.modelSelection
-                                  ? resolveBoundModelSelectionState(
-                                      settings,
-                                      providerStatuses as ServerProvider[],
-                                      activeThread.modelSelection,
-                                    ).sendDisabledReason
-                                  : null
-                            }
+                            sendDisabledReason={resolveSendDisabledReason({
+                              primeResumeBlocked: primeResumeComposerBlocked,
+                              threadDetailLoading,
+                              modelSelectionReason: activeThread?.modelSelection
+                                ? resolveBoundModelSelectionState(
+                                    settings,
+                                    providerStatuses as ServerProvider[],
+                                    activeThread.modelSelection,
+                                  ).sendDisabledReason
+                                : null,
+                            })}
                             isPreparingWorktree={isPreparingWorktree}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}

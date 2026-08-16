@@ -1243,6 +1243,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.prime-resume.recover": {
+      // Recovery is answerable precisely when a session could not be brought
+      // up, so — unlike fork or rename — it deliberately does not require a
+      // live session. It does require the thread, because the cursor it may
+      // discard is scoped to that thread and nothing else.
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.prime-resume-recover-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          intent: command.intent,
+          // A discard is only ever honoured for an explicit fresh start; a
+          // retry that arrived with the flag set must not delete anything.
+          ...(command.intent === "fresh" && command.discardCursor === true
+            ? { discardCursor: true }
+            : {}),
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.commands.refresh": {
       const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
       if (thread.session === null) {

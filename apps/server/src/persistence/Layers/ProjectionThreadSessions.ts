@@ -42,6 +42,9 @@ const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(
     runtimeCapabilities: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.runtimeCapabilities)),
     ),
+    resumeState: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.resumeState)),
+    ),
   }),
 );
 
@@ -68,7 +71,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           goal_board_json,
           identity_card_json,
           context_state_json,
-          runtime_capabilities_json
+          runtime_capabilities_json,
+          resume_state_json
         )
         VALUES (
           ${row.threadId},
@@ -86,7 +90,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.goalBoard === undefined ? null : JSON.stringify(row.goalBoard)},
           ${row.identityCard === undefined ? null : JSON.stringify(row.identityCard)},
           ${row.contextState === undefined ? null : JSON.stringify(row.contextState)},
-          ${row.runtimeCapabilities === undefined ? null : JSON.stringify(row.runtimeCapabilities)}
+          ${row.runtimeCapabilities === undefined ? null : JSON.stringify(row.runtimeCapabilities)},
+          ${row.resumeState === undefined ? null : JSON.stringify(row.resumeState)}
         )
         ON CONFLICT (thread_id)
         DO UPDATE SET
@@ -104,7 +109,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           goal_board_json = excluded.goal_board_json,
           identity_card_json = excluded.identity_card_json,
           context_state_json = excluded.context_state_json,
-          runtime_capabilities_json = excluded.runtime_capabilities_json
+          runtime_capabilities_json = excluded.runtime_capabilities_json,
+          resume_state_json = excluded.resume_state_json
       `,
   });
 
@@ -129,7 +135,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           goal_board_json AS "goalBoard",
           identity_card_json AS "identityCard",
           context_state_json AS "contextState",
-          runtime_capabilities_json AS "runtimeCapabilities"
+          runtime_capabilities_json AS "runtimeCapabilities",
+          resume_state_json AS "resumeState"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
       `,
@@ -164,6 +171,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
             identityCard,
             contextState,
             runtimeCapabilities,
+            resumeState,
             ...rest
           }) => ({
             ...rest,
@@ -175,6 +183,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
             ...(identityCard != null ? { identityCard } : {}),
             ...(contextState != null ? { contextState } : {}),
             ...(runtimeCapabilities != null ? { runtimeCapabilities } : {}),
+            ...(resumeState != null ? { resumeState } : {}),
           }),
         ),
       ),

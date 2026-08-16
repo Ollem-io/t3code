@@ -16,6 +16,7 @@ import {
 
 import { classifyPrimeCompatibility } from "./PrimeCompatibility.ts";
 import {
+  discardPrimeResumeCursor,
   encodePrimeResumeCursor,
   makePrimeResumeCursor,
   readPrimeResumeCursor,
@@ -109,9 +110,27 @@ export type PrimeResumeCoordinatorDeps = {
   readonly now?: () => Date;
 };
 
+/**
+ * PA-B04 — how a resume attempt announces itself.
+ *
+ * `announce` marks an attempt a *user* asked for (the retry / fresh-start
+ * buttons). Such an attempt must always produce a visible transition, even when
+ * the answer is byte-identical to the refusal already on the thread: the client
+ * shut its composer and disabled its buttons the moment it dispatched the
+ * choice, and only a published state re-enables them. So an announced attempt
+ * publishes `reconnecting` before it validates anything, and publishes its
+ * terminal state afterwards — including the `missing` that a confirmed fresh
+ * start earns once the refusing cursor is gone. Without it, the answer to
+ * "retry" would be silence and the banner would spin forever.
+ *
+ * An unannounced attempt (an ordinary turn start) keeps the old behaviour: a
+ * thread that never had a Prime session publishes nothing at all.
+ */
+export type PrimeResumeAttempt = { readonly announce?: boolean };
+
 export interface PrimeResumeCoordinator {
   /** Validate, arbitrate and decide. Safe to call repeatedly. */
-  readonly resume: (threadId: string) => Promise<PrimeResumeDecision>;
+  readonly resume: (threadId: string, attempt?: PrimeResumeAttempt) => Promise<PrimeResumeDecision>;
   /**
    * Records the cursor for a session that is now live under our lease. `mode`
    * is present only when this session came from a recovery: a first, fresh
@@ -122,6 +141,13 @@ export interface PrimeResumeCoordinator {
     readonly threadId: string;
     readonly mode?: PrimeResumeMode;
   }) => Promise<void>;
+  /**
+   * PA-B04 — honours an explicitly confirmed fresh start by deleting this
+   * thread's own resume cursor, and only after proving the file is one for this
+   * exact scope. Answers whether a cursor was actually discarded. Durable
+   * session data, thread history and checkpoints are never touched.
+   */
+  readonly discardCursor: (threadId: string) => Promise<boolean>;
   /** Forgets memoized state for a thread whose session is gone. */
   readonly forget: (threadId: string) => void;
 }
@@ -167,9 +193,36 @@ export const makePrimeResumeCoordinator = (
 ): PrimeResumeCoordinator => {
   const now = deps.now ?? (() => new Date());
   const inFlight = new Map<string, Promise<PrimeResumeDecision>>();
-  const publish = (threadId: string, state: PrimeResumeState) => deps.publish?.(threadId, state);
+  /**
+   * Which attempt is currently the truth for a thread.
+   *
+   * `forget` and `discardCursor` orphan a running validation rather than
+   * cancelling it, and an orphan that outlives the attempt that replaced it
+   * would publish its stale verdict *after* the newer terminal state — putting
+   * a refusal the user already resolved back on the thread. Every attempt keeps
+   * the generation it started under and goes quiet once it is no longer it.
+   */
+  const generations = new Map<string, number>();
+  const currentGeneration = (threadId: string) => generations.get(threadId) ?? 0;
+  const nextGeneration = (threadId: string) => {
+    const next = currentGeneration(threadId) + 1;
+    generations.set(threadId, next);
+    return next;
+  };
+  const publishFor =
+    (generation: number) =>
+    (threadId: string, state: PrimeResumeState): void => {
+      if (currentGeneration(threadId) === generation) deps.publish?.(threadId, state);
+    };
 
-  const decide = async (threadId: string): Promise<PrimeResumeDecision> => {
+  const decide = async (
+    threadId: string,
+    announce: boolean,
+    publish: (threadId: string, state: PrimeResumeState) => void,
+  ): Promise<PrimeResumeDecision> => {
+    // An attempt the user asked for is announced before it is validated, so a
+    // refusal that repeats identically is still a visible answer to the click.
+    if (announce) publish(threadId, { status: "reconnecting" });
     const expected = await deps.scopeForThread(threadId);
     const path = deps.cursorPath(threadId);
     const first = await readPrimeResumeCursor(path);
@@ -179,7 +232,7 @@ export const makePrimeResumeCoordinator = (
     const cursor = first.state.cursor;
     // Only now is there something to reconnect *to*. A thread that never had a
     // Prime session must never flash a recovery state it has no reason to show.
-    publish(threadId, { status: "reconnecting" });
+    if (!announce) publish(threadId, { status: "reconnecting" });
 
     const mismatch = scopeMismatchReason(cursor.scope, expected);
     if (mismatch !== undefined) return unavailable(mismatch);
@@ -238,20 +291,31 @@ export const makePrimeResumeCoordinator = (
     };
   };
 
-  const resume: PrimeResumeCoordinator["resume"] = (threadId) => {
+  const resume: PrimeResumeCoordinator["resume"] = (threadId, attempt) => {
     // Repeated recovery is idempotent by construction: concurrent callers share
     // one decision, and a later call re-runs the same total validation rather
     // than trusting a cached verdict about durable state that may have moved.
     const existing = inFlight.get(threadId);
     if (existing !== undefined) return existing;
-    const promise = decide(threadId)
+    const announce = attempt?.announce === true;
+    // This attempt owns the thread's published state from here until something
+    // supersedes it. An attempt that has been superseded keeps its decision but
+    // stops speaking, so a slow orphan cannot overwrite a newer answer.
+    const generation = nextGeneration(threadId);
+    const publish = publishFor(generation);
+    const promise = decide(threadId, announce, publish)
       .catch((cause): PrimeResumeDecision => {
         // A validation step that throws is a refusal, never a fresh start.
         void cause;
         return unavailable("corrupt");
       })
       .then((decision) => {
-        if (decision.plan.kind !== "fresh" && decision.state.status === "unavailable")
+        // A `fresh` plan means there is no cursor at all. Ordinarily that is
+        // silence — a brand new thread has nothing to report. After an
+        // announced attempt it is the terminal answer the client is waiting
+        // for: the refusing cursor is gone, so `missing` is what unblocks the
+        // composer that the earlier refusal shut.
+        if (decision.state.status === "unavailable" && (announce || decision.plan.kind !== "fresh"))
           publish(threadId, decision.state);
         return decision;
       })
@@ -277,10 +341,33 @@ export const makePrimeResumeCoordinator = (
       recordedAt: now().toISOString(),
     });
     await writePrimeResumeCursor(deps.cursorPath(threadId), cursor);
-    if (mode !== undefined) publish(threadId, { status: "resumed", mode });
+    // A provably live session outranks every validation still in flight: it
+    // takes the generation so no older attempt can talk over it.
+    nextGeneration(threadId);
+    if (mode !== undefined) deps.publish?.(threadId, { status: "resumed", mode });
   };
 
-  return { resume, recordSession, forget: (threadId) => inFlight.delete(threadId) };
+  const discardCursor: PrimeResumeCoordinator["discardCursor"] = async (threadId) => {
+    const scope = await deps.scopeForThread(threadId);
+    const discarded = await discardPrimeResumeCursor(deps.cursorPath(threadId), scope);
+    // A memoized refusal must not outlive the cursor that caused it, or the
+    // very next start would replay the decision the user just resolved — and an
+    // attempt already running against the discarded cursor must not get the
+    // last word either.
+    inFlight.delete(threadId);
+    nextGeneration(threadId);
+    return discarded;
+  };
+
+  return {
+    resume,
+    recordSession,
+    discardCursor,
+    forget: (threadId) => {
+      inFlight.delete(threadId);
+      nextGeneration(threadId);
+    },
+  };
 };
 
 /** Explains a refusal without naming anything the client may not know. */

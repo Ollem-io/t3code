@@ -240,6 +240,10 @@ function ThreadRouteContent(
   );
   const renameThreadSession = useAtomCommand(threadEnvironment.renameSession, "session rename");
   const forkThreadSession = useAtomCommand(threadEnvironment.forkSession, "session fork");
+  const recoverPrimeResume = useAtomCommand(
+    threadEnvironment.recoverPrimeResume,
+    "prime resume recovery",
+  );
   const refreshThreadCommands = useAtomCommand(
     threadEnvironment.refreshCommands,
     "thread command refresh",
@@ -619,6 +623,28 @@ function ThreadRouteContent(
       return result._tag !== "Failure";
     },
     [forkThreadSession, selectedThread],
+  );
+
+  // PA-B04 — answer a refused Prime Agent resume. Only a confirmed fresh start
+  // may carry the cursor discard; the host re-checks that before honouring it.
+  const handleRecoverPrimeResume = useCallback(
+    async (
+      intent:
+        | { readonly kind: "retry" }
+        | { readonly kind: "fresh"; readonly discardCursor: boolean },
+    ): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const result = await recoverPrimeResume({
+        environmentId: selectedThread.environmentId,
+        input: {
+          threadId: selectedThread.id,
+          intent: intent.kind,
+          ...(intent.kind === "fresh" && intent.discardCursor ? { discardCursor: true } : {}),
+        },
+      });
+      return result._tag !== "Failure";
+    },
+    [recoverPrimeResume, selectedThread],
   );
 
   // Reverse navigation for a fork. Ancestry is a thread record, so this works
@@ -1007,6 +1033,7 @@ function ThreadRouteContent(
           onHeartbeatAction={handleHeartbeatAction}
           onRenameSession={handleRenameSession}
           onForkSession={handleForkSession}
+          onRecoverPrimeResume={handleRecoverPrimeResume}
           forkOrigin={selectedThread.forkedFrom ?? null}
           onOpenSourceThread={handleOpenSourceThread}
           onRefreshCommands={handleRefreshCommands}
