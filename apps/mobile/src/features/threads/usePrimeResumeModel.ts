@@ -1,4 +1,4 @@
-import { useEffect, useReducer } from "react";
+import { useEffect, useReducer, useRef } from "react";
 
 import {
   initialPrimeResumeModel,
@@ -31,10 +31,16 @@ export function usePrimeResumeModel(input: {
 }): {
   readonly model: PrimeResumeModel;
   readonly noteChoice: (intent: PrimeResumeIntent) => void;
-  /** Reports that a choice with no published answer (fork) settled. */
-  readonly noteSettled: () => void;
+  /**
+   * Reports that a choice with no published answer (fork) settled. Tagged
+   * with the thread it was dispatched for: a fork begun on thread A must not
+   * re-arm thread B's buttons while B's own choice is still in flight.
+   */
+  readonly noteSettled: (forThreadId: string | null | undefined) => void;
 } {
   const [model, dispatch] = useReducer(primeResumeReduce, initialPrimeResumeModel);
+  const currentThread = useRef(input.threadId);
+  currentThread.current = input.threadId;
 
   useEffect(() => {
     // Resume state is a per-thread fact: switching threads resets the model so
@@ -64,8 +70,8 @@ export function usePrimeResumeModel(input: {
     noteChoice: (intent) => {
       dispatch({ type: "choice", intent });
     },
-    noteSettled: () => {
-      dispatch({ type: "settled" });
+    noteSettled: (forThreadId) => {
+      if (forThreadId === currentThread.current) dispatch({ type: "settled" });
     },
   };
 }

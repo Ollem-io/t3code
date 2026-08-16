@@ -576,8 +576,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
         // marker is cleared when the command settles: the buttons stay inert
         // for the whole round trip (one tap cannot become two forked threads)
         // and come back afterwards.
+        const forThreadId = props.selectedThread.id;
         void Promise.resolve(props.onForkSession?.(undefined)).finally(() => {
-          primeResume.noteSettled();
+          primeResume.noteSettled(forThreadId);
         });
         return;
       }
@@ -587,7 +588,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
           : { kind: "retry" },
       );
     },
-    [primeResume, props.onForkSession, props.onRecoverPrimeResume],
+    [primeResume, props.onForkSession, props.onRecoverPrimeResume, props.selectedThread.id],
   );
 
   const handleSendMessage = useCallback(async () => {

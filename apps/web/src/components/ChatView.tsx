@@ -5584,8 +5584,9 @@ function ChatViewContent(props: ChatViewProps) {
         // marker is cleared when the command settles: the buttons stay inert
         // for the whole round trip (one click cannot become two forked
         // threads) and come back afterwards.
+        const forThreadId = activeThread.id;
         void Promise.resolve(onForkSession(undefined)).finally(() => {
-          primeResume.noteSettled();
+          primeResume.noteSettled(forThreadId);
         });
         return;
       }

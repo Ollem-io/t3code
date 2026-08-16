@@ -139,16 +139,16 @@ describe("prime resume wiring", () => {
         primeResumeReduce(chosen, { type: "state", state: { status: "reconnecting" } }),
       ),
     ).toBe(false);
-    // A fork is the one choice with no answer coming for *this* thread, so it
-    // must not arm a wait that would disable these buttons for good.
-    expect(
-      primeResumeAwaitingChoice(
-        primeResumeReduce(
-          model({ state: { status: "unavailable", reason: "capabilityMismatch" } }),
-          { type: "choice", intent: { kind: "fork" } },
-        ),
-      ),
-    ).toBe(false);
+    // A fork is pending too — one click must never become two forked threads.
+    // Its answer is a new thread rather than a resume state for this one, so
+    // the dispatching caller clears the wait with a `settled` event when the
+    // fork command resolves.
+    const forking = primeResumeReduce(
+      model({ state: { status: "unavailable", reason: "capabilityMismatch" } }),
+      { type: "choice", intent: { kind: "fork" } },
+    );
+    expect(primeResumeAwaitingChoice(forking)).toBe(true);
+    expect(primeResumeAwaitingChoice(primeResumeReduce(forking, { type: "settled" }))).toBe(false);
   });
 
   // NON-BLOCKER: a two-device conflict was a dead end with retry only.
