@@ -57,6 +57,43 @@ export const primeResumeScopeKey = (scope: PrimeResumeCursorScope): string =>
     .map(separated)
     .join("|");
 
+/**
+ * Exact inverse of `primeResumeScopeKey`, for startup recovery: a durable row
+ * is keyed by the scope key alone, and cleanup must re-derive the scope it
+ * belongs to rather than invent one. The length prefixes make the parse exact,
+ * and the result is re-encoded and compared before it is returned, so any key
+ * this function did not produce is rejected instead of guessed at.
+ */
+export const primeResumeScopeFromKey = (key: string): PrimeResumeCursorScope | undefined => {
+  const fields: string[] = [];
+  let cursor = 0;
+  while (fields.length < 5) {
+    const colon = key.indexOf(":", cursor);
+    if (colon <= cursor) return undefined;
+    const digits = key.slice(cursor, colon);
+    if (!/^\d+$/.test(digits)) return undefined;
+    const length = Number(digits);
+    const start = colon + 1;
+    const end = start + length;
+    if (end > key.length) return undefined;
+    fields.push(key.slice(start, end));
+    cursor = end;
+    if (fields.length < 5) {
+      if (key[cursor] !== "|") return undefined;
+      cursor += 1;
+    }
+  }
+  if (cursor !== key.length) return undefined;
+  const scope = {
+    environmentId: fields[0]!,
+    providerInstanceId: fields[1]!,
+    projectId: fields[2]!,
+    threadId: fields[3]!,
+    homeFingerprint: fields[4]!,
+  } as PrimeResumeCursorScope;
+  return primeResumeScopeKey(scope) === key ? scope : undefined;
+};
+
 export const primeResumeScopeMatches = (
   left: PrimeResumeCursorScope,
   right: PrimeResumeCursorScope,

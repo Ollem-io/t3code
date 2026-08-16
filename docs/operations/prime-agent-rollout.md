@@ -43,6 +43,13 @@ keeps a Prime session alive past a turn, so it has its own cleanup rules:
   that session resident; the session itself still ends through the ordinary
   thread stop or the instance **Enabled** switch.
 
+## Retention, cleanup and crash recovery
+
+Destructive lifecycle paths — explicit delete, provider removal, reconfiguration and
+migration — have their own runbook in `prime-agent-cleanup.md`: dry-run manifests,
+scoped confirmation, deferral behind an active lease, the cleanup journal and crash
+resume. Stop and archive are not in it, because they never delete anything.
+
 ## Rollback/downgrade
 
 Disable Prime, drain/stop its proven owned work, and deploy the previous T3 version. Preserve Prime settings, ownership records, sessions and unknown/newer fields verbatim for a later compatible re-enable; do not rewrite them to an older schema. A downgrade cannot promise resume of unproved opaque provider state. Re-enable only after a fresh isolated check.

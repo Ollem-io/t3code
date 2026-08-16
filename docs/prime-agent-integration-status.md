@@ -60,6 +60,7 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-B03    | Server-side single-writer arbitration and conflict receipts        | Done — `a58bbafd` |
 | PA-B02    | Exact adoption/resume state machine and compatibility validation   | Done — `5da5d397` |
 | PA-B04    | Web/desktop/mobile resume and recovery-choice UI                   | Done — `f6f3b1b5` |
+| PA-B05    | Durable cleanup, retention, migrations, rollback safety            | Done — `31dafaa9` |
 
 Completed total: **29 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; Beta is underway.
 
@@ -358,12 +359,10 @@ callback until PA-B04 renders them.
 
 | Milestone | Planned scope                                                    | State   |
 | --------- | ---------------------------------------------------------------- | ------- |
-| PA-B04    | Web/desktop/mobile resume and recovery-choice UI                 | Next    |
-| PA-B05    | Durable cleanup, retention, migrations, rollback safety          | Next    |
 | PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Pending |
 
 ## Immediate next steps
 
 1. Capture the standing visual-evidence debt (PA-A02 through PA-A08 surfaces) when UI-launch permission is granted (exact steps recorded above).
-2. Implement remaining Beta in dependency order: `PA-B04`, `PA-B05`, `PA-B06`.
+2. Implement remaining Beta in dependency order: `PA-B06`.
 3. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.

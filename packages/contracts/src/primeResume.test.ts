@@ -11,6 +11,7 @@ import {
   type PrimeResumeCursorScope,
   PrimeResumeCursorState,
   primeResumeCursorStateFromUnknown,
+  primeResumeScopeFromKey,
   primeResumeScopeKey,
   primeResumeScopeMatches,
   SUPPORTED_PRIME_RESUME_CURSOR_VERSIONS,
@@ -72,6 +73,29 @@ describe("prime resume cursor", () => {
       expect(primeResumeScopeMatches(scope, variant)).toBe(false);
     }
     expect(primeResumeScopeMatches(scope, asScope({ ...scope }))).toBe(true);
+  });
+
+  // Startup cleanup recovery is keyed by the scope key alone, so it has to
+  // re-derive the scope exactly rather than invent one.
+  it("round-trips a scope through its key and rejects anything else", () => {
+    const awkward = [
+      scope,
+      asScope({ ...scope, environmentId: "a|b", threadId: "12:not-a-length" }),
+      asScope({ ...scope, projectId: "" }),
+    ];
+    for (const value of awkward) {
+      expect(primeResumeScopeFromKey(primeResumeScopeKey(value))).toEqual(value);
+    }
+    for (const invalid of [
+      "",
+      "not-a-key",
+      "5:env-a",
+      `${primeResumeScopeKey(scope)}|4:more`,
+      "5:env-a|11:prime|9:project-a|8:thread-a|99:short",
+      "x:env-a|11:prime|9:project-a|8:thread-a|12:aaaaaaaaaaaa",
+    ]) {
+      expect(primeResumeScopeFromKey(invalid)).toBeUndefined();
+    }
   });
 
   it("cannot be spoofed by shifting separators between identifiers", () => {

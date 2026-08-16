@@ -1,0 +1,577 @@
+import { createHash } from "node:crypto";
+
+import { primeResumeScopeKey, type PrimeResumeCursorScope } from "@t3tools/contracts";
+
+import {
+  cleanupPrimeOwnership,
+  type PrimeOwnershipAction,
+  type PrimeOwnershipCleanup,
+  type PrimeOwnershipProof,
+} from "./PrimeOwnership.ts";
+import { discardPrimeResumeCursor, readPrimeResumeCursor } from "./PrimeResumeCursor.ts";
+import { primeResourceLayout } from "./PrimeResourceLayout.ts";
+import { primeLeaseScopeDigest } from "./PrimeSessionLease.ts";
+
+/**
+ * PA-B05 — the only place in T3 that may destroy a durable Prime resource.
+ *
+ * Three rules shape everything here:
+ *
+ *   1. **Nothing ordinary deletes.** Stop, archive, disabling the instance and
+ *      rolling back a build are lifecycle events, not deletions;
+ *      `primeCleanupReasonForLifecycle` maps them to `undefined` so no caller
+ *      can accidentally turn a reversible action into a destructive one.
+ *   2. **Deletion is planned, confirmed, and gated twice.** A plan is a
+ *      dry-run manifest of exact paths this T3 home derived for one proven
+ *      scope. It refuses while a lease is held or an adoption is in flight,
+ *      and the guard is asked *again* immediately before the first
+ *      irreversible step, because a plan can be minutes old.
+ *   3. **Every step is journaled before it runs.** A crash between any two
+ *      steps leaves a durable record; re-running resumes and is idempotent,
+ *      because each step is "prove, then remove" and a removed resource
+ *      simply proves absent.
+ *
+ * Destruction itself is delegated to `cleanupPrimeOwnership`, which is the
+ * existing proof-before-action boundary: it only touches resources whose exact
+ * ownership record, layout path and inode identity T3 can prove. This module
+ * never unlinks a path of its own, never scans, and never widens the scope it
+ * was given.
+ */
+
+export const PRIME_CLEANUP_JOURNAL_VERSION = 1 as const;
+
+/** The only reasons that may end in durable deletion. */
+export const PRIME_CLEANUP_REASONS = [
+  "explicitDelete",
+  "providerRemoval",
+  "reconfigure",
+  "migration",
+] as const;
+export type PrimeCleanupReason = (typeof PRIME_CLEANUP_REASONS)[number];
+
+/** Lifecycle events T3 already has, and what cleanup they are allowed to mean. */
+export const PRIME_LIFECYCLE_EVENTS = [
+  "threadStop",
+  "threadArchive",
+  "threadDelete",
+  "instanceDisabled",
+  "instanceRemoved",
+  "instanceReconfigured",
+  "storageMigration",
+  "rollout",
+  "rollback",
+] as const;
+export type PrimeLifecycleEvent = (typeof PRIME_LIFECYCLE_EVENTS)[number];
+
+/**
+ * `undefined` means "this event never deletes durable data". Stop and archive
+ * are the load-bearing entries: history and the Prime session survive both.
+ */
+export const primeCleanupReasonForLifecycle = (
+  event: PrimeLifecycleEvent,
+): PrimeCleanupReason | undefined => {
+  switch (event) {
+    case "threadDelete":
+      return "explicitDelete";
+    case "instanceRemoved":
+      return "providerRemoval";
+    case "instanceReconfigured":
+      return "reconfigure";
+    case "storageMigration":
+      return "migration";
+    default:
+      return undefined;
+  }
+};
+
+export type PrimeCleanupStepKind = "ownedResources" | "resumeCursor";
+export type PrimeCleanupStepStatus = "pending" | "done" | "retained";
+
+export type PrimeCleanupTarget = {
+  readonly kind: PrimeCleanupStepKind;
+  /** Host-local absolute path. Never leaves this process; reports use the token. */
+  readonly path: string;
+  /** Opaque, non-reversible name for the target. Safe for logs and clients. */
+  readonly pathToken: string;
+};
+
+export type PrimeCleanupGuard =
+  | { readonly status: "clear" }
+  | { readonly status: "leaseHeld"; readonly generation?: number }
+  | { readonly status: "adoptionInFlight" };
+
+export type PrimeCleanupDecision =
+  | { readonly action: "proceed" }
+  | { readonly action: "refuse"; readonly reason: "nonDestructiveLifecycle" }
+  | { readonly action: "defer"; readonly reason: "leaseHeld" | "adoptionInFlight" };
+
+/**
+ * A plan for an event that may not delete carries `"none"`, not a deletion
+ * reason: an audit surface must not read as "a delete was requested and
+ * refused" when no delete was ever requested.
+ */
+export type PrimeCleanupPlanReason = PrimeCleanupReason | "none";
+
+export type PrimeCleanupPlan = {
+  readonly mode: "dryRun";
+  readonly reason: PrimeCleanupPlanReason;
+  readonly scope: PrimeResumeCursorScope;
+  readonly scopeKey: string;
+  readonly scopeDigest: string;
+  readonly decision: PrimeCleanupDecision;
+  readonly requiresConfirmation: true;
+  readonly targets: readonly PrimeCleanupTarget[];
+};
+
+const pathToken = (scopeKey: string, path: string) =>
+  `pct-${createHash("sha256").update(`${scopeKey}\u0000${path}`).digest("hex").slice(0, 16)}`;
+
+/**
+ * Builds the dry-run manifest. Nothing is read, written or removed: the
+ * manifest is derived entirely from this home's own resource layout for the
+ * scope the caller proved it is operating on, which is what keeps another T3
+ * home, another environment and unrelated Prime resources out of range.
+ */
+export const planPrimeCleanup = (input: {
+  readonly home: string;
+  readonly scope: PrimeResumeCursorScope;
+  readonly lifecycleEvent: PrimeLifecycleEvent;
+  readonly guard: PrimeCleanupGuard;
+}): PrimeCleanupPlan => {
+  const reason = primeCleanupReasonForLifecycle(input.lifecycleEvent);
+  const scopeKey = primeResumeScopeKey(input.scope);
+  const scopeDigest = primeLeaseScopeDigest(input.scope);
+  if (reason === undefined) {
+    return {
+      mode: "dryRun",
+      // A non-destructive event still produces a readable plan so an operator
+      // sees *why* nothing will be deleted, with an empty manifest.
+      reason: "none",
+      scope: input.scope,
+      scopeKey,
+      scopeDigest,
+      decision: { action: "refuse", reason: "nonDestructiveLifecycle" },
+      requiresConfirmation: true,
+      targets: [],
+    };
+  }
+  const layout = primeResourceLayout({
+    home: input.home,
+    environmentId: input.scope.environmentId,
+    instanceId: input.scope.providerInstanceId,
+    threadId: input.scope.threadId,
+  });
+  // Cursor first, on purpose. It is the one target that carries the scope it
+  // was recorded for, so it is the cheapest available disproof of ownership: a
+  // cursor here that belongs to somebody else means this derived path is not
+  // ours to delete, and the whole run stops before anything irreversible.
+  const targets: readonly PrimeCleanupTarget[] = [
+    {
+      kind: "resumeCursor",
+      path: layout.resumeCursor,
+      pathToken: pathToken(scopeKey, layout.resumeCursor),
+    },
+    {
+      kind: "ownedResources",
+      path: layout.ownership,
+      pathToken: pathToken(scopeKey, layout.ownership),
+    },
+  ];
+  const decision: PrimeCleanupDecision =
+    input.guard.status === "clear"
+      ? { action: "proceed" }
+      : { action: "defer", reason: input.guard.status };
+  return {
+    mode: "dryRun",
+    reason,
+    scope: input.scope,
+    scopeKey,
+    scopeDigest,
+    decision,
+    requiresConfirmation: true,
+    targets,
+  };
+};
+
+/**
+ * The complete vocabulary a step may say about *why* something was retained.
+ *
+ * It is a closed set rather than free text on purpose. The ownership boundary
+ * builds its warnings by interpolating `String(error)`, and a Node fs error
+ * carries the absolute path it failed on — which for a Prime layout path also
+ * carries base64-encoded environment, instance and thread ids. None of that may
+ * reach the journal, a log line, telemetry or a remote client, and truncation
+ * does not make it safe. So warnings are *classified* into one of these codes
+ * and the originating text is discarded inside this module.
+ */
+export const PRIME_CLEANUP_DETAIL_CODES = [
+  "cursorScopeMismatch",
+  "cursorScopeUnproven",
+  "ownershipIdentityUnproven",
+  "ownershipRecordChanged",
+  "ownershipCleanupUnavailable",
+  "ownershipCleanupFailedClosed",
+  "ownershipRetained",
+] as const;
+export type PrimeCleanupDetailCode = (typeof PRIME_CLEANUP_DETAIL_CODES)[number];
+
+export type PrimeCleanupJournalStep = {
+  readonly kind: PrimeCleanupStepKind;
+  readonly status: PrimeCleanupStepStatus;
+  /** Closed-vocabulary code. Never a host path and never provider content. */
+  readonly detail?: PrimeCleanupDetailCode;
+};
+
+export type PrimeCleanupJournalEntry = {
+  readonly version: typeof PRIME_CLEANUP_JOURNAL_VERSION;
+  readonly scopeKey: string;
+  readonly scopeDigest: string;
+  readonly reason: PrimeCleanupReason;
+  /**
+   * `completed` and `refused` are both terminal — startup recovery lists
+   * neither. `refused` exists because a scope-mismatched cursor can never
+   * become resolvable by re-running: without a terminal state the row would be
+   * re-read, re-refused and re-persisted on every single startup, forever.
+   */
+  readonly status: "running" | "completed" | "incomplete" | "refused";
+  readonly steps: readonly PrimeCleanupJournalStep[];
+  readonly startedAt: string;
+  readonly updatedAt: string;
+};
+
+/**
+ * Write-ahead record of one scope's cleanup. It is durable on purpose: the
+ * whole crash story is "the journal says what was already proven done".
+ */
+export interface PrimeCleanupJournalStore {
+  readonly read: (scopeKey: string) => Promise<PrimeCleanupJournalEntry | undefined>;
+  readonly write: (entry: PrimeCleanupJournalEntry) => Promise<void>;
+  readonly clear: (scopeKey: string) => Promise<void>;
+}
+
+/** Process-local journal. Used by fixtures and by the review artifact. */
+export const makeInMemoryPrimeCleanupJournalStore = (): PrimeCleanupJournalStore & {
+  readonly rows: Map<string, PrimeCleanupJournalEntry>;
+} => {
+  const rows = new Map<string, PrimeCleanupJournalEntry>();
+  return {
+    rows,
+    read: async (scopeKey) => rows.get(scopeKey),
+    write: async (entry) => {
+      rows.set(entry.scopeKey, entry);
+    },
+    clear: async (scopeKey) => {
+      rows.delete(scopeKey);
+    },
+  };
+};
+
+export type PrimeCleanupConfirmation = {
+  /** Must equal the plan's digest: confirming one scope can never delete another. */
+  readonly scopeDigest: string;
+  readonly acknowledged: boolean;
+};
+
+export type PrimeCleanupReport = {
+  readonly scopeDigest: string;
+  readonly reason: PrimeCleanupPlanReason;
+  readonly outcome: "completed" | "deferred" | "refused" | "incomplete";
+  readonly reasonCode?:
+    | "nonDestructiveLifecycle"
+    | "confirmationMissing"
+    | "confirmationMismatch"
+    | "leaseHeld"
+    | "adoptionInFlight"
+    | "resourceRetained"
+    | "cursorScopeMismatch";
+  readonly steps: readonly PrimeCleanupJournalStep[];
+  readonly resumable: boolean;
+};
+
+/**
+ * Classifies one ownership warning into the closed detail vocabulary. The
+ * reason text is only ever *matched against* here — it is never returned, so a
+ * path, an id or an errno message embedded in it cannot escape this function.
+ * Anything unrecognised degrades to the least specific code rather than being
+ * echoed.
+ */
+const detailCodeForWarning = (reason: string): PrimeCleanupDetailCode => {
+  if (/callback missing/i.test(reason)) return "ownershipCleanupUnavailable";
+  if (/threw|failed/i.test(reason)) return "ownershipCleanupFailedClosed";
+  if (/changed/i.test(reason)) return "ownershipRecordChanged";
+  if (/cannot be proven|does not match/i.test(reason)) return "ownershipIdentityUnproven";
+  return "ownershipRetained";
+};
+
+const warningsOf = (actions: readonly PrimeOwnershipAction[]) =>
+  actions.flatMap((action) => (action.kind === "warning" ? [action.warning.reason] : []));
+
+const stepsWith = (
+  steps: readonly PrimeCleanupJournalStep[],
+  kind: PrimeCleanupStepKind,
+  next: PrimeCleanupJournalStep,
+): readonly PrimeCleanupJournalStep[] => steps.map((step) => (step.kind === kind ? next : step));
+
+const doneAlready = (
+  entry: PrimeCleanupJournalEntry | undefined,
+  kind: PrimeCleanupStepKind,
+): boolean => entry?.steps.some((step) => step.kind === kind && step.status === "done") === true;
+
+/**
+ * Runs a confirmed plan, resuming any journal left behind by a crash.
+ *
+ * The guard is re-read here rather than trusted from the plan: activation or
+ * adoption may have started since the manifest was produced, and the losing
+ * side of that race must defer, not delete.
+ */
+export const executePrimeCleanup = async (input: {
+  readonly plan: PrimeCleanupPlan;
+  readonly confirmation: PrimeCleanupConfirmation | undefined;
+  readonly journal: PrimeCleanupJournalStore;
+  /** Fresh lease/adoption state, read immediately before the first removal. */
+  readonly guard: () => Promise<PrimeCleanupGuard>;
+  readonly proof: PrimeOwnershipProof;
+  readonly cleanup: PrimeOwnershipCleanup;
+  readonly now: () => string;
+}): Promise<PrimeCleanupReport> => {
+  const { plan } = input;
+  const base = { scopeDigest: plan.scopeDigest, reason: plan.reason } as const;
+
+  if (plan.decision.action === "refuse") {
+    return {
+      ...base,
+      outcome: "refused",
+      reasonCode: plan.decision.reason,
+      steps: [],
+      resumable: false,
+    };
+  }
+  if (plan.reason === "none") {
+    // Unreachable through `planPrimeCleanup` (a `"none"` plan always refuses),
+    // but a plan is an ordinary value a caller can hand-build, and nothing
+    // without a deletion reason may reach a removal.
+    return {
+      ...base,
+      outcome: "refused",
+      reasonCode: "nonDestructiveLifecycle",
+      steps: [],
+      resumable: false,
+    };
+  }
+  const reason: PrimeCleanupReason = plan.reason;
+  if (input.confirmation === undefined || !input.confirmation.acknowledged) {
+    return {
+      ...base,
+      outcome: "refused",
+      reasonCode: "confirmationMissing",
+      steps: [],
+      resumable: true,
+    };
+  }
+  if (input.confirmation.scopeDigest !== plan.scopeDigest) {
+    return {
+      ...base,
+      outcome: "refused",
+      reasonCode: "confirmationMismatch",
+      steps: [],
+      resumable: true,
+    };
+  }
+
+  const guard = await input.guard();
+  if (guard.status !== "clear") {
+    return { ...base, outcome: "deferred", reasonCode: guard.status, steps: [], resumable: true };
+  }
+
+  const existing = await input.journal.read(plan.scopeKey);
+  const resumed = existing !== undefined && existing.scopeKey === plan.scopeKey;
+  let steps: readonly PrimeCleanupJournalStep[] = plan.targets.map((target) => {
+    const prior = resumed
+      ? existing.steps.find((step) => step.kind === target.kind && step.status === "done")
+      : undefined;
+    return prior ?? { kind: target.kind, status: "pending" };
+  });
+
+  const startedAt = resumed ? existing.startedAt : input.now();
+  const persist = async (status: PrimeCleanupJournalEntry["status"]) => {
+    await input.journal.write({
+      version: PRIME_CLEANUP_JOURNAL_VERSION,
+      scopeKey: plan.scopeKey,
+      scopeDigest: plan.scopeDigest,
+      reason,
+      status,
+      steps,
+      startedAt,
+      updatedAt: input.now(),
+    });
+  };
+
+  // Write-ahead: the journal exists before anything irreversible happens.
+  await persist("running");
+
+  let scopeMismatch = false;
+  const cursorTarget = plan.targets.find((target) => target.kind === "resumeCursor");
+  if (cursorTarget !== undefined && !doneAlready(existing, "resumeCursor")) {
+    const { state } = await readPrimeResumeCursor(cursorTarget.path, plan.scope);
+    if (state.status === "unavailable" && state.reason === "scopeMismatch") {
+      // Provably somebody else's row at a path this home derived. Nothing else
+      // in this run may proceed, and no future run can change that answer.
+      scopeMismatch = true;
+      steps = stepsWith(steps, "resumeCursor", {
+        kind: "resumeCursor",
+        status: "retained",
+        detail: "cursorScopeMismatch",
+      });
+    } else {
+      await discardPrimeResumeCursor(cursorTarget.path, plan.scope);
+      steps = stepsWith(steps, "resumeCursor", { kind: "resumeCursor", status: "done" });
+    }
+    await persist("running");
+  }
+
+  const cursorCleared = steps.some(
+    (step) => step.kind === "resumeCursor" && step.status === "done",
+  );
+  const ownershipTarget = plan.targets.find((target) => target.kind === "ownedResources");
+  if (ownershipTarget !== undefined && cursorCleared && !doneAlready(existing, "ownedResources")) {
+    const actions = await cleanupPrimeOwnership(ownershipTarget.path, input.proof, input.cleanup);
+    const warnings = warningsOf(actions);
+    steps = stepsWith(
+      steps,
+      "ownedResources",
+      warnings.length === 0
+        ? { kind: "ownedResources", status: "done" }
+        : {
+            kind: "ownedResources",
+            status: "retained",
+            detail: detailCodeForWarning(warnings[0]!),
+          },
+    );
+  } else if (ownershipTarget !== undefined && !cursorCleared) {
+    steps = stepsWith(steps, "ownedResources", {
+      kind: "ownedResources",
+      status: "retained",
+      detail: scopeMismatch ? "cursorScopeMismatch" : "cursorScopeUnproven",
+    });
+  }
+
+  const completed = steps.every((step) => step.status === "done");
+  if (completed) {
+    await persist("completed");
+    await input.journal.clear(plan.scopeKey);
+    return { ...base, outcome: "completed", steps, resumable: false };
+  }
+  if (scopeMismatch) {
+    // Terminal, not retryable: the cursor at this derived path belongs to
+    // another scope and always will, so the row is parked in a state startup
+    // recovery never picks up again instead of looping on every boot.
+    await persist("refused");
+    return {
+      ...base,
+      outcome: "refused",
+      reasonCode: "cursorScopeMismatch",
+      steps,
+      resumable: false,
+    };
+  }
+  await persist("incomplete");
+  return {
+    ...base,
+    outcome: "incomplete",
+    reasonCode: "resourceRetained",
+    steps,
+    resumable: true,
+  };
+};
+
+/**
+ * Resumes whatever a crash left behind for one scope. It re-derives the plan
+ * from the layout rather than trusting stored paths, so a journal row can
+ * never point cleanup at something outside this home's namespace.
+ */
+export const resumePrimeCleanup = async (input: {
+  readonly home: string;
+  readonly scope: PrimeResumeCursorScope;
+  readonly journal: PrimeCleanupJournalStore;
+  readonly guard: () => Promise<PrimeCleanupGuard>;
+  readonly proof: PrimeOwnershipProof;
+  readonly cleanup: PrimeOwnershipCleanup;
+  readonly now: () => string;
+}): Promise<PrimeCleanupReport | undefined> => {
+  const scopeKey = primeResumeScopeKey(input.scope);
+  const entry = await input.journal.read(scopeKey);
+  if (entry === undefined) return undefined;
+  // Terminal rows are history, not work. Re-running them would re-derive the
+  // same refusal on every startup and never converge.
+  if (entry.status === "completed" || entry.status === "refused") return undefined;
+  const guard = await input.guard();
+  const plan = planPrimeCleanup({
+    home: input.home,
+    scope: input.scope,
+    lifecycleEvent:
+      entry.reason === "explicitDelete"
+        ? "threadDelete"
+        : entry.reason === "providerRemoval"
+          ? "instanceRemoved"
+          : entry.reason === "reconfigure"
+            ? "instanceReconfigured"
+            : "storageMigration",
+    guard,
+  });
+  return await executePrimeCleanup({
+    plan,
+    // A journal row *is* the recorded confirmation: the operator already
+    // confirmed this exact scope before the first step ran.
+    confirmation: { scopeDigest: plan.scopeDigest, acknowledged: true },
+    journal: input.journal,
+    guard: input.guard,
+    proof: input.proof,
+    cleanup: input.cleanup,
+    now: input.now,
+  });
+};
+
+export type PrimeRolloutTransition = {
+  readonly provider: "prime-agent";
+  readonly action: "enable" | "disable" | "rollback" | "noop";
+  readonly deletesDurableData: false;
+  readonly preservesUnknownData: true;
+};
+
+/**
+ * Staged rollout/rollback hook. It exists to make the guarantee checkable:
+ * every transition is provider-scoped and none of them deletes anything, so a
+ * downgrade cannot take cursors, ownership records or unknown newer fields
+ * with it.
+ */
+export const primeRolloutTransition = (input: {
+  readonly enabled: boolean;
+  readonly previouslyEnabled: boolean;
+  readonly rollingBack?: boolean;
+}): PrimeRolloutTransition => ({
+  provider: "prime-agent",
+  action:
+    input.rollingBack === true
+      ? "rollback"
+      : input.enabled === input.previouslyEnabled
+        ? "noop"
+        : input.enabled
+          ? "enable"
+          : "disable",
+  deletesDurableData: false,
+  preservesUnknownData: true,
+});
+
+/** The only cleanup shape allowed into logs, telemetry or a remote client. */
+export const redactPrimeCleanupReport = (report: PrimeCleanupReport) => ({
+  scopeDigest: report.scopeDigest,
+  reason: report.reason,
+  outcome: report.outcome,
+  ...(report.reasonCode !== undefined ? { reasonCode: report.reasonCode } : {}),
+  steps: report.steps.map((step) => ({
+    kind: step.kind,
+    status: step.status,
+    ...(step.detail !== undefined ? { detail: step.detail } : {}),
+  })),
+  resumable: report.resumable,
+});
