@@ -199,6 +199,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "session.context.updated",
   "session.commands.updated",
   "session.notices.updated",
+  "session.agents.updated",
 ]);
 export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 
@@ -255,6 +256,7 @@ const SessionActionsUpdatedType = Schema.Literal("session.actions.updated");
 const SessionContextUpdatedType = Schema.Literal("session.context.updated");
 const SessionCommandsUpdatedType = Schema.Literal("session.commands.updated");
 const SessionNoticesUpdatedType = Schema.Literal("session.notices.updated");
+const SessionAgentsUpdatedType = Schema.Literal("session.agents.updated");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
@@ -1042,6 +1044,65 @@ export const reduceProviderSessionNoticeBoard = (
   return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_NOTICE_BOARD : current;
 };
 
+/**
+ * Provider-neutral agent roster.
+ *
+ * A runtime that delegates work to subagents needs somewhere to show that work
+ * that is *not* the main transcript: duplicating a subagent's output into the
+ * thread is exactly the flood this surface exists to avoid. The roster is a
+ * bounded current-state snapshot — one row per agent, the root included, each
+ * with its own identity, state, and whether this environment is observing it.
+ *
+ * Identities are opaque and adapter-owned. Nothing here is invented by T3, and
+ * an identity absent from the roster is not a legal action target.
+ */
+const SessionAgentRole = Schema.Literals(["root", "subagent"]);
+export type ProviderSessionAgentRole = typeof SessionAgentRole.Type;
+const SessionAgentStatus = Schema.Literals([
+  "running",
+  "paused",
+  "completed",
+  "cancelled",
+  "failed",
+]);
+export type ProviderSessionAgentStatus = typeof SessionAgentStatus.Type;
+const SessionAgentEntry = Schema.Struct({
+  /** Opaque runtime-owned identity; the only legal target of an agent action. */
+  agentId: RuntimeTaskId,
+  role: SessionAgentRole,
+  status: SessionAgentStatus,
+  title: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)),
+  /** True while this environment holds an observation on the agent. */
+  observed: Schema.Boolean,
+  /** Newest bounded observed line; deliberately a status, not scrollback. */
+  detail: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
+});
+export type ProviderSessionAgent = typeof SessionAgentEntry.Type;
+export const PROVIDER_SESSION_AGENT_LIMIT = 16;
+const SessionAgentsUpdatedPayload = Schema.Struct({
+  agents: Schema.Array(SessionAgentEntry).check(Schema.isMaxLength(PROVIDER_SESSION_AGENT_LIMIT)),
+});
+export type SessionAgentsUpdatedPayload = typeof SessionAgentsUpdatedPayload.Type;
+
+export interface ProviderSessionAgentRoster {
+  readonly agents: ReadonlyArray<ProviderSessionAgent>;
+}
+export const EMPTY_PROVIDER_SESSION_AGENT_ROSTER: ProviderSessionAgentRoster = Object.freeze({
+  agents: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so every
+ * attached client converges on the same roster; a session that exits keeps no
+ * agents, because an observation cannot outlive the session that owned it.
+ */
+export const reduceProviderSessionAgentRoster = (
+  current: ProviderSessionAgentRoster = EMPTY_PROVIDER_SESSION_AGENT_ROSTER,
+  event: ProviderRuntimeEvent,
+): ProviderSessionAgentRoster => {
+  if (event.type === "session.agents.updated") return { agents: [...event.payload.agents] };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_AGENT_ROSTER : current;
+};
+
 const ProviderRuntimeSessionStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionStartedType,
@@ -1434,6 +1495,14 @@ const ProviderRuntimeSessionNoticesUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionNoticesUpdatedEvent =
   typeof ProviderRuntimeSessionNoticesUpdatedEvent.Type;
 
+const ProviderRuntimeSessionAgentsUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionAgentsUpdatedType,
+  payload: SessionAgentsUpdatedPayload,
+});
+export type ProviderRuntimeSessionAgentsUpdatedEvent =
+  typeof ProviderRuntimeSessionAgentsUpdatedEvent.Type;
+
 export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
@@ -1488,6 +1557,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionContextUpdatedEvent,
   ProviderRuntimeSessionCommandsUpdatedEvent,
   ProviderRuntimeSessionNoticesUpdatedEvent,
+  ProviderRuntimeSessionAgentsUpdatedEvent,
 ]);
 export type ProviderRuntimeEventV2 = typeof ProviderRuntimeEventV2.Type;
 

@@ -1098,6 +1098,38 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // Observation is bound to a live session: an agent inside a dead process
+    // cannot be watched, and pretending otherwise would leave a control that
+    // never resolves.
+    case "thread.agent.observe":
+    case "thread.agent.unobserve": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session === null || thread.session.status === "stopped") {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Watching a runtime agent requires a live provider session.",
+          }),
+        );
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.agent-observation-requested" as const,
+        payload: {
+          threadId: command.threadId,
+          agentId: command.agentId,
+          intent:
+            command.type === "thread.agent.observe" ? ("observe" as const) : ("unobserve" as const),
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.commands.refresh": {
       const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
       if (thread.session === null) {

@@ -11,6 +11,7 @@ import {
   RuntimeRequestId,
   type SessionCommandsUpdatedPayload,
   type SessionNoticesUpdatedPayload,
+  type SessionAgentsUpdatedPayload,
   type ThreadTokenUsageSnapshot,
 } from "@t3tools/contracts";
 import type { PrimeRpcKnownEvent, PrimeRpcEnvelope } from "./PrimeRpcProtocol.ts";
@@ -326,6 +327,16 @@ export class PrimeEventNormalizer {
   noticesSnapshot(board: SessionNoticesUpdatedPayload | undefined): ProviderRuntimeEvent[] {
     if (this.#stopped || !board) return [];
     return [this.base("session.notices.updated", board, { turnId: this.#turn })];
+  }
+
+  /**
+   * Publishes the root/subagent roster. The caller owns the bounded roster and
+   * drops byte-identical repeats; a stopped session publishes nothing, because
+   * an observation cannot outlive the session that owned it.
+   */
+  agentsSnapshot(roster: SessionAgentsUpdatedPayload | undefined): ProviderRuntimeEvent[] {
+    if (this.#stopped || !roster) return [];
+    return [this.base("session.agents.updated", roster, { turnId: this.#turn })];
   }
 
   /**

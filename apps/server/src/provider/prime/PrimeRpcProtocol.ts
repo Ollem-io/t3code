@@ -109,7 +109,18 @@ const SetThinkingLevelCommand = Schema.Struct({
   type: Schema.Literal("set_thinking_level"),
   level: Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
 });
+/**
+ * Observation attaches this environment to one task's output and detaches from
+ * it again. Both take an exact runtime-owned task id; T3 never invents one and
+ * never sends a daemon-wide variant of either command.
+ */
+const ObservationCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literals(["observe", "unobserve"]),
+  taskId: Schema.String,
+});
 export const PrimeRpcCommand = Schema.Union([
+  ObservationCommand,
   PromptCommand,
   QueuedPromptCommand,
   NoArgumentCommand,
@@ -239,6 +250,22 @@ const SessionActionUpdateEvent = Schema.Struct({
   type: Schema.Literal("session_action_update"),
   actions: PrimeRpcSessionActionSnapshot,
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
+// The 0.7.2 task store is a whole snapshot, not a task log. As with the action
+// store it is bounded at this untrusted boundary, and `onExcessProperty: error`
+// keeps an unrecognized shape incompatible rather than silently reinterpreted.
+const PrimeRpcTaskEntry = Schema.Struct({
+  taskId: Schema.String.check(Schema.isMaxLength(128)),
+  // Absent means this is a root agent. Parentage is reported, never inferred.
+  parentTaskId: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
+  title: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+  status: Schema.Literals(["running", "paused", "completed", "cancelled", "failed"]),
+  // Newest observed line for this task. Bounded here and clamped again on the way out.
+  detail: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const TaskUpdateEvent = Schema.Struct({
+  type: Schema.Literal("task_update"),
+  tasks: Schema.Array(PrimeRpcTaskEntry).check(Schema.isMaxLength(64)),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
 const ExtensionUiRequest = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("extension_ui_request"),
@@ -321,6 +348,7 @@ export const PrimeRpcKnownEvent = Schema.Union([
   SessionActionUpdateEvent,
   CompactionUpdateEvent,
   RetryUpdateEvent,
+  TaskUpdateEvent,
 ]);
 export type PrimeRpcCommand = typeof PrimeRpcCommand.Type;
 export type PrimeRpcResponse = typeof PrimeRpcResponse.Type;
@@ -404,6 +432,8 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "get_session_stats",
     "compact",
     "get_commands",
+    "observe",
+    "unobserve",
   ]);
   const knownEventTypes = new Set([
     "agent_start",
@@ -420,6 +450,7 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "session_action_update",
     "compaction_update",
     "retry_update",
+    "task_update",
   ]);
   if (knownCommandTypes.has(envelope.type))
     return { _tag: "malformed", error: new PrimeRpcCompatibilityError("command") };

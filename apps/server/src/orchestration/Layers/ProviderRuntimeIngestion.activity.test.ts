@@ -187,3 +187,46 @@ describe("runtimeEventToActivities prime context", () => {
     ).toEqual([]);
   });
 });
+
+describe("runtimeEventToActivities prime agents", () => {
+  const agentsEvent = (agents: ReadonlyArray<Record<string, unknown>>): ProviderRuntimeEvent =>
+    ({
+      ...base,
+      provider: ProviderDriverKind.make("prime-agent"),
+      type: "session.agents.updated",
+      eventId: EventId.make("evt-agents"),
+      payload: { agents },
+    }) as ProviderRuntimeEvent;
+
+  it("never turns subagent work into timeline activity", () => {
+    // The Agents surface is where root and subagent work is represented. A
+    // roster snapshot that also produced activity rows would be exactly the
+    // duplication this milestone exists to prevent: two agents talking, one
+    // transcript, growing with every status change a subagent reports.
+    expect(
+      runtimeEventToActivities(
+        agentsEvent([
+          {
+            agentId: RuntimeTaskId.make("root-1"),
+            role: "root",
+            status: "running",
+            title: "Refactor pass",
+            observed: false,
+          },
+          {
+            agentId: RuntimeTaskId.make("sub-1"),
+            role: "subagent",
+            status: "running",
+            title: "Read the tests",
+            observed: true,
+            detail: "12 tests read",
+          },
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("stays silent for an empty roster too", () => {
+    expect(runtimeEventToActivities(agentsEvent([]))).toEqual([]);
+  });
+});

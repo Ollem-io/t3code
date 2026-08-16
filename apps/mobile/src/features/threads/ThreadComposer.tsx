@@ -109,6 +109,13 @@ import {
   renderPrimeNotice,
   visiblePrimeNotices,
 } from "./primeExtensionUi";
+import {
+  PRIME_AGENTS_ARE_NOT_TRANSCRIPT,
+  hasPrimeAgents,
+  primeAgentControl,
+  renderPrimeAgent,
+  visiblePrimeAgents,
+} from "./primeAgents";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -156,6 +163,10 @@ export interface ThreadComposerProps {
   /** Runtime context management. Compaction is never a checkpoint or a revert. */
   readonly onRequestCompaction?: () => Promise<boolean>;
   readonly onRefreshUsage?: () => Promise<boolean>;
+  readonly onToggleAgentObservation?: (
+    agentId: string,
+    action: "task.observe" | "task.unobserve",
+  ) => Promise<boolean>;
   /** Explicit, bounded re-read of the runtime command catalog. Never polled. */
   readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
@@ -351,6 +362,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     dismissedPrimeNotices,
   );
   const primeDialogStatus = renderPrimeDialogStatus(props.pendingDialogCount ?? 0);
+  // Root and subagent rows. Watching an agent always shows its exact reverse,
+  // and a subagent's output stays here instead of flooding the thread.
+  const primeAgents = visiblePrimeAgents(
+    props.selectedThread.session?.agentRoster,
+    props.selectedThread.session,
+  );
   const primeCommands = props.selectedThread.session?.commandCatalog?.commands;
   const primeCommandCatalogRef = useRef(primeCommands);
   primeCommandCatalogRef.current = primeCommands;
@@ -1240,6 +1257,49 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     {primeUsageDecision.reason}
                   </Text>
                 ) : null}
+              </>
+            ) : null}
+            {hasPrimeAgents(
+              props.selectedThread.session?.providerName,
+              props.selectedThread.session?.runtimeCapabilities,
+            ) && primeAgents.length > 0 ? (
+              <>
+                {primeAgents.map((agent) => {
+                  const control = primeAgentControl(
+                    agent,
+                    props.selectedThread.session,
+                    props.selectedThread.session?.runtimeCapabilities,
+                  );
+                  return (
+                    <View key={agent.agentId} className="mt-1 flex-row items-center gap-2">
+                      <Text className="text-xs text-foreground-muted">
+                        {renderPrimeAgent(agent)}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={control.label}
+                        accessibilityState={{ disabled: !control.enabled }}
+                        disabled={!control.enabled}
+                        onPress={() => {
+                          void props.onToggleAgentObservation?.(agent.agentId, control.action);
+                        }}
+                        className={
+                          control.enabled
+                            ? "rounded-md border border-border px-2 py-1"
+                            : "rounded-md border border-border px-2 py-1 opacity-50"
+                        }
+                      >
+                        <Text className="text-xs text-foreground">{control.label}</Text>
+                      </Pressable>
+                      {control.reason ? (
+                        <Text className="text-xs text-foreground-muted">{control.reason}</Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {PRIME_AGENTS_ARE_NOT_TRANSCRIPT}
+                </Text>
               </>
             ) : null}
             {/* Transient extension status: bounded, dismissible, never transcript. */}

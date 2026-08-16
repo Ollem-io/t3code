@@ -16,6 +16,7 @@ import {
   OrchestrationSessionActionState,
   OrchestrationSessionCommandCatalog,
   OrchestrationSessionNoticeBoard,
+  OrchestrationSessionAgentRoster,
   OrchestrationSessionContextState,
   ProviderRuntimeCapabilities,
 } from "@t3tools/contracts";
@@ -38,6 +39,7 @@ export const ProjectionThreadSession = Schema.Struct({
   actionState: Schema.optional(OrchestrationSessionActionState),
   commandCatalog: Schema.optional(OrchestrationSessionCommandCatalog),
   noticeBoard: Schema.optional(OrchestrationSessionNoticeBoard),
+  agentRoster: Schema.optional(OrchestrationSessionAgentRoster),
   contextState: Schema.optional(OrchestrationSessionContextState),
   runtimeCapabilities: Schema.optional(ProviderRuntimeCapabilities),
 });

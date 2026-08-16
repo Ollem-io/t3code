@@ -157,6 +157,7 @@ describe("ProviderCommandReactor", () => {
           readonly compactionCancel?: boolean;
           readonly usageAndRetry?: boolean;
           readonly commandDiscovery?: boolean;
+          readonly tasks?: boolean;
         }
       | undefined;
     readonly requiresNewThreadForModelChange?: boolean;
@@ -782,6 +783,123 @@ describe("ProviderCommandReactor", () => {
         threadId: ThreadId.make("thread-1"),
       }),
     );
+  });
+
+  // PA-A06: the roster this thread's session reports is the authorization list.
+  // Remote clients reach this path over the wire, so an id the session does not
+  // report must never turn into a runtime call.
+  it("dispatches an owned agent observation and refuses an unowned identity", async () => {
+    const harness = await createHarness({ runtimeExtensions: { tasks: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    const session = {
+      threadId: ThreadId.make("thread-1"),
+      status: "running" as const,
+      providerName: "prime-agent",
+      providerInstanceId: ProviderInstanceId.make("prime-agent"),
+      runtimeMode: "approval-required" as const,
+      activeTurnId: asTurnId("turn-agents"),
+      lastError: null,
+      updatedAt: now,
+      agentRoster: {
+        agents: [
+          {
+            agentId: "sub-1",
+            role: "subagent" as const,
+            status: "running" as const,
+            title: "Read the tests",
+            observed: false,
+          },
+        ],
+      },
+    };
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-agents-session"),
+        threadId: ThreadId.make("thread-1"),
+        session,
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.agent.observe",
+        commandId: CommandId.make("cmd-agent-observe"),
+        threadId: ThreadId.make("thread-1"),
+        agentId: "sub-1",
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.agent.unobserve",
+        commandId: CommandId.make("cmd-agent-unobserve"),
+        threadId: ThreadId.make("thread-1"),
+        agentId: "sub-1",
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.agent.observe",
+        commandId: CommandId.make("cmd-agent-observe-foreign"),
+        threadId: ThreadId.make("thread-1"),
+        agentId: "sub-from-another-daemon",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation.mock.calls.map(([operation]) => operation)).toEqual([
+      expect.objectContaining({ type: "task.observe", taskId: "sub-1" }),
+      expect.objectContaining({ type: "task.unobserve", taskId: "sub-1" }),
+    ]);
+  });
+
+  it("fails closed when the runtime does not advertise agent observation", async () => {
+    const harness = await createHarness({ runtimeExtensions: { steer: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-agents-ungated-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "prime-agent",
+          providerInstanceId: ProviderInstanceId.make("prime-agent"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-agents-ungated"),
+          lastError: null,
+          updatedAt: now,
+          agentRoster: {
+            agents: [
+              {
+                agentId: "sub-1",
+                role: "subagent",
+                status: "running",
+                title: "Read the tests",
+                observed: false,
+              },
+            ],
+          },
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.agent.observe",
+        commandId: CommandId.make("cmd-agent-observe-ungated"),
+        threadId: ThreadId.make("thread-1"),
+        agentId: "sub-1",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
   });
 
   it("fails closed when command discovery is not advertised", async () => {

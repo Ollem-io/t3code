@@ -127,3 +127,42 @@ fire-and-forget presentation. T3 treats the two groups as different things.
 through the shipped mapper (`PrimeExtensionUi.ts`), the shipped canonical contract, and the shipped
 client projection — it imports them rather than re-implementing them.
 `PrimeExtensionUiTranscript.test.ts` keeps that wiring honest in CI.
+
+## PA-A06 subagents, observation, and the Agents surface
+
+Prime 0.7.2 reports its task store as a whole `task_update` snapshot and exposes
+`observe` / `unobserve` for one task's output. T3 maps that onto the
+provider-neutral `session.agents.updated` roster and the generic
+`task.observe` / `task.unobserve` runtime operations, gated on `tasks`.
+
+- **Identities are the runtime's.** A row exists only because the runtime
+  reported it, parentage is read from `parentTaskId` rather than inferred, and
+  an id T3 cannot reproduce exactly (over-long, blank) is dropped rather than
+  renamed. T3 invents no agent id.
+- **The roster is the authorization list.** Observe and unobserve are checked
+  against the roster this T3-owned session currently reports — in the reactor
+  before the host is touched, and again in the adapter against its own live
+  roster. A stale id, another thread's agent, and an id fished out of a daemon
+  all fail the same way, so no cross-daemon enumeration is possible.
+- **Agent work is not transcript.** A roster snapshot produces no timeline
+  activity and no transcript rows; an observed agent contributes one bounded
+  line to its own row. This is the whole point: two agents talking must not
+  become one flooded conversation.
+- **Bounded and coalesced.** At most sixteen rows, 120-character titles,
+  256-character detail. A byte-identical roster produces neither a durable event
+  nor a projection write.
+- **Reverse states exist.** Watching always renders its exact reverse. A control
+  that cannot work is disabled with the reason stated instead of failing after
+  the click, and a runtime without `tasks` explains that instead of hiding.
+- **Observation dies with its agent and its session.** A finished agent drops
+  its observation, and an exited session keeps no roster: an observation cannot
+  outlive the session that owned it, and a crashed session never keeps offering
+  "Watch" inside a dead process.
+- **No invented cancellation.** Prime 0.7.2 has no per-agent cancel/pause/resume
+  RPC, so `task.cancel` / `task.pause` / `task.resume` stay refused rather than
+  mapped onto the turn-wide `abort`.
+
+`packages/contracts/fixtures/pa-a06-prime-agents-transcript.mjs` runs a scripted
+root plus two subagents through the shipped mapper (`PrimeObservation.ts`), the
+shipped canonical contract, and the shipped client projection.
+`PrimeObservationTranscript.test.ts` keeps that wiring honest in CI.

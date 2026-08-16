@@ -222,6 +222,8 @@ function ThreadRouteContent(
     "thread compaction",
   );
   const refreshThreadUsage = useAtomCommand(threadEnvironment.refreshUsage, "thread usage refresh");
+  const observeThreadAgent = useAtomCommand(threadEnvironment.observeAgent, "agent observe");
+  const unobserveThreadAgent = useAtomCommand(threadEnvironment.unobserveAgent, "agent unobserve");
   const refreshThreadCommands = useAtomCommand(
     threadEnvironment.refreshCommands,
     "thread command refresh",
@@ -553,6 +555,21 @@ function ThreadRouteContent(
     return result._tag !== "Failure";
   }, [refreshThreadUsage, selectedThread]);
 
+  // Watching a runtime agent, and its exact reverse. The host re-checks that
+  // this thread's session still reports the agent before anything happens.
+  const handleToggleAgentObservation = useCallback(
+    async (agentId: string, action: "task.observe" | "task.unobserve"): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const input = { threadId: selectedThread.id, agentId };
+      const result =
+        action === "task.observe"
+          ? await observeThreadAgent({ environmentId: selectedThread.environmentId, input })
+          : await unobserveThreadAgent({ environmentId: selectedThread.environmentId, input });
+      return result._tag !== "Failure";
+    },
+    [observeThreadAgent, selectedThread, unobserveThreadAgent],
+  );
+
   // Opening the command list is the only moment it is read, so it is the only
   // moment it is refreshed: bounded, explicit, and never polled.
   const handleRefreshCommands = useCallback(async (): Promise<boolean> => {
@@ -881,6 +898,7 @@ function ThreadRouteContent(
           onRuntimeAction={handleRuntimeAction}
           onRequestCompaction={handleRequestCompaction}
           onRefreshUsage={handleRefreshUsage}
+          onToggleAgentObservation={handleToggleAgentObservation}
           onRefreshCommands={handleRefreshCommands}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
