@@ -131,6 +131,8 @@ export interface ThreadDetailScreenProps {
     heartbeatId: string,
     action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
   ) => Promise<boolean>;
+  readonly onRenameSession?: (name: string) => Promise<boolean>;
+  readonly onForkSession?: (forkPointId: string | undefined) => Promise<boolean>;
   readonly onRefreshCommands?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
@@ -760,6 +762,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onToggleAgentObservation={props.onToggleAgentObservation}
                 onCreateHeartbeat={props.onCreateHeartbeat}
                 onHeartbeatAction={props.onHeartbeatAction}
+                onRenameSession={props.onRenameSession}
+                onForkSession={props.onForkSession}
                 onRefreshCommands={props.onRefreshCommands}
                 onSendMessage={handleSendMessage}
                 onReconnectEnvironment={props.onReconnectEnvironment}

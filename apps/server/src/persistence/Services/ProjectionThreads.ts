@@ -10,6 +10,7 @@ import {
   CommandId,
   IsoDateTime,
   ModelSelection,
+  OrchestrationThreadForkOrigin,
   NonNegativeInt,
   ProjectId,
   ProviderInteractionMode,
@@ -33,6 +34,8 @@ export const ProjectionThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
+  /** Ancestry of a forked thread; absent for every thread that was simply created. */
+  forkedFrom: Schema.optional(Schema.NullOr(OrchestrationThreadForkOrigin)),
   latestTurnId: Schema.NullOr(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

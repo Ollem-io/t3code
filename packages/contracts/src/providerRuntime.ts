@@ -14,7 +14,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
-import { GoalId, HeartbeatId } from "./providerCapabilities.ts";
+import { GoalId, HeartbeatId, RuntimeExtensionId } from "./providerCapabilities.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -202,6 +202,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "session.notices.updated",
   "session.agents.updated",
   "session.goals.updated",
+  "session.identity.updated",
 ]);
 export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 
@@ -260,6 +261,7 @@ const SessionCommandsUpdatedType = Schema.Literal("session.commands.updated");
 const SessionNoticesUpdatedType = Schema.Literal("session.notices.updated");
 const SessionAgentsUpdatedType = Schema.Literal("session.agents.updated");
 const SessionGoalsUpdatedType = Schema.Literal("session.goals.updated");
+const SessionIdentityUpdatedType = Schema.Literal("session.identity.updated");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
@@ -1189,6 +1191,68 @@ export const reduceProviderSessionGoalBoard = (
   return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_GOAL_BOARD : current;
 };
 
+/**
+ * Provider-neutral session identity: the name the runtime currently reports for
+ * this session, and the bounded page of points a fork may start from.
+ *
+ * Deliberately narrow, for the same reasons the other snapshots are:
+ *
+ * - **Labels, never transcript.** A fork point carries the runtime's own
+ *   identity and a short label. Message bodies are content and never cross this
+ *   boundary just so a chooser can be drawn.
+ * - **The page is bounded and says so.** A long conversation offers more fork
+ *   points than any client should render at once, so the runtime's most recent
+ *   points are published with a truncation flag rather than an unbounded list.
+ * - **Naming is not durable resume.** This card describes a live session; it
+ *   carries no cursor, and nothing here survives the session it belongs to.
+ */
+const SessionForkPointEntry = Schema.Struct({
+  /** Opaque runtime-owned identity of a message a fork may start from. */
+  forkPointId: RuntimeExtensionId,
+  label: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120)),
+  role: Schema.Literals(["user", "assistant"]),
+  /** Position in the runtime's own ordering, so a dropped point never renumbers the rest. */
+  index: NonNegativeInt,
+});
+export type ProviderSessionForkPoint = typeof SessionForkPointEntry.Type;
+
+export const PROVIDER_SESSION_FORK_POINT_LIMIT = 20;
+const SessionIdentityUpdatedPayload = Schema.Struct({
+  name: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(120))),
+  forkPoints: Schema.Array(SessionForkPointEntry).check(
+    Schema.isMaxLength(PROVIDER_SESSION_FORK_POINT_LIMIT),
+  ),
+  /** Present only when the runtime reported more fork points than this page holds. */
+  truncated: Schema.optional(Schema.Literal(true)),
+});
+export type SessionIdentityUpdatedPayload = typeof SessionIdentityUpdatedPayload.Type;
+
+export interface ProviderSessionIdentityCard {
+  readonly name?: string | undefined;
+  readonly forkPoints: ReadonlyArray<ProviderSessionForkPoint>;
+  readonly truncated?: true | undefined;
+}
+export const EMPTY_PROVIDER_SESSION_IDENTITY_CARD: ProviderSessionIdentityCard = Object.freeze({
+  forkPoints: Object.freeze([]),
+});
+/**
+ * Apply canonical runtime events in arrival order. Snapshots replace, so every
+ * attached client converges on the same card, and a session that exits keeps
+ * none: renaming or forking a session that is gone is not an offer T3 can keep.
+ */
+export const reduceProviderSessionIdentityCard = (
+  current: ProviderSessionIdentityCard = EMPTY_PROVIDER_SESSION_IDENTITY_CARD,
+  event: ProviderRuntimeEvent,
+): ProviderSessionIdentityCard => {
+  if (event.type === "session.identity.updated")
+    return {
+      ...(event.payload.name ? { name: event.payload.name } : {}),
+      forkPoints: [...event.payload.forkPoints],
+      ...(event.payload.truncated ? { truncated: true as const } : {}),
+    };
+  return event.type === "session.exited" ? EMPTY_PROVIDER_SESSION_IDENTITY_CARD : current;
+};
+
 const ProviderRuntimeSessionStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionStartedType,
@@ -1597,6 +1661,14 @@ const ProviderRuntimeSessionGoalsUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionGoalsUpdatedEvent =
   typeof ProviderRuntimeSessionGoalsUpdatedEvent.Type;
 
+const ProviderRuntimeSessionIdentityUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionIdentityUpdatedType,
+  payload: SessionIdentityUpdatedPayload,
+});
+export type ProviderRuntimeSessionIdentityUpdatedEvent =
+  typeof ProviderRuntimeSessionIdentityUpdatedEvent.Type;
+
 export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
@@ -1653,6 +1725,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionNoticesUpdatedEvent,
   ProviderRuntimeSessionAgentsUpdatedEvent,
   ProviderRuntimeSessionGoalsUpdatedEvent,
+  ProviderRuntimeSessionIdentityUpdatedEvent,
 ]);
 export type ProviderRuntimeEventV2 = typeof ProviderRuntimeEventV2.Type;
 

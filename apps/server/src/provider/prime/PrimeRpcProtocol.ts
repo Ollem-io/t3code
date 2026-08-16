@@ -160,11 +160,43 @@ const HeartbeatGetCommand = Schema.Struct({
   id: Schema.optional(RequestId),
   type: Schema.Literal("heartbeat_get"),
 });
+/**
+ * Naming and forking.
+ *
+ * `set_session_name` renames the live session; the runtime is the authority on
+ * the name it accepted, so T3 re-reads rather than echoing what it sent.
+ * `get_fork_messages` lists the points a fork may start from — identity and a
+ * bounded label only, never message bodies. `fork` starts a new session from
+ * one of those points and `clone` copies the whole session; both answer with
+ * the new native session id, which is the only id T3 ever claims.
+ */
+const SetSessionNameCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("set_session_name"),
+  name: Schema.String,
+});
+const GetForkMessagesCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("get_fork_messages"),
+});
+const ForkCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("fork"),
+  messageId: Schema.String,
+});
+const CloneCommand = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("clone"),
+});
 export const PrimeRpcCommand = Schema.Union([
   ObservationCommand,
   HeartbeatCreateCommand,
   HeartbeatTargetCommand,
   HeartbeatGetCommand,
+  SetSessionNameCommand,
+  GetForkMessagesCommand,
+  ForkCommand,
+  CloneCommand,
   PromptCommand,
   QueuedPromptCommand,
   NoArgumentCommand,
@@ -196,6 +228,45 @@ export const PrimeRpcHeartbeatResponse = Schema.Struct({
     heartbeatId: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
     heartbeats: PrimeRpcHeartbeatList,
     resident: Schema.optional(Schema.Boolean),
+  }),
+});
+/**
+ * The fork-point list. Bounded at this untrusted boundary like every other
+ * native store, and deliberately identity plus a short label: a fork chooser
+ * does not need message bodies, so the protocol never carries them.
+ */
+const PrimeRpcForkMessage = Schema.Struct({
+  messageId: Schema.String.check(Schema.isMaxLength(128)),
+  role: Schema.Literals(["user", "assistant"]),
+  preview: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+/**
+ * Deliberately validated by the adapter rather than routed at the envelope
+ * boundary like the heartbeat store is. Naming and forking are an optional
+ * extension probed at session start; a runtime whose answer this build cannot
+ * read must cost the fork page, not the session the user is working in.
+ */
+export const PrimeRpcForkMessagesResponse = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("response"),
+  command: Schema.Literal("get_fork_messages"),
+  success: Schema.Literal(true),
+  data: Schema.Struct({
+    messages: Schema.Array(PrimeRpcForkMessage).check(Schema.isMaxLength(256)),
+  }),
+});
+/**
+ * `fork` and `clone` answer with the session they just made. T3 records that
+ * id as its own; a creation that answers without one is not adopted.
+ */
+export const PrimeRpcForkResponse = Schema.Struct({
+  id: Schema.optional(RequestId),
+  type: Schema.Literal("response"),
+  command: Schema.Literals(["fork", "clone"]),
+  success: Schema.Literal(true),
+  data: Schema.Struct({
+    sessionId: Schema.String.check(Schema.isMaxLength(256)),
+    name: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
   }),
 });
 const SuccessResponse = Schema.Struct({
@@ -343,6 +414,14 @@ const HeartbeatUpdateEvent = Schema.Struct({
   heartbeats: PrimeRpcHeartbeatList,
   resident: Schema.optional(Schema.Boolean),
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
+/**
+ * The session's current name, reported whole. An absent name means the session
+ * has none; T3 never invents one and never keeps a name the runtime dropped.
+ */
+const SessionNameUpdateEvent = Schema.Struct({
+  type: Schema.Literal("session_name_update"),
+  name: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
 const TaskUpdateEvent = Schema.Struct({
   type: Schema.Literal("task_update"),
   tasks: Schema.Array(PrimeRpcTaskEntry).check(Schema.isMaxLength(64)),
@@ -432,10 +511,14 @@ export const PrimeRpcKnownEvent = Schema.Union([
   TaskUpdateEvent,
   GoalUpdateEvent,
   HeartbeatUpdateEvent,
+  SessionNameUpdateEvent,
 ]);
 export type PrimeRpcCommand = typeof PrimeRpcCommand.Type;
 export type PrimeRpcResponse = typeof PrimeRpcResponse.Type;
 export type PrimeRpcKnownEvent = typeof PrimeRpcKnownEvent.Type;
+export type PrimeRpcForkMessagesResponse = typeof PrimeRpcForkMessagesResponse.Type;
+export type PrimeRpcForkResponse = typeof PrimeRpcForkResponse.Type;
+export type PrimeRpcForkMessage = PrimeRpcForkMessagesResponse["data"]["messages"][number];
 export type PrimeRpcImageInput = typeof PrimeRpcImageInput.Type;
 export type PrimeRpcModel = typeof PrimeRpcModel.Type;
 
@@ -524,6 +607,10 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "heartbeat_pause",
     "heartbeat_resume",
     "heartbeat_stop",
+    "set_session_name",
+    "get_fork_messages",
+    "fork",
+    "clone",
   ]);
   const knownEventTypes = new Set([
     "agent_start",
@@ -543,6 +630,7 @@ export const decodePrimeRpcEnvelope = (value: unknown): PrimeRpcEnvelope => {
     "task_update",
     "goal_update",
     "heartbeat_update",
+    "session_name_update",
   ]);
   if (knownCommandTypes.has(envelope.type))
     return { _tag: "malformed", error: new PrimeRpcCompatibilityError("command") };

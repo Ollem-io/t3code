@@ -31,6 +31,8 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 import { PrimeAgentsSection, type PrimeAgentsSectionProps } from "./agents/PrimeAgentsSection";
 import { primeAgentsView } from "./agents/primeAgents";
 import { PrimeHeartbeatPanel, type PrimeHeartbeatPanelProps } from "./chat/PrimeHeartbeatPanel";
+import { PrimeForkPanel, type PrimeForkPanelProps } from "./chat/PrimeForkPanel";
+import { primeIdentityView } from "./chat/primeFork";
 import { primeGoalBoardView } from "./chat/primeHeartbeat";
 
 /**
@@ -528,6 +530,7 @@ export function AgentsPanel({
   threadId = null,
   prime,
   primeGoals,
+  primeNaming,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
@@ -536,6 +539,8 @@ export function AgentsPanel({
   prime?: PrimeAgentsSectionProps | undefined;
   /** Runtime-reported goal and owned-heartbeat board, for providers that have one. */
   primeGoals?: PrimeHeartbeatPanelProps | undefined;
+  /** Runtime-reported session name and fork-point page, for providers that have one. */
+  primeNaming?: PrimeForkPanelProps | undefined;
 }) {
   // A runtime roster is agents too: the empty state must not claim there are
   // none while Prime is reporting a root and two subagents.
@@ -552,7 +557,23 @@ export function AgentsPanel({
         primeGoals.session,
       )
     : ({ kind: "hidden" } as const);
-  if (!model.hasAgents && primeView.kind === "hidden" && primeGoalsView.kind === "hidden") {
+  // The session's own identity belongs to the same surface, for the same
+  // reason: while it has a name or a fork point to offer, this panel is not
+  // empty.
+  const primeNamingView = primeNaming
+    ? primeIdentityView(
+        primeNaming.providerName,
+        primeNaming.capabilities,
+        primeNaming.card,
+        primeNaming.session,
+      )
+    : ({ kind: "hidden" } as const);
+  if (
+    !model.hasAgents &&
+    primeView.kind === "hidden" &&
+    primeGoalsView.kind === "hidden" &&
+    primeNamingView.kind === "hidden"
+  ) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
@@ -571,6 +592,7 @@ export function AgentsPanel({
         <div className="flex flex-col gap-2 p-2">
           {prime ? <PrimeAgentsSection {...prime} /> : null}
           {primeGoals ? <PrimeHeartbeatPanel {...primeGoals} /> : null}
+          {primeNaming ? <PrimeForkPanel {...primeNaming} /> : null}
           {model.workflows.map((group) => (
             <WorkflowSection
               key={group.workflow.id}

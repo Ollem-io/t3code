@@ -13,6 +13,7 @@ import {
   type SessionNoticesUpdatedPayload,
   type SessionAgentsUpdatedPayload,
   type SessionGoalsUpdatedPayload,
+  type SessionIdentityUpdatedPayload,
   type ThreadTokenUsageSnapshot,
 } from "@t3tools/contracts";
 import type { PrimeRpcKnownEvent, PrimeRpcEnvelope } from "./PrimeRpcProtocol.ts";
@@ -349,6 +350,18 @@ export class PrimeEventNormalizer {
   goalsSnapshot(board: SessionGoalsUpdatedPayload | undefined): ProviderRuntimeEvent[] {
     if (this.#stopped || !board) return [];
     return [this.base("session.goals.updated", board, { turnId: this.#turn })];
+  }
+
+  /**
+   * Publishes the session identity card: the runtime's own session name and the
+   * bounded page of points a fork may start from. The caller owns the bounds
+   * and drops byte-identical repeats; a stopped session publishes nothing,
+   * because renaming or forking a session that is gone is not an offer T3 can
+   * keep open.
+   */
+  identitySnapshot(card: SessionIdentityUpdatedPayload | undefined): ProviderRuntimeEvent[] {
+    if (this.#stopped || !card) return [];
+    return [this.base("session.identity.updated", card, { turnId: this.#turn })];
   }
 
   /**

@@ -1258,6 +1258,12 @@ function ChatViewContent(props: ChatViewProps) {
   const deleteThreadHeartbeat = useAtomCommand(threadEnvironment.deleteHeartbeat, {
     reportFailure: false,
   });
+  const renameThreadSession = useAtomCommand(threadEnvironment.renameSession, {
+    reportFailure: false,
+  });
+  const forkThreadSession = useAtomCommand(threadEnvironment.forkSession, {
+    reportFailure: false,
+  });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -5492,6 +5498,52 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThread, createThreadHeartbeat, environmentId, setThreadError],
   );
 
+  // Renaming the provider session. Reversible by renaming again, so it needs no
+  // confirmation; the host keeps the T3 thread title in step.
+  const onRenameSession = useCallback(
+    async (name: string): Promise<boolean> => {
+      if (!activeThread) return false;
+      const result = await renameThreadSession({
+        environmentId,
+        input: { threadId: activeThread.id, name },
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Session rename failed.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [activeThread, environmentId, renameThreadSession, setThreadError],
+  );
+
+  // Forking. The thread id is chosen here so a retried fork resolves to the
+  // same thread; the host creates that thread only after the runtime confirms
+  // the fork, so a refused fork leaves nothing behind.
+  const onForkSession = useCallback(
+    async (forkPointId: string | undefined): Promise<boolean> => {
+      if (!activeThread) return false;
+      const result = await forkThreadSession({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          forkThreadId: newThreadId(),
+          ...(forkPointId === undefined ? {} : { forkPointId }),
+        },
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(activeThread.id, error instanceof Error ? error.message : "Fork failed.");
+        return false;
+      }
+      return true;
+    },
+    [activeThread, environmentId, forkThreadSession, setThreadError],
+  );
+
   // Pause, its exact reverse, and delete. Each targets one owned heartbeat, and
   // ownership is re-checked server-side against the board this session reports.
   const onHeartbeatAction = useCallback(
@@ -6329,6 +6381,18 @@ function ChatViewContent(props: ChatViewProps) {
           session: activeThread?.session,
           onToggleObservation: (agent, action) => {
             void onToggleAgentObservation(agent, action);
+          },
+        }}
+        primeNaming={{
+          providerName: activeThread?.session?.providerName,
+          capabilities: activeThread?.session?.runtimeCapabilities,
+          card: activeThread?.session?.identityCard,
+          session: activeThread?.session,
+          onRenameSession: (name) => {
+            void onRenameSession(name);
+          },
+          onForkSession: (forkPointId) => {
+            void onForkSession(forkPointId);
           },
         }}
         primeGoals={{

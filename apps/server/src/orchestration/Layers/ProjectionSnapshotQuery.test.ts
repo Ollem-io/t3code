@@ -295,6 +295,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          // Every thread carries its fork ancestry; a thread that was simply
+          // created has none.
+          forkedFrom: null,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -423,6 +426,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           runtimeMode: "full-access",
           branch: null,
           worktreePath: null,
+          forkedFrom: null,
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "completed",

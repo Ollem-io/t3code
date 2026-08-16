@@ -7,6 +7,7 @@ import {
   RuntimeRequestId,
   RuntimeTaskId,
   HeartbeatId,
+  RuntimeExtensionId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -59,6 +60,7 @@ const isCompactionId = Schema.is(CompactionId);
 const isRuntimeRequestId = Schema.is(RuntimeRequestId);
 const isRuntimeTaskId = Schema.is(RuntimeTaskId);
 const isHeartbeatId = Schema.is(HeartbeatId);
+const isRuntimeExtensionId = Schema.is(RuntimeExtensionId);
 /**
  * Publishing `runtimeCapabilities` at all is gated on the provider advertising at
  * least one runtime action. Every flag the session contract can carry is listed
@@ -76,6 +78,7 @@ const PUBLISHED_RUNTIME_CAPABILITY_KEYS = [
   "interactions",
   "tasks",
   "goals",
+  "namingAndForking",
 ] as const;
 const hasRuntimeActionCapabilities = (
   capabilities:
@@ -101,6 +104,8 @@ type ProviderIntentEvent = Extract<
       | "thread.agent-observation-requested"
       | "thread.heartbeat-create-requested"
       | "thread.heartbeat-action-requested"
+      | "thread.session-rename-requested"
+      | "thread.session-fork-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -400,7 +405,9 @@ const make = Effect.gen(function* () {
       | "provider.usage-refresh.failed"
       | "provider.command-refresh.failed"
       | "provider.agent-observation.failed"
-      | "provider.heartbeat.failed";
+      | "provider.heartbeat.failed"
+      | "provider.session-rename.failed"
+      | "provider.session-fork.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -1670,6 +1677,160 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /**
+   * Shared preconditions for naming and forking.
+   *
+   * Capability is negotiated, not assumed. The failure text never repeats the
+   * name the user typed: an activity row is a durable record, and a session
+   * name is the user's words about their own work.
+   */
+  const resolveNamingTarget = Effect.fn("resolveNamingTarget")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+    readonly kind: "provider.session-rename.failed" | "provider.session-fork.failed";
+    readonly summary: string;
+  }) {
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: input.threadId,
+        kind: input.kind,
+        summary: input.summary,
+        detail,
+        turnId: null,
+        createdAt: input.createdAt,
+      });
+    const thread = yield* resolveThread(input.threadId);
+    if (!thread?.session) {
+      yield* fail("No provider session is bound to this thread.");
+      return undefined;
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      yield* fail("This provider session cannot be named or forked.");
+      return undefined;
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    if (capabilities?.runtimeExtensions?.namingAndForking !== true) {
+      yield* fail("This runtime does not support session naming or forking.");
+      return undefined;
+    }
+    return { thread, fail } as const;
+  });
+
+  const processSessionRenameRequested = Effect.fn("processSessionRenameRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.session-rename-requested" }>,
+  ) {
+    const target = yield* resolveNamingTarget({
+      threadId: event.payload.threadId,
+      createdAt: event.payload.createdAt,
+      kind: "provider.session-rename.failed",
+      summary: "Session rename failed",
+    });
+    if (!target) return;
+    const renamed = yield* providerService
+      .executeRuntimeOperation({
+        type: "thread.rename",
+        commandId: event.commandId ?? CommandId.make(`provider-session-rename:${event.eventId}`),
+        threadId: event.payload.threadId,
+        title: event.payload.name,
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause(() =>
+          target.fail("The provider did not accept this name.").pipe(Effect.as(false)),
+        ),
+      );
+    if (!renamed) return;
+    // One rename, one name. Leaving the T3 thread on its old title would give
+    // the same work two names on the same screen, so the thread title follows
+    // the session the user just renamed.
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.meta.update",
+        commandId: yield* serverCommandId("provider-session-rename"),
+        threadId: event.payload.threadId,
+        title: event.payload.name,
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
+  });
+
+  const processSessionForkRequested = Effect.fn("processSessionForkRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.session-fork-requested" }>,
+  ) {
+    const target = yield* resolveNamingTarget({
+      threadId: event.payload.threadId,
+      createdAt: event.payload.createdAt,
+      kind: "provider.session-fork.failed",
+      summary: "Fork failed",
+    });
+    if (!target) return;
+    const forkPointId = event.payload.forkPointId;
+    // Only the shape is checked here. Whether this session still offers the
+    // point is the adapter's call, against the page it is actually holding:
+    // gating on the rendered projection would make a point the runtime still
+    // has unreachable whenever a snapshot is a beat behind. An id the wire
+    // contract cannot brand is refused outright, because it could never be
+    // encoded as an operation at all.
+    if (forkPointId !== undefined && !isRuntimeExtensionId(forkPointId)) {
+      return yield* target.fail("The fork point identifier is invalid.");
+    }
+    const forked = yield* providerService
+      .executeRuntimeOperation({
+        type: "thread.fork",
+        commandId: event.commandId ?? CommandId.make(`provider-session-fork:${event.eventId}`),
+        threadId: event.payload.threadId,
+        forkThreadId: event.payload.forkThreadId,
+        ...(forkPointId === undefined ? {} : { forkPointId: RuntimeExtensionId.make(forkPointId) }),
+        ...(event.payload.title === undefined ? {} : { title: event.payload.title }),
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause(() =>
+          target.fail("The provider did not accept this fork.").pipe(Effect.as(false)),
+        ),
+      );
+    // A refused fork leaves no thread behind. The thread is created only on the
+    // provider's own confirmation, which is what makes a cancelled or failed
+    // fork a no-op rather than an empty half-created thread.
+    if (!forked) return;
+    const source = target.thread;
+    const forkPointLabel = source.session?.identityCard?.forkPoints.find(
+      (point) => point.forkPointId === forkPointId,
+    )?.label;
+    // The source thread's latest checkpoint is recorded as the point the fork
+    // was taken from, so the ancestry lines up with the checkpoint graph the
+    // user can already see. It is a record, not a cursor: nothing reattaches to
+    // the original provider session from it.
+    const checkpointRef = source.checkpoints.at(-1)?.checkpointRef;
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.create",
+        commandId: yield* serverCommandId("provider-session-fork"),
+        threadId: event.payload.forkThreadId,
+        projectId: source.projectId,
+        title: event.payload.title ?? `Fork of ${source.title}`,
+        modelSelection: source.modelSelection,
+        runtimeMode: source.runtimeMode,
+        interactionMode: source.interactionMode,
+        branch: source.branch,
+        worktreePath: source.worktreePath,
+        forkedFrom: {
+          threadId: source.id,
+          ...(forkPointLabel === undefined ? {} : { forkPointLabel }),
+          ...(checkpointRef === undefined ? {} : { checkpointId: String(checkpointRef) }),
+          forkedAt: event.payload.createdAt,
+        },
+        createdAt: event.payload.createdAt,
+      })
+      .pipe(
+        Effect.catchCause(() =>
+          target.fail("Prime Agent forked the session, but the new thread could not be created."),
+        ),
+      );
+  });
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1880,6 +2041,12 @@ const make = Effect.gen(function* () {
       case "thread.heartbeat-action-requested":
         yield* processHeartbeatActionRequested(event);
         return;
+      case "thread.session-rename-requested":
+        yield* processSessionRenameRequested(event);
+        return;
+      case "thread.session-fork-requested":
+        yield* processSessionForkRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1936,6 +2103,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.agent-observation-requested" ||
         event.type === "thread.heartbeat-create-requested" ||
         event.type === "thread.heartbeat-action-requested" ||
+        event.type === "thread.session-rename-requested" ||
+        event.type === "thread.session-fork-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"

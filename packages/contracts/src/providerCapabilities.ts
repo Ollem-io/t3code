@@ -210,6 +210,18 @@ export const ProviderRuntimeOperation = Schema.Union([
     type: Schema.Literal("thread.fork"),
     ...OperationBase,
     sourceTurnId: Schema.optional(TurnId),
+    /**
+     * The runtime's own identity for the message the fork starts from. Absent
+     * means the whole session is copied. This is not a turn id: a runtime that
+     * offers fork points names them itself, and T3 never invents one.
+     */
+    forkPointId: Schema.optional(RuntimeExtensionId),
+    /**
+     * The T3 thread the fork will become, chosen by the caller so a retry can
+     * never produce two threads. The provider adapter may use it to hand the
+     * forked session to that thread; it never creates the thread itself.
+     */
+    forkThreadId: Schema.optional(ThreadId),
     title: Schema.optional(ShortText),
   }),
   Schema.Struct({

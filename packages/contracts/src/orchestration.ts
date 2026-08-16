@@ -456,6 +456,29 @@ export const EMPTY_ORCHESTRATION_SESSION_GOAL_BOARD: OrchestrationSessionGoalBoa
   heartbeats: Object.freeze([]),
 });
 
+/**
+ * Runtime-supplied session identity card. Mirrors the canonical
+ * `session.identity.updated` snapshot: the name the runtime reports for this
+ * session and a bounded page of the points a fork may start from, carrying
+ * labels rather than message bodies.
+ */
+export const OrchestrationSessionIdentityCard = Schema.Struct({
+  name: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  forkPoints: Schema.Array(
+    Schema.Struct({
+      forkPointId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      label: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+      role: Schema.Literals(["user", "assistant"]),
+      index: NonNegativeInt,
+    }),
+  ).check(Schema.isMaxLength(20)),
+  /** Present only when the runtime reported more fork points than this page holds. */
+  truncated: Schema.optional(Schema.Literal(true)),
+});
+export type OrchestrationSessionIdentityCard = typeof OrchestrationSessionIdentityCard.Type;
+export const EMPTY_ORCHESTRATION_SESSION_IDENTITY_CARD: OrchestrationSessionIdentityCard =
+  Object.freeze({ forkPoints: Object.freeze([]) });
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -488,6 +511,8 @@ export const OrchestrationSession = Schema.Struct({
   agentRoster: Schema.optional(OrchestrationSessionAgentRoster),
   /** Native goal and owned-heartbeat board; absent means this runtime supplied none. */
   goalBoard: Schema.optional(OrchestrationSessionGoalBoard),
+  /** Native session name and fork-point page; absent means this runtime supplied none. */
+  identityCard: Schema.optional(OrchestrationSessionIdentityCard),
   runtimeCapabilities: Schema.optional(
     Schema.Struct({
       steer: Schema.optional(Schema.Boolean),
@@ -503,6 +528,8 @@ export const OrchestrationSession = Schema.Struct({
       tasks: Schema.optional(Schema.Boolean),
       /** Goal state plus T3-owned heartbeat create/pause/resume/delete. */
       goals: Schema.optional(Schema.Boolean),
+      /** Session naming plus forking into a new T3 thread. */
+      namingAndForking: Schema.optional(Schema.Boolean),
     }),
   ),
 });
@@ -575,9 +602,31 @@ export const ThreadTitleRegeneration = Schema.Struct({
 });
 export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
 
+/**
+ * Where a forked thread came from.
+ *
+ * Additive and provider-neutral: it records the T3 thread the fork was taken
+ * from, the label of the point it was taken at, and the source thread's latest
+ * checkpoint at that moment, so the ancestry stays readable with no Prime Agent
+ * installed and no session alive. It is not a resume cursor: nothing here can
+ * reattach to the original provider session.
+ */
+export const OrchestrationThreadForkOrigin = Schema.Struct({
+  threadId: ThreadId,
+  forkPointLabel: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  checkpointId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  forkedAt: IsoDateTime,
+});
+export type OrchestrationThreadForkOrigin = typeof OrchestrationThreadForkOrigin.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  /**
+   * Ancestry of a forked thread. Optional so payloads from servers that predate
+   * forking still decode, and null for every thread that was simply created.
+   */
+  forkedFrom: Schema.optional(Schema.NullOr(OrchestrationThreadForkOrigin)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -648,6 +697,8 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  /** Ancestry of a forked thread; null for every thread that was simply created. */
+  forkedFrom: Schema.optional(Schema.NullOr(OrchestrationThreadForkOrigin)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -869,6 +920,8 @@ const ThreadCreateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
+  /** Set only when this thread was created by forking another one. */
+  forkedFrom: Schema.optional(OrchestrationThreadForkOrigin),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -1167,6 +1220,39 @@ const ThreadHeartbeatDeleteCommand = Schema.Struct({
   type: Schema.Literal("thread.heartbeat.delete"),
   ...heartbeatActionFields,
 });
+/**
+ * Rename the provider session bound to this thread.
+ *
+ * The name is a label the runtime owns; T3 asks, re-reads what the runtime
+ * accepted, and keeps the T3 thread title in step so one rename does not leave
+ * two different names for the same work.
+ */
+const ThreadSessionRenameCommand = Schema.Struct({
+  type: Schema.Literal("thread.session.rename"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  createdAt: IsoDateTime,
+});
+/**
+ * Fork this thread's provider session into a new session and a new T3 thread.
+ *
+ * `forkThreadId` is chosen by the caller exactly as `thread.create` does, so the
+ * fork is idempotent and a retry cannot produce two threads. An absent
+ * `forkPointId` means the whole session is copied; a present one must still be
+ * on the session's published fork-point page when the host re-checks it. The
+ * new thread is created only after the runtime confirms the fork, so a refused
+ * or cancelled fork leaves no half-created thread behind.
+ */
+const ThreadSessionForkCommand = Schema.Struct({
+  type: Schema.Literal("thread.session.fork"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  forkThreadId: ThreadId,
+  forkPointId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  createdAt: IsoDateTime,
+});
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -1244,6 +1330,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadHeartbeatPauseCommand,
   ThreadHeartbeatResumeCommand,
   ThreadHeartbeatDeleteCommand,
+  ThreadSessionRenameCommand,
+  ThreadSessionForkCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1283,6 +1371,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadHeartbeatPauseCommand,
   ThreadHeartbeatResumeCommand,
   ThreadHeartbeatDeleteCommand,
+  ThreadSessionRenameCommand,
+  ThreadSessionForkCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1411,6 +1501,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.agent-observation-requested",
   "thread.heartbeat-create-requested",
   "thread.heartbeat-action-requested",
+  "thread.session-rename-requested",
+  "thread.session-fork-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1460,6 +1552,8 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  /** Set only when this thread was created by forking another one. */
+  forkedFrom: Schema.optional(OrchestrationThreadForkOrigin),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -1639,6 +1733,19 @@ export const ThreadHeartbeatActionRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   heartbeatId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
   intent: Schema.Literals(["pause", "resume", "delete"]),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadSessionRenameRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  createdAt: IsoDateTime,
+});
+export const ThreadSessionForkRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  forkThreadId: ThreadId,
+  forkPointId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
   createdAt: IsoDateTime,
 });
 
@@ -1859,6 +1966,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.heartbeat-action-requested"),
     payload: ThreadHeartbeatActionRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.session-rename-requested"),
+    payload: ThreadSessionRenameRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.session-fork-requested"),
+    payload: ThreadSessionForkRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
