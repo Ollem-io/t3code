@@ -51,8 +51,9 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-A02    | Steering and queued follow-up with visible cancellation            | Done — `962c80b7` |
 | PA-A02.1  | PA-A02 review-debt cleanup                                         | Done — `2d8772c1` |
 | PA-A03    | Context usage, compaction, retry, bounded status UI                | Done — `f8218111` |
+| PA-A04    | Prime commands, skills, prompt templates                           | Done — `44c23c2c` |
 
-Completed total: **20 of 31 milestones** (PA-A02.1 added to the original 30).
+Completed total: **21 of 31 milestones** (PA-A02.1 added to the original 30).
 
 Note on "merged to main": the run's milestone merges advance the run `main`
 lineage descending from public `origin/main` commit `9e201941a`. By maintainer
@@ -220,12 +221,19 @@ Agent thread, run a turn, press **Compact context** in the status row above the 
 screenshot the context/compaction status rows; mobile: `test-t3-mobile` against the same server and screenshot the composer
 runtime block with `compaction` on and off.
 
+## PA-A04 (merged)
+
+**PA-A04 — Prime commands, skills, prompt templates** was dual-approved on exact SHA `e0a43dd4` (three workflow rounds: rounds 1 and 2 rejected by the black-box product review — first for a review artifact that re-implemented the sanitizer instead of executing shipped code, then a follow-up artifact defect — while code/security approved throughout; final round dual APPROVE with zero blockers, Luna-verified watch passes) and merged to `main` at `44c23c2c` on 2026-08-16.
+
+Delivered: Prime command/skill/prompt-template discovery normalized into a per-session `commandCatalog` (migration 043), surfaced as a "Prime commands" group in the web command palette and a composer command sheet on mobile; TUI-only and unsafe entries excluded; no host paths on the wire; runnable artifact `packages/contracts/fixtures/pa-a04-prime-commands-transcript.mjs` proves adapter→event→projection→client reachability.
+
+Accepted non-blockers to carry forward: stale-command error copy promises a refresh no client can trigger (no `command.discover` producer after session start); `commandDiscovery: true` over-advertises `command.invoke`/`skill.*` operations the adapter truthfully refuses; a latent bind-vs-ingestion ordering race could drop a session's catalog with no re-discovery path; visual evidence still pending UI-launch permission.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A04    | Prime commands, skills, prompt templates                         | Next                            |
-| PA-A05    | Rich extension UI and transient status integration               | Pending                         |
+| PA-A05    | Rich extension UI and transient status integration               | Next                            |
 | PA-A06    | Subagents, observation, Agents-surface controls                  | Pending                         |
 | PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Pending                         |
 | PA-A08    | Session naming/forking and Alpha integration/docs                | Pending                         |
