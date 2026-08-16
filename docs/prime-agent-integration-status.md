@@ -247,11 +247,19 @@ Delivered: runtime-owned subagent roster (migration 045, 16-row bound, clamped s
 
 Accepted non-blocker to carry forward: the roster title fallback can exceed the 120-char contract cap for 121–128-char task ids with no title, causing roster updates for that thread to roll back until the agent disappears (one-line clamp fix); visual evidence still pending UI-launch permission.
 
+## PA-A07 (implemented, awaiting review)
+
+**PA-A07 — T3-owned goals and heartbeats with daemon-promotion disclosure** is implemented on `dev/prime-agent-perfect-integration-20260813/pa-a07` and has not been reviewed or merged.
+
+Delivered: provider-neutral goal and owned-heartbeat board (`session.goals.updated`, migration 046, 8-row bound, one-minute-to-one-day intervals, byte-identical dedupe); create/pause/resume/delete for heartbeats this environment created, with ownership double-enforced (reactor before the host, adapter against its own live board) so an unrelated daemon schedule is never listed or targeted; resident-daemon promotion disclosed and confirmed before creation on web and mobile, with the exact owner shown afterwards and the reverse limited to stopping that one T3-owned session; goal state read-only because 0.7.2 exposes no goal-change RPC; owned heartbeat ids persisted as ownership handles and spent one at a time behind per-id proof during cleanup; runnable artifact `packages/contracts/fixtures/pa-a07-prime-goals-heartbeats-transcript.mjs`.
+
+Known gaps to raise at review: visual evidence is still pending UI-launch permission; the native heartbeat command and event names are the declaration baseline this repository has been building against and could not be re-verified against an installed `prime-agent` on this host; ownership handles are recorded only where the platform can prove a process incarnation (Linux `/proc`), matching the existing PA-M06 ownership boundary.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Next                            |
+| PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Implemented, awaiting review    |
 | PA-A08    | Session naming/forking and Alpha integration/docs                | Pending                         |
 | PA-B01    | Versioned resume cursor and scoped durable storage policy        | Pending                         |
 | PA-B03    | Server-side single-writer arbitration and conflict receipts      | Pending after B01; precedes B02 |

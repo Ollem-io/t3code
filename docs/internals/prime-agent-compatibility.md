@@ -166,3 +166,52 @@ provider-neutral `session.agents.updated` roster and the generic
 root plus two subagents through the shipped mapper (`PrimeObservation.ts`), the
 shipped canonical contract, and the shipped client projection.
 `PrimeObservationTranscript.test.ts` keeps that wiring honest in CI.
+
+## PA-A07 goals, owned heartbeats, and daemon promotion
+
+Prime 0.7.2 reports the current goal and the heartbeat store as whole
+`goal_update` / `heartbeat_update` snapshots and exposes `heartbeat_create`,
+`heartbeat_get`, `heartbeat_pause`, `heartbeat_resume`, and `heartbeat_stop`.
+T3 maps that onto the provider-neutral `session.goals.updated` board and the
+generic `heartbeat.*` runtime operations, gated on `goals`.
+
+- **Only T3-created heartbeats exist.** The daemon may host any number of
+  schedules for other owners. T3 records the exact id of each heartbeat it
+  creates and filters the store down to that set, so an unowned schedule is
+  never listed, never rendered, and never a legal action target — in the
+  reactor before the host is touched, and again in the adapter against its own
+  live board. Nothing enumerates the daemon.
+- **The goal is read-only.** 0.7.2 has no goal-change RPC, so `goal.create`,
+  `goal.update`, `goal.delete`, and `goal.reverse` are refused with the reason
+  stated rather than mapped onto something that does another thing.
+- **Residency is disclosed before it happens.** Creating a heartbeat can promote
+  the session to Prime's resident daemon; both clients state that consequence
+  and require a second, explicit confirmation before dispatching. Afterwards the
+  board names the exact owner, and the reverse control stops that one T3-owned
+  session — never a global Prime shutdown.
+- **Residency is reported, not inferred.** The board claims residency only while
+  the runtime reports it _and_ an owned schedule justifies it, so "stop the
+  resident session" never points at nothing.
+- **Labels, never prompts.** A row carries a bounded title, an interval, and a
+  state. Goal instructions and heartbeat prompt bodies stay out of the board,
+  out of activities, and out of analytics.
+- **Bounded and coalesced.** At most eight owned rows, 120-character titles, and
+  intervals from one minute to one day; an out-of-range or unrepresentable row is
+  dropped rather than clamped. A byte-identical board produces neither a durable
+  event nor a projection write.
+- **Reverse states exist.** Pause always renders with resume, and delete is
+  always present, so creating a schedule is never a one-way door. A control that
+  cannot work is disabled with the reason stated, and a runtime without `goals`
+  explains itself instead of hiding.
+- **Cleanup is exact.** Owned heartbeat ids are the minimum handle persisted in
+  the ownership record. Cleanup proves each id and stops it individually, before
+  the session that hosts it; an id that cannot be proven leaves that heartbeat —
+  and every unowned one — completely alone, and the record is retained for a
+  later pass. There is no stop-all.
+
+`packages/contracts/fixtures/pa-a07-prime-goals-heartbeats-transcript.mjs` runs
+an isolated daemon-root scenario (one unrelated sentinel schedule plus one owned
+heartbeat through create/pause/resume/stop) through the shipped mapper
+(`PrimeGoalsHeartbeats.ts`), the shipped canonical contract, and the shipped
+client projection, and prints the confirmation copy.
+`PrimeGoalsHeartbeatsTranscript.test.ts` keeps that wiring honest in CI.

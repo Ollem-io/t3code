@@ -158,6 +158,7 @@ describe("ProviderCommandReactor", () => {
           readonly usageAndRetry?: boolean;
           readonly commandDiscovery?: boolean;
           readonly tasks?: boolean;
+          readonly goals?: boolean;
         }
       | undefined;
     readonly requiresNewThreadForModelChange?: boolean;
@@ -894,6 +895,134 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-agent-observe-ungated"),
         threadId: ThreadId.make("thread-1"),
         agentId: "sub-1",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
+  });
+
+  // PA-A07: the board this thread's session reports is the authorization list.
+  // Remote clients reach this path over the wire, so an id the session does not
+  // own must never turn into a runtime call - not even for delete.
+  it("dispatches owned heartbeat actions and refuses an unowned identity", async () => {
+    const harness = await createHarness({ runtimeExtensions: { goals: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-heartbeat-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "prime-agent",
+          providerInstanceId: ProviderInstanceId.make("prime-agent"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-heartbeats"),
+          lastError: null,
+          updatedAt: now,
+          goalBoard: {
+            heartbeats: [
+              {
+                heartbeatId: "hb-t3-1",
+                title: "Check CI",
+                intervalSeconds: 1_200,
+                status: "active",
+              },
+            ],
+          },
+        },
+        createdAt: now,
+      }),
+    );
+    for (const [commandId, command] of [
+      ["cmd-heartbeat-pause", "thread.heartbeat.pause"],
+      ["cmd-heartbeat-resume", "thread.heartbeat.resume"],
+      ["cmd-heartbeat-delete", "thread.heartbeat.delete"],
+    ] as const) {
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: command,
+          commandId: CommandId.make(commandId),
+          threadId: ThreadId.make("thread-1"),
+          heartbeatId: "hb-t3-1",
+          createdAt: now,
+        }),
+      );
+    }
+    // Someone else's schedule, reachable only by guessing an id.
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.heartbeat.delete",
+        commandId: CommandId.make("cmd-heartbeat-foreign"),
+        threadId: ThreadId.make("thread-1"),
+        heartbeatId: "hb-sentinel",
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.heartbeat.create",
+        commandId: CommandId.make("cmd-heartbeat-create"),
+        threadId: ThreadId.make("thread-1"),
+        title: "Watch the deploy",
+        intervalSeconds: 900,
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.executeRuntimeOperation.mock.calls.map(([operation]) => operation)).toEqual([
+      expect.objectContaining({ type: "heartbeat.pause", heartbeatId: "hb-t3-1" }),
+      expect.objectContaining({ type: "heartbeat.resume", heartbeatId: "hb-t3-1" }),
+      expect.objectContaining({ type: "heartbeat.delete", heartbeatId: "hb-t3-1" }),
+      expect.objectContaining({
+        type: "heartbeat.create",
+        title: "Watch the deploy",
+        intervalSeconds: 900,
+      }),
+    ]);
+  });
+
+  it("fails closed when the runtime does not advertise heartbeats", async () => {
+    const harness = await createHarness({ runtimeExtensions: { steer: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-heartbeat-ungated-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "prime-agent",
+          providerInstanceId: ProviderInstanceId.make("prime-agent"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-heartbeats-ungated"),
+          lastError: null,
+          updatedAt: now,
+          goalBoard: {
+            heartbeats: [
+              {
+                heartbeatId: "hb-t3-1",
+                title: "Check CI",
+                intervalSeconds: 1_200,
+                status: "active",
+              },
+            ],
+          },
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.heartbeat.pause",
+        commandId: CommandId.make("cmd-heartbeat-ungated"),
+        threadId: ThreadId.make("thread-1"),
+        heartbeatId: "hb-t3-1",
         createdAt: now,
       }),
     );

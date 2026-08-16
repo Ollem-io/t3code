@@ -24,6 +24,8 @@ import {
   type OrchestrationSessionNoticeBoard,
   EMPTY_ORCHESTRATION_SESSION_AGENT_ROSTER,
   type OrchestrationSessionAgentRoster,
+  EMPTY_ORCHESTRATION_SESSION_GOAL_BOARD,
+  type OrchestrationSessionGoalBoard,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -177,6 +179,17 @@ function sameNoticeBoard(
  * Structural equality for the agent roster. A task store re-reports the same
  * rows constantly, so this drops writes that change nothing.
  */
+/**
+ * Structural equality for the goal board. A heartbeat store re-reports the same
+ * schedules on every tick, so this drops writes that change nothing.
+ */
+function sameGoalBoard(
+  current: OrchestrationSessionGoalBoard | undefined,
+  next: OrchestrationSessionGoalBoard,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
+}
+
 function sameAgentRoster(
   current: OrchestrationSessionAgentRoster | undefined,
   next: OrchestrationSessionAgentRoster,
@@ -1820,6 +1833,14 @@ const make = Effect.gen(function* () {
                       : thread.session?.agentRoster
                         ? { agentRoster: thread.session.agentRoster }
                         : {}),
+                    // Goals and heartbeat controls belong to the live runtime
+                    // too: an exited session shows no board rather than
+                    // schedules whose Pause could never reach anything.
+                    ...(event.type === "session.exited"
+                      ? { goalBoard: EMPTY_ORCHESTRATION_SESSION_GOAL_BOARD }
+                      : thread.session?.goalBoard
+                        ? { goalBoard: thread.session.goalBoard }
+                        : {}),
                   }
                 : {
                     ...(thread.session?.actionState
@@ -1860,6 +1881,7 @@ const make = Effect.gen(function* () {
                     ...(thread.session?.agentRoster
                       ? { agentRoster: thread.session.agentRoster }
                       : {}),
+                    ...(thread.session?.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
                   }),
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
@@ -1921,6 +1943,7 @@ const make = Effect.gen(function* () {
                 : {}),
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2012,6 +2035,7 @@ const make = Effect.gen(function* () {
                 : {}),
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2069,6 +2093,7 @@ const make = Effect.gen(function* () {
               commandCatalog: nextCommandCatalog,
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2177,6 +2202,74 @@ const make = Effect.gen(function* () {
                 : {}),
               ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               agentRoster: nextAgentRoster,
+              ...(thread.session.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Goal progress and the heartbeats this environment owns. Also not
+      // transcript: a schedule that fires every twenty minutes must not write
+      // twenty-minute noise into the conversation.
+      if (
+        event.type === "session.goals.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Same binding authentication as the other authoritative snapshots.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+      ) {
+        const nextGoalBoard: OrchestrationSessionGoalBoard = {
+          ...(event.payload.goal
+            ? {
+                goal: {
+                  goalId: String(event.payload.goal.goalId),
+                  title: event.payload.goal.title,
+                  status: event.payload.goal.status,
+                  ...(event.payload.goal.detail === undefined
+                    ? {}
+                    : { detail: event.payload.goal.detail }),
+                },
+              }
+            : {}),
+          heartbeats: event.payload.heartbeats.map((heartbeat) => ({
+            heartbeatId: String(heartbeat.heartbeatId),
+            title: heartbeat.title,
+            intervalSeconds: heartbeat.intervalSeconds,
+            status: heartbeat.status,
+            ...(heartbeat.nextRunAt === undefined ? {} : { nextRunAt: heartbeat.nextRunAt }),
+          })),
+          ...(event.payload.resident ? { resident: event.payload.resident } : {}),
+        };
+        if (!sameGoalBoard(thread.session.goalBoard, nextGoalBoard)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-goals-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.commandCatalog
+                ? { commandCatalog: thread.session.commandCatalog }
+                : {}),
+              ...(thread.session.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
+              ...(thread.session.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              goalBoard: nextGoalBoard,
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -2439,6 +2532,7 @@ const make = Effect.gen(function* () {
                 : {}),
               ...(thread.session?.noticeBoard ? { noticeBoard: thread.session.noticeBoard } : {}),
               ...(thread.session?.agentRoster ? { agentRoster: thread.session.agentRoster } : {}),
+              ...(thread.session?.goalBoard ? { goalBoard: thread.session.goalBoard } : {}),
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),

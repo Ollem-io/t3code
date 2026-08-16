@@ -58,6 +58,7 @@ import Migration0042 from "./Migrations/042_ProjectionThreadSessionContextState.
 import Migration0043 from "./Migrations/043_ProjectionThreadSessionCommandCatalog.ts";
 import Migration0044 from "./Migrations/044_ProjectionThreadSessionNoticeBoard.ts";
 import Migration0045 from "./Migrations/045_ProjectionThreadSessionAgentRoster.ts";
+import Migration0046 from "./Migrations/046_ProjectionThreadSessionGoalBoard.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -115,6 +116,7 @@ export const migrationEntries = [
   [43, "ProjectionThreadSessionCommandCatalog", Migration0043],
   [44, "ProjectionThreadSessionNoticeBoard", Migration0044],
   [45, "ProjectionThreadSessionAgentRoster", Migration0045],
+  [46, "ProjectionThreadSessionGoalBoard", Migration0046],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

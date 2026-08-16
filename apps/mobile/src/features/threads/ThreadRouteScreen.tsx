@@ -224,6 +224,19 @@ function ThreadRouteContent(
   const refreshThreadUsage = useAtomCommand(threadEnvironment.refreshUsage, "thread usage refresh");
   const observeThreadAgent = useAtomCommand(threadEnvironment.observeAgent, "agent observe");
   const unobserveThreadAgent = useAtomCommand(threadEnvironment.unobserveAgent, "agent unobserve");
+  const createThreadHeartbeat = useAtomCommand(
+    threadEnvironment.createHeartbeat,
+    "heartbeat create",
+  );
+  const pauseThreadHeartbeat = useAtomCommand(threadEnvironment.pauseHeartbeat, "heartbeat pause");
+  const resumeThreadHeartbeat = useAtomCommand(
+    threadEnvironment.resumeHeartbeat,
+    "heartbeat resume",
+  );
+  const deleteThreadHeartbeat = useAtomCommand(
+    threadEnvironment.deleteHeartbeat,
+    "heartbeat delete",
+  );
   const refreshThreadCommands = useAtomCommand(
     threadEnvironment.refreshCommands,
     "thread command refresh",
@@ -570,6 +583,46 @@ function ThreadRouteContent(
     [observeThreadAgent, selectedThread, unobserveThreadAgent],
   );
 
+  // Creating owned scheduled work. The disclosure has already been shown and
+  // confirmed by the time this runs; the host still re-checks capability and
+  // ownership before anything reaches the runtime.
+  const handleCreateHeartbeat = useCallback(
+    async (draft: {
+      readonly title: string;
+      readonly intervalSeconds: number;
+    }): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const result = await createThreadHeartbeat({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, ...draft },
+      });
+      return result._tag !== "Failure";
+    },
+    [createThreadHeartbeat, selectedThread],
+  );
+
+  // Pause, its exact reverse, and delete. Each targets one owned heartbeat.
+  const handleHeartbeatAction = useCallback(
+    async (
+      heartbeatId: string,
+      action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
+    ): Promise<boolean> => {
+      if (!selectedThread) return false;
+      const payload = {
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, heartbeatId },
+      };
+      const result =
+        action === "heartbeat.pause"
+          ? await pauseThreadHeartbeat(payload)
+          : action === "heartbeat.resume"
+            ? await resumeThreadHeartbeat(payload)
+            : await deleteThreadHeartbeat(payload);
+      return result._tag !== "Failure";
+    },
+    [deleteThreadHeartbeat, pauseThreadHeartbeat, resumeThreadHeartbeat, selectedThread],
+  );
+
   // Opening the command list is the only moment it is read, so it is the only
   // moment it is refreshed: bounded, explicit, and never polled.
   const handleRefreshCommands = useCallback(async (): Promise<boolean> => {
@@ -899,6 +952,8 @@ function ThreadRouteContent(
           onRequestCompaction={handleRequestCompaction}
           onRefreshUsage={handleRefreshUsage}
           onToggleAgentObservation={handleToggleAgentObservation}
+          onCreateHeartbeat={handleCreateHeartbeat}
+          onHeartbeatAction={handleHeartbeatAction}
           onRefreshCommands={handleRefreshCommands}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}

@@ -15,6 +15,27 @@ Set **Enabled** off for the affected Prime instance. This is Prime-only: do not 
 
 Collect the compatibility band, hash-only transcript, resource/PID manifest and ownership warning. Do not paste prompt text, tokens, credentials, raw stderr, raw paths, or account information. If exact ownership or PID identity cannot be proven, retain the resource and show an actionable orphan warning; investigate manually rather than deleting it.
 
+## Resident sessions and owned heartbeats
+
+A T3-created Prime heartbeat can keep its session resident so the schedule can
+run while the thread is closed. That is the only thing in T3 that deliberately
+keeps a Prime session alive past a turn, so it has its own cleanup rules:
+
+- **T3 stops only heartbeats it created.** Each owned heartbeat id is recorded
+  in the ownership record when it is created. Cleanup proves each id and stops
+  it individually, before the session hosting it. A schedule created in the
+  Prime TUI or by another tool is never listed, never targeted, and never
+  stopped — there is no stop-all path to invoke.
+- **Unprovable means untouched.** If an id cannot be proven, that heartbeat and
+  everything after it in the cleanup sequence is left alone and the ownership
+  record is retained for a later pass. Investigate manually; do not hand-delete.
+- **Stop the session, not the daemon.** The reverse control for a resident
+  session stops that exact T3-owned session. Never stop a shared Prime daemon to
+  clear T3 state.
+- **Draining.** Deleting a thread's owned heartbeats removes the reason T3 keeps
+  that session resident; the session itself still ends through the ordinary
+  thread stop or the instance **Enabled** switch.
+
 ## Rollback/downgrade
 
 Disable Prime, drain/stop its proven owned work, and deploy the previous T3 version. Preserve Prime settings, ownership records, sessions and unknown/newer fields verbatim for a later compatible re-enable; do not rewrite them to an older schema. A downgrade cannot promise resume of unproved opaque provider state. Re-enable only after a fresh isolated check.

@@ -30,6 +30,8 @@ import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { PrimeAgentsSection, type PrimeAgentsSectionProps } from "./agents/PrimeAgentsSection";
 import { primeAgentsView } from "./agents/primeAgents";
+import { PrimeHeartbeatPanel, type PrimeHeartbeatPanelProps } from "./chat/PrimeHeartbeatPanel";
+import { primeGoalBoardView } from "./chat/primeHeartbeat";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -525,19 +527,32 @@ export function AgentsPanel({
   environmentId = null,
   threadId = null,
   prime,
+  primeGoals,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
   /** Runtime-reported root/subagent roster, for providers that have one. */
   prime?: PrimeAgentsSectionProps | undefined;
+  /** Runtime-reported goal and owned-heartbeat board, for providers that have one. */
+  primeGoals?: PrimeHeartbeatPanelProps | undefined;
 }) {
   // A runtime roster is agents too: the empty state must not claim there are
   // none while Prime is reporting a root and two subagents.
   const primeView = prime
     ? primeAgentsView(prime.providerName, prime.capabilities, prime.roster, prime.session)
     : ({ kind: "hidden" } as const);
-  if (!model.hasAgents && primeView.kind === "hidden") {
+  // Goals and heartbeats live in the same surface, and are the same kind of
+  // claim: while either has something to say, this panel is not empty.
+  const primeGoalsView = primeGoals
+    ? primeGoalBoardView(
+        primeGoals.providerName,
+        primeGoals.capabilities,
+        primeGoals.board,
+        primeGoals.session,
+      )
+    : ({ kind: "hidden" } as const);
+  if (!model.hasAgents && primeView.kind === "hidden" && primeGoalsView.kind === "hidden") {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
@@ -555,6 +570,7 @@ export function AgentsPanel({
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 p-2">
           {prime ? <PrimeAgentsSection {...prime} /> : null}
+          {primeGoals ? <PrimeHeartbeatPanel {...primeGoals} /> : null}
           {model.workflows.map((group) => (
             <WorkflowSection
               key={group.workflow.id}

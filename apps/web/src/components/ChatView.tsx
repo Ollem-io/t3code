@@ -1246,6 +1246,18 @@ function ChatViewContent(props: ChatViewProps) {
   const unobserveThreadAgent = useAtomCommand(threadEnvironment.unobserveAgent, {
     reportFailure: false,
   });
+  const createThreadHeartbeat = useAtomCommand(threadEnvironment.createHeartbeat, {
+    reportFailure: false,
+  });
+  const pauseThreadHeartbeat = useAtomCommand(threadEnvironment.pauseHeartbeat, {
+    reportFailure: false,
+  });
+  const resumeThreadHeartbeat = useAtomCommand(threadEnvironment.resumeHeartbeat, {
+    reportFailure: false,
+  });
+  const deleteThreadHeartbeat = useAtomCommand(threadEnvironment.deleteHeartbeat, {
+    reportFailure: false,
+  });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -5454,6 +5466,70 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThread, environmentId, observeThreadAgent, setThreadError, unobserveThreadAgent],
   );
 
+  // Creating owned scheduled work. The resident-daemon disclosure has already
+  // been shown and confirmed in the panel; the host re-checks capability and
+  // bounds before anything reaches the runtime.
+  const onCreateHeartbeat = useCallback(
+    async (draft: {
+      readonly title: string;
+      readonly intervalSeconds: number;
+    }): Promise<boolean> => {
+      if (!activeThread) return false;
+      const result = await createThreadHeartbeat({
+        environmentId,
+        input: { threadId: activeThread.id, ...draft },
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Heartbeat request failed.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [activeThread, createThreadHeartbeat, environmentId, setThreadError],
+  );
+
+  // Pause, its exact reverse, and delete. Each targets one owned heartbeat, and
+  // ownership is re-checked server-side against the board this session reports.
+  const onHeartbeatAction = useCallback(
+    async (
+      heartbeat: { readonly heartbeatId: string },
+      action: "heartbeat.pause" | "heartbeat.resume" | "heartbeat.delete",
+    ): Promise<boolean> => {
+      if (!activeThread) return false;
+      const payload = {
+        environmentId,
+        input: { threadId: activeThread.id, heartbeatId: heartbeat.heartbeatId },
+      };
+      const result =
+        action === "heartbeat.pause"
+          ? await pauseThreadHeartbeat(payload)
+          : action === "heartbeat.resume"
+            ? await resumeThreadHeartbeat(payload)
+            : await deleteThreadHeartbeat(payload);
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Heartbeat request failed.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [
+      activeThread,
+      deleteThreadHeartbeat,
+      environmentId,
+      pauseThreadHeartbeat,
+      resumeThreadHeartbeat,
+      setThreadError,
+    ],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -6253,6 +6329,18 @@ function ChatViewContent(props: ChatViewProps) {
           session: activeThread?.session,
           onToggleObservation: (agent, action) => {
             void onToggleAgentObservation(agent, action);
+          },
+        }}
+        primeGoals={{
+          providerName: activeThread?.session?.providerName,
+          capabilities: activeThread?.session?.runtimeCapabilities,
+          board: activeThread?.session?.goalBoard,
+          session: activeThread?.session,
+          onCreateHeartbeat: (draft) => {
+            void onCreateHeartbeat(draft);
+          },
+          onHeartbeatAction: (heartbeat, action) => {
+            void onHeartbeatAction(heartbeat, action);
           },
         }}
       />

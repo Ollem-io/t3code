@@ -423,6 +423,39 @@ export type OrchestrationSessionAgentRoster = typeof OrchestrationSessionAgentRo
 export const EMPTY_ORCHESTRATION_SESSION_AGENT_ROSTER: OrchestrationSessionAgentRoster =
   Object.freeze({ agents: Object.freeze([]) });
 
+/**
+ * Runtime-supplied goal and owned-heartbeat board. Mirrors the canonical
+ * `session.goals.updated` snapshot: bounded, replaced whole, listing only
+ * schedules this environment created, and disclosing resident-daemon promotion
+ * with the exact owner so its reverse control cannot be aimed anywhere else.
+ */
+export const OrchestrationSessionGoalBoard = Schema.Struct({
+  goal: Schema.optional(
+    Schema.Struct({
+      goalId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+      status: Schema.Literals(["active", "completed", "cancelled"]),
+      detail: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+    }),
+  ),
+  heartbeats: Schema.Array(
+    Schema.Struct({
+      heartbeatId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+      intervalSeconds: PositiveInt,
+      status: Schema.Literals(["active", "paused"]),
+      nextRunAt: Schema.optional(IsoDateTime),
+    }),
+  ).check(Schema.isMaxLength(8)),
+  resident: Schema.optional(
+    Schema.Struct({ owner: TrimmedNonEmptyString.check(Schema.isMaxLength(120)) }),
+  ),
+});
+export type OrchestrationSessionGoalBoard = typeof OrchestrationSessionGoalBoard.Type;
+export const EMPTY_ORCHESTRATION_SESSION_GOAL_BOARD: OrchestrationSessionGoalBoard = Object.freeze({
+  heartbeats: Object.freeze([]),
+});
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -453,6 +486,8 @@ export const OrchestrationSession = Schema.Struct({
   noticeBoard: Schema.optional(OrchestrationSessionNoticeBoard),
   /** Native root/subagent roster; absent means this runtime supplied none. */
   agentRoster: Schema.optional(OrchestrationSessionAgentRoster),
+  /** Native goal and owned-heartbeat board; absent means this runtime supplied none. */
+  goalBoard: Schema.optional(OrchestrationSessionGoalBoard),
   runtimeCapabilities: Schema.optional(
     Schema.Struct({
       steer: Schema.optional(Schema.Boolean),
@@ -466,6 +501,8 @@ export const OrchestrationSession = Schema.Struct({
       interactions: Schema.optional(Schema.Boolean),
       /** Root/subagent roster and observation controls. */
       tasks: Schema.optional(Schema.Boolean),
+      /** Goal state plus T3-owned heartbeat create/pause/resume/delete. */
+      goals: Schema.optional(Schema.Boolean),
     }),
   ),
 });
@@ -1089,6 +1126,47 @@ const ThreadAgentUnobserveCommand = Schema.Struct({
   agentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
   createdAt: IsoDateTime,
 });
+/**
+ * Create a T3-owned heartbeat on this thread's session.
+ *
+ * The title is a bounded label, never the prompt body: a schedule that keeps a
+ * session resident is described by what it is for, and nothing here is content.
+ * Creating one may promote the session to a resident daemon, which is why the
+ * clients disclose that before dispatching this command.
+ */
+const ThreadHeartbeatCreateCommand = Schema.Struct({
+  type: Schema.Literal("thread.heartbeat.create"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  intervalSeconds: PositiveInt.check(Schema.isBetween({ minimum: 60, maximum: 86_400 })),
+  createdAt: IsoDateTime,
+});
+/**
+ * Pause, resume, or delete one owned heartbeat.
+ *
+ * `heartbeatId` is the runtime's own identity, carried opaquely; the host
+ * re-checks that this exact session still reports it as T3-owned before
+ * anything reaches the runtime, so an unowned schedule is never a target.
+ */
+const heartbeatActionFields = {
+  commandId: CommandId,
+  threadId: ThreadId,
+  heartbeatId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  createdAt: IsoDateTime,
+};
+const ThreadHeartbeatPauseCommand = Schema.Struct({
+  type: Schema.Literal("thread.heartbeat.pause"),
+  ...heartbeatActionFields,
+});
+const ThreadHeartbeatResumeCommand = Schema.Struct({
+  type: Schema.Literal("thread.heartbeat.resume"),
+  ...heartbeatActionFields,
+});
+const ThreadHeartbeatDeleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.heartbeat.delete"),
+  ...heartbeatActionFields,
+});
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -1162,6 +1240,10 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadCommandRefreshCommand,
   ThreadAgentObserveCommand,
   ThreadAgentUnobserveCommand,
+  ThreadHeartbeatCreateCommand,
+  ThreadHeartbeatPauseCommand,
+  ThreadHeartbeatResumeCommand,
+  ThreadHeartbeatDeleteCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1197,6 +1279,10 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadCommandRefreshCommand,
   ThreadAgentObserveCommand,
   ThreadAgentUnobserveCommand,
+  ThreadHeartbeatCreateCommand,
+  ThreadHeartbeatPauseCommand,
+  ThreadHeartbeatResumeCommand,
+  ThreadHeartbeatDeleteCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1323,6 +1409,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.usage-refresh-requested",
   "thread.command-refresh-requested",
   "thread.agent-observation-requested",
+  "thread.heartbeat-create-requested",
+  "thread.heartbeat-action-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1541,6 +1629,18 @@ export const ThreadAgentObservationRequestedPayload = Schema.Struct({
   intent: Schema.Literals(["observe", "unobserve"]),
   createdAt: IsoDateTime,
 });
+export const ThreadHeartbeatCreateRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  intervalSeconds: PositiveInt.check(Schema.isBetween({ minimum: 60, maximum: 86_400 })),
+  createdAt: IsoDateTime,
+});
+export const ThreadHeartbeatActionRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  heartbeatId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  intent: Schema.Literals(["pause", "resume", "delete"]),
+  createdAt: IsoDateTime,
+});
 
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -1749,6 +1849,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.agent-observation-requested"),
     payload: ThreadAgentObservationRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.heartbeat-create-requested"),
+    payload: ThreadHeartbeatCreateRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.heartbeat-action-requested"),
+    payload: ThreadHeartbeatActionRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

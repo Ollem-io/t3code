@@ -6,6 +6,7 @@ import {
   FollowUpId,
   RuntimeRequestId,
   RuntimeTaskId,
+  HeartbeatId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -57,6 +58,7 @@ const isFollowUpId = Schema.is(FollowUpId);
 const isCompactionId = Schema.is(CompactionId);
 const isRuntimeRequestId = Schema.is(RuntimeRequestId);
 const isRuntimeTaskId = Schema.is(RuntimeTaskId);
+const isHeartbeatId = Schema.is(HeartbeatId);
 /**
  * Publishing `runtimeCapabilities` at all is gated on the provider advertising at
  * least one runtime action. Every flag the session contract can carry is listed
@@ -73,6 +75,7 @@ const PUBLISHED_RUNTIME_CAPABILITY_KEYS = [
   "commandDiscovery",
   "interactions",
   "tasks",
+  "goals",
 ] as const;
 const hasRuntimeActionCapabilities = (
   capabilities:
@@ -96,6 +99,8 @@ type ProviderIntentEvent = Extract<
       | "thread.usage-refresh-requested"
       | "thread.command-refresh-requested"
       | "thread.agent-observation-requested"
+      | "thread.heartbeat-create-requested"
+      | "thread.heartbeat-action-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -394,7 +399,8 @@ const make = Effect.gen(function* () {
       | "provider.compaction.failed"
       | "provider.usage-refresh.failed"
       | "provider.command-refresh.failed"
-      | "provider.agent-observation.failed";
+      | "provider.agent-observation.failed"
+      | "provider.heartbeat.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -1574,6 +1580,99 @@ const make = Effect.gen(function* () {
       .pipe(Effect.catchCause(() => fail("The provider did not accept this agent action.")));
   });
 
+  /**
+   * Shared preconditions for every heartbeat intent.
+   *
+   * Capability is negotiated, not assumed, and the failure text never repeats
+   * the heartbeat's title: an activity row is a durable record, and a schedule
+   * label is the user's words about their own work.
+   */
+  const resolveHeartbeatTarget = Effect.fn("resolveHeartbeatTarget")(function* (payload: {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+  }) {
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: payload.threadId,
+        kind: "provider.heartbeat.failed",
+        summary: "Heartbeat action failed",
+        detail,
+        turnId: null,
+        createdAt: payload.createdAt,
+      });
+    const thread = yield* resolveThread(payload.threadId);
+    if (!thread?.session) {
+      yield* fail("No provider session is bound to this thread.");
+      return undefined;
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      yield* fail("This provider session cannot own scheduled work.");
+      return undefined;
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    if (capabilities?.runtimeExtensions?.goals !== true) {
+      yield* fail("This runtime does not support scheduled heartbeats.");
+      return undefined;
+    }
+    return { thread, fail } as const;
+  });
+
+  const processHeartbeatCreateRequested = Effect.fn("processHeartbeatCreateRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.heartbeat-create-requested" }>,
+  ) {
+    const target = yield* resolveHeartbeatTarget(event.payload);
+    if (!target) return;
+    yield* providerService
+      .executeRuntimeOperation({
+        type: "heartbeat.create",
+        commandId: event.commandId ?? CommandId.make(`provider-heartbeat:${event.eventId}`),
+        threadId: event.payload.threadId,
+        // The runtime issues the real identity; this correlates the request and
+        // is never presented as a heartbeat T3 owns.
+        heartbeatId: HeartbeatId.make(`t3-heartbeat-request-${event.eventId}`),
+        title: event.payload.title,
+        intervalSeconds: event.payload.intervalSeconds,
+      })
+      .pipe(Effect.catchCause(() => target.fail("The provider did not accept this heartbeat.")));
+  });
+
+  const processHeartbeatActionRequested = Effect.fn("processHeartbeatActionRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.heartbeat-action-requested" }>,
+  ) {
+    const target = yield* resolveHeartbeatTarget(event.payload);
+    if (!target) return;
+    // The board is the authorization list. Checking it here refuses an id this
+    // thread's session does not own before it can reach the host at all; the
+    // adapter re-checks against its own live board regardless.
+    const owned = target.thread.session?.goalBoard?.heartbeats.some(
+      (heartbeat) => heartbeat.heartbeatId === event.payload.heartbeatId,
+    );
+    if (owned !== true) {
+      return yield* target.fail("This thread's session does not own that heartbeat.");
+    }
+    if (!isHeartbeatId(event.payload.heartbeatId)) {
+      return yield* target.fail("The heartbeat identifier is invalid.");
+    }
+    yield* providerService
+      .executeRuntimeOperation({
+        type:
+          event.payload.intent === "pause"
+            ? "heartbeat.pause"
+            : event.payload.intent === "resume"
+              ? "heartbeat.resume"
+              : "heartbeat.delete",
+        commandId: event.commandId ?? CommandId.make(`provider-heartbeat:${event.eventId}`),
+        threadId: event.payload.threadId,
+        heartbeatId: event.payload.heartbeatId,
+      })
+      .pipe(
+        Effect.catchCause(() => target.fail("The provider did not accept this heartbeat action.")),
+      );
+  });
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1778,6 +1877,12 @@ const make = Effect.gen(function* () {
       case "thread.agent-observation-requested":
         yield* processAgentObservationRequested(event);
         return;
+      case "thread.heartbeat-create-requested":
+        yield* processHeartbeatCreateRequested(event);
+        return;
+      case "thread.heartbeat-action-requested":
+        yield* processHeartbeatActionRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1832,6 +1937,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.usage-refresh-requested" ||
         event.type === "thread.command-refresh-requested" ||
         event.type === "thread.agent-observation-requested" ||
+        event.type === "thread.heartbeat-create-requested" ||
+        event.type === "thread.heartbeat-action-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"

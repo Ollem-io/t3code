@@ -18,8 +18,18 @@ export type PrimeOwnershipRecord = {
   readonly process?: PrimeProcessHandle;
   readonly rpcSessionId?: string;
   readonly daemonSessionId?: string;
+  /**
+   * Exact ids of heartbeats this environment created on the owned session.
+   *
+   * A heartbeat outlives its turn and can keep a daemon resident, so its id is
+   * the minimum handle that makes cleanup exact: without it a later cleanup
+   * would either leave T3's own schedule running forever or have to guess,
+   * and guessing here means stopping someone else's work.
+   */
+  readonly heartbeatIds?: readonly string[];
   readonly processStopped?: boolean;
   readonly rpcCleaned?: boolean;
+  readonly heartbeatsCleaned?: boolean;
   readonly daemonCleaned?: boolean;
   readonly resourcesCleaned?: boolean;
 };
@@ -29,6 +39,7 @@ export type PrimeOwnershipAction =
       readonly kind:
         | "process-stopped"
         | "rpc-session-cleaned"
+        | "heartbeat-stopped"
         | "daemon-session-cleaned"
         | "resource-removed"
         | "record-removed";
@@ -39,6 +50,8 @@ export type PrimeOwnershipProof = {
   readonly processMatches: (handle: PrimeProcessHandle) => Promise<boolean>;
   readonly daemonSessionMatches?: (id: string) => Promise<boolean>;
   readonly rpcSessionMatches?: (id: string) => Promise<boolean>;
+  /** Proves this exact heartbeat still exists and is the one T3 created. */
+  readonly heartbeatMatches?: (id: string) => Promise<boolean>;
 };
 export type PrimeOwnedResource = {
   readonly path: string;
@@ -51,6 +64,8 @@ export type PrimeOwnershipCleanup = {
   readonly stopProcess: (handle: PrimeProcessHandle, operationId?: string) => Promise<void>;
   readonly cleanupRpcSession?: (id: string, operationId?: string) => Promise<void>;
   readonly cleanupDaemonSession?: (id: string, operationId?: string) => Promise<void>;
+  /** Stops one exact owned heartbeat. Never a delete-all or list-then-delete. */
+  readonly cleanupHeartbeat?: (id: string, operationId?: string) => Promise<void>;
   /**
    * Optional platform-owned destructive boundary. The registry never renames or
    * unlinks a resource itself: Node pathname operations cannot close a hostile
@@ -77,8 +92,10 @@ function isRecord(v: unknown): v is PrimeOwnershipRecord {
       "process",
       "rpcSessionId",
       "daemonSessionId",
+      "heartbeatIds",
       "processStopped",
       "rpcCleaned",
+      "heartbeatsCleaned",
       "daemonCleaned",
       "resourcesCleaned",
     ]) ||
@@ -94,8 +111,21 @@ function isRecord(v: unknown): v is PrimeOwnershipRecord {
     (r.operationId !== undefined && !validId(r.operationId))
   )
     return false;
-  for (const k of ["processStopped", "rpcCleaned", "daemonCleaned", "resourcesCleaned"] as const)
+  for (const k of [
+    "processStopped",
+    "rpcCleaned",
+    "heartbeatsCleaned",
+    "daemonCleaned",
+    "resourcesCleaned",
+  ] as const)
     if (r[k] !== undefined && typeof r[k] !== "boolean") return false;
+  // Bounded and exact: the canonical board caps owned heartbeats at eight, and
+  // a duplicated or unrepresentable id would make cleanup ambiguous.
+  if (r.heartbeatIds !== undefined) {
+    if (!Array.isArray(r.heartbeatIds) || r.heartbeatIds.length > 8) return false;
+    if (!r.heartbeatIds.every(validId)) return false;
+    if (new Set(r.heartbeatIds as readonly string[]).size !== r.heartbeatIds.length) return false;
+  }
   if (r.process !== undefined) {
     if (!r.process || typeof r.process !== "object" || Array.isArray(r.process)) return false;
     const p = r.process as Record<string, unknown>;
@@ -641,6 +671,47 @@ export const unsafePathnameCleanupPrimeOwnershipForTests = async (
             await persist({ processStopped: true });
             actions.push({ kind: "process-stopped", path });
           }
+          // Owned heartbeats are stopped before the session that hosts them, so
+          // a schedule can never survive as an orphan pointing at a dead
+          // session. Each id is proven individually and stopped individually:
+          // there is no delete-all, and an id that cannot be proven leaves that
+          // heartbeat — and every unowned one — completely alone.
+          if (r.heartbeatIds?.length && !r.heartbeatsCleaned) {
+            for (const heartbeatId of r.heartbeatIds) {
+              let ok = false;
+              try {
+                ok = (await proof.heartbeatMatches?.(heartbeatId)) ?? false;
+              } catch (e) {
+                actions.push(warning(path, `heartbeat proof threw: ${String(e)}`));
+                return actions;
+              }
+              if (!ok) {
+                actions.push(warning(path, "heartbeat identity cannot be proven; left intact"));
+                return actions;
+              }
+              if (!(await claimStillBound())) {
+                actions.push(
+                  warning(path, "ownership record namespace changed during heartbeat proof"),
+                );
+                return actions;
+              }
+              try {
+                if (!cleanup.cleanupHeartbeat) throw Error("cleanup callback missing");
+                await cleanup.cleanupHeartbeat(heartbeatId, `${r.operationId}:heartbeat`);
+              } catch (e) {
+                actions.push(warning(path, `heartbeat cleanup threw: ${String(e)}`));
+                return actions;
+              }
+              if (!(await claimStillBound())) {
+                actions.push(
+                  warning(path, "ownership record namespace changed during heartbeat cleanup"),
+                );
+                return actions;
+              }
+              actions.push({ kind: "heartbeat-stopped", path });
+            }
+            await persist({ heartbeatsCleaned: true });
+          }
           if (r.rpcSessionId && !r.rpcCleaned) {
             let ok = false;
             try {
@@ -832,6 +903,21 @@ export const cleanupPrimeOwnership = async (
       await cleanup.stopProcess(record.process, `${operationId}:process`);
       actions.push({ kind: "process-stopped", path });
     }
+    if (record.heartbeatIds?.length && !record.heartbeatsCleaned) {
+      for (const heartbeatId of record.heartbeatIds) {
+        if (!(await proof.heartbeatMatches?.(heartbeatId)))
+          return [...actions, warning(path, "heartbeat identity cannot be proven; retained")];
+        if (!cleanup.cleanupHeartbeat)
+          return [...actions, warning(path, "heartbeat cleanup callback missing; retained")];
+        if (!(await boundFile(path, chain, bound.value)))
+          return [
+            ...actions,
+            warning(path, "ownership record changed during heartbeat proof; retained"),
+          ];
+        await cleanup.cleanupHeartbeat(heartbeatId, `${operationId}:heartbeat`);
+        actions.push({ kind: "heartbeat-stopped", path });
+      }
+    }
     if (record.rpcSessionId && !record.rpcCleaned) {
       if (!(await proof.rpcSessionMatches?.(record.rpcSessionId)))
         return [...actions, warning(path, "RPC identity cannot be proven; retained")];
@@ -981,7 +1067,12 @@ const recoverPrimeOwnershipImpl = async (
           await visit(p, childChain);
         } else if (child.isFile() && e.name.endsWith(".json") && identify(p)?.root === expected) {
           const identity = identify(p);
-          if (scope && (identity?.environmentId !== scope.environmentId || identity.instanceId !== scope.instanceId)) continue;
+          if (
+            scope &&
+            (identity?.environmentId !== scope.environmentId ||
+              identity.instanceId !== scope.instanceId)
+          )
+            continue;
           const check = await lstat(p, { bigint: true });
           if (check.dev !== child.dev || check.ino !== child.ino || !(await chainUnchanged(chain)))
             throw Error("ownership record identity changed after enumeration");

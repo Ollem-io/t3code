@@ -54,6 +54,10 @@ export type RefreshThreadUsageInput = CommandInput<"thread.usage.refresh">;
 export type RefreshThreadCommandsInput = CommandInput<"thread.commands.refresh">;
 export type ObserveThreadAgentInput = CommandInput<"thread.agent.observe">;
 export type UnobserveThreadAgentInput = CommandInput<"thread.agent.unobserve">;
+export type CreateThreadHeartbeatInput = CommandInput<"thread.heartbeat.create">;
+export type PauseThreadHeartbeatInput = CommandInput<"thread.heartbeat.pause">;
+export type ResumeThreadHeartbeatInput = CommandInput<"thread.heartbeat.resume">;
+export type DeleteThreadHeartbeatInput = CommandInput<"thread.heartbeat.delete">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
@@ -365,6 +369,55 @@ export const unobserveThreadAgent: (input: UnobserveThreadAgentInput) => Command
     createdAt: metadata.createdAt,
   });
 });
+
+/**
+ * Create one T3-owned heartbeat. The client has already disclosed that this may
+ * keep the provider session resident; the host re-checks capability and bounds.
+ */
+export const createThreadHeartbeat: (input: CreateThreadHeartbeatInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.createThreadHeartbeat")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.heartbeat.create",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+/** Pause one owned heartbeat. */
+export const pauseThreadHeartbeat: (input: PauseThreadHeartbeatInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.pauseThreadHeartbeat",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.heartbeat.pause",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+/** The exact reverse of `pauseThreadHeartbeat`. */
+export const resumeThreadHeartbeat: (input: ResumeThreadHeartbeatInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.resumeThreadHeartbeat")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.heartbeat.resume",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+/** The exact reverse of `createThreadHeartbeat`, so creation is no one-way door. */
+export const deleteThreadHeartbeat: (input: DeleteThreadHeartbeatInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.deleteThreadHeartbeat")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.heartbeat.delete",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
 
 export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.interruptThreadTurn",
