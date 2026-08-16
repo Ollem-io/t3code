@@ -131,12 +131,22 @@ describe("prime resume wiring", () => {
   it("marks a dispatched choice as in flight until the host answers", () => {
     const chosen = primeResumeReduce(
       model({ state: { status: "unavailable", reason: "capabilityMismatch" } }),
-      { type: "choice", intent: { kind: "fork" } },
+      { type: "choice", intent: { kind: "fresh", discardCursor: true } },
     );
     expect(primeResumeAwaitingChoice(chosen)).toBe(true);
     expect(
       primeResumeAwaitingChoice(
         primeResumeReduce(chosen, { type: "state", state: { status: "reconnecting" } }),
+      ),
+    ).toBe(false);
+    // A fork is the one choice with no answer coming for *this* thread, so it
+    // must not arm a wait that would disable these buttons for good.
+    expect(
+      primeResumeAwaitingChoice(
+        primeResumeReduce(
+          model({ state: { status: "unavailable", reason: "capabilityMismatch" } }),
+          { type: "choice", intent: { kind: "fork" } },
+        ),
       ),
     ).toBe(false);
   });

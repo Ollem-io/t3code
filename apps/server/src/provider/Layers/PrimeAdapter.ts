@@ -433,13 +433,21 @@ export const makePrimeAdapter = (
             // gets the event, which is what makes the state reachable at all.
             publish: (threadId, state) => {
               options.onResumeState?.(threadId, state);
-              void publishResumeState(threadId, state);
+              // Serialised: a recovery publishes `reconnecting` and then its
+              // terminal state back to back, and a client that received them
+              // out of order would read a settled thread as still spinning.
+              resumePublishes = resumePublishes.then(
+                () => publishResumeState(threadId, state),
+                () => publishResumeState(threadId, state),
+              );
+              void resumePublishes;
             },
           });
     const offerEvents = async (events: ReadonlyArray<ProviderRuntimeEvent>) => {
       for (const event of events) await Effect.runPromise(Queue.offer(runtimeEvents, event));
     };
-    let resumeEventSeq = 0;
+    /** Keeps resume publishes in the order the coordinator produced them. */
+    let resumePublishes: Promise<void> = Promise.resolve();
     /**
      * PA-B04 — puts the coarse resume outcome on the canonical runtime stream.
      *
@@ -453,7 +461,9 @@ export const makePrimeAdapter = (
       const createdAt = await Effect.runPromise(nowIso);
       await offerEvents([
         {
-          eventId: EventId.make(`prime-resume-${++resumeEventSeq}`),
+          // Unique per event, not per adapter instance: a counter restarts at 1
+          // with the process and would hand two different events one identity.
+          eventId: EventId.make(`prime-resume-${randomUUID()}`),
           provider: PROVIDER,
           providerInstanceId: options.instanceId,
           threadId: ThreadId.make(threadId),
@@ -1140,7 +1150,13 @@ export const makePrimeAdapter = (
               if (input.resumeRecovery !== undefined) resume?.forget(String(input.threadId));
               if (input.resumeRecovery === "fresh")
                 await resume?.discardCursor(String(input.threadId));
-              const decision = await resume?.resume(String(input.threadId));
+              // A start the user asked for by pressing retry / start-new must
+              // publish its outcome even when that outcome repeats the refusal
+              // already on the thread; otherwise the client that shut its
+              // composer on the click never gets an answer.
+              const decision = await resume?.resume(String(input.threadId), {
+                announce: input.resumeRecovery !== undefined,
+              });
               if (decision?.plan.kind === "unavailable")
                 throw new ProviderAdapterValidationError({
                   provider: PROVIDER,

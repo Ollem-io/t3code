@@ -1,5 +1,7 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 /**
  * Source-derived PA-B04 resume and recovery transcript.
@@ -23,6 +25,7 @@ const { PRIME_RESUME_FAILURE_REASONS, primeResumeAllowsFreshStart } = await load
 );
 const {
   initialPrimeResumeModel,
+  primeResumeAwaitingChoice,
   primeResumeBlocksComposer,
   primeResumeIntentFor,
   primeResumeReduce,
@@ -38,6 +41,12 @@ const say = (line) => {
 let checks = 0;
 const check = (label, run) => {
   run();
+  checks += 1;
+  say(`  ok  ${label}`);
+};
+/** Same contract as `check`, for the checks that touch a real host on disk. */
+const checkAsync = async (label, run) => {
+  await run();
   checks += 1;
   say(`  ok  ${label}`);
 };
@@ -140,10 +149,51 @@ check("a reconnect that never lands becomes actionable instead of spinning", () 
   );
   const surface = primeResumeSurface("prime-agent", stalled);
   NodeAssert.equal(surface.kind, "stalled");
+  // The "Start a new session" button has to be one: a stalled reconnect that
+  // silently retried would hit the same cursor and stall again.
   NodeAssert.deepEqual(primeResumeIntentFor(surface, "fresh"), {
     kind: "fresh",
-    discardCursor: false,
+    discardCursor: true,
   });
+});
+
+check("a retry that lands on the same refusal is still an answer", () => {
+  // The host announces a user-requested attempt with `reconnecting` before it
+  // revalidates, so an identical refusal still arrives as a transition. Without
+  // that the banner would spin forever with every button disabled.
+  const settled = [
+    { type: "state", state: { status: "unavailable", reason: "corrupt" } },
+    { type: "choice", intent: { kind: "retry" } },
+    { type: "state", state: { status: "reconnecting" } },
+    { type: "state", state: { status: "unavailable", reason: "corrupt" } },
+  ].reduce(primeResumeReduce, initialPrimeResumeModel);
+  NodeAssert.equal(primeResumeAwaitingChoice(settled), false);
+  NodeAssert.deepEqual(
+    primeResumeSurface("prime-agent", settled).choices.map((choice) => choice.kind),
+    ["retry", "fork", "fresh"],
+  );
+});
+
+check("a confirmed fresh start ends the block instead of leaving the refusal", () => {
+  const settled = [
+    { type: "state", state: { status: "unavailable", reason: "capabilityMismatch" } },
+    { type: "choice", intent: { kind: "fresh", discardCursor: true } },
+    { type: "state", state: { status: "reconnecting" } },
+    // The cursor the user agreed to leave behind is gone, so the truthful
+    // terminal state is "there is no durable session", not the old refusal.
+    { type: "state", state: { status: "unavailable", reason: "missing" } },
+  ].reduce(primeResumeReduce, initialPrimeResumeModel);
+  NodeAssert.equal(primeResumeSurface("prime-agent", settled).kind, "missing");
+  NodeAssert.equal(primeResumeBlocksComposer("prime-agent", settled), false);
+  NodeAssert.equal(primeResumeAwaitingChoice(settled), false);
+});
+
+check("forking never leaves the originating thread's buttons inert", () => {
+  const forked = [
+    { type: "state", state: { status: "unavailable", reason: "conflict" } },
+    { type: "choice", intent: { kind: "fork" } },
+  ].reduce(primeResumeReduce, initialPrimeResumeModel);
+  NodeAssert.equal(primeResumeAwaitingChoice(forked), false);
 });
 
 check("a retry keeps the composer shut until the host answers", () => {
@@ -231,6 +281,12 @@ check("the resume state has a transport clients actually receive", () => {
     read("apps/server/src/provider/Layers/PrimeAdapter.ts").includes("publishResumeState"),
     "the adapter publishes it without needing an optional caller",
   );
+  NodeAssert.ok(
+    read("apps/server/src/provider/Layers/PrimeAdapter.ts").includes(
+      "resumePublishes = resumePublishes.then(",
+    ),
+    "and publishes them in order, so a settled thread never reads as spinning",
+  );
 });
 
 check("every recovery choice reaches a host that can act on it", () => {
@@ -250,6 +306,12 @@ check("every recovery choice reaches a host that can act on it", () => {
     ),
     "a confirmed fresh start can delete the cursor that keeps refusing",
   );
+  NodeAssert.ok(
+    read("apps/server/src/provider/Layers/PrimeAdapter.ts").includes(
+      "announce: input.resumeRecovery !== undefined",
+    ),
+    "a start the user asked for announces itself, so its outcome is published",
+  );
 });
 
 check("both clients mount the banner and gate their own send path", () => {
@@ -262,6 +324,133 @@ check("both clients mount the banner and gate their own send path", () => {
     mobile.includes("if (primeResumeComposerBlocked) return null;"),
     "mobile gates its send funnel",
   );
+});
+
+// Round-two review's blockers, answered behaviourally rather than by grep: the
+// real host coordinator runs against a throwaway T3 home, and the states it
+// publishes are fed through the real client reducer. Nothing about the recovery
+// path is described here; it is executed.
+const { makePrimeResumeCoordinator, primeCapabilityDigest } = await load(
+  "apps/server/src/provider/prime/PrimeResumeCoordinator.ts",
+);
+const { makePrimeResumeCursor, primeSessionPathToken, writePrimeResumeCursor } = await load(
+  "apps/server/src/provider/prime/PrimeResumeCursor.ts",
+);
+const { primeHomeFingerprint, primeResourceLayout } = await load(
+  "apps/server/src/provider/prime/PrimeResourceLayout.ts",
+);
+
+const CAPABILITIES = primeCapabilityDigest({ runtimeExtensions: { steer: true } });
+const THREAD = "thread-a";
+
+/** A real coordinator over a disposable home. Returns what it published. */
+const hostFor = async (over = {}) => {
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pa-b04-"));
+  const layout = primeResourceLayout({
+    home: root,
+    environmentId: "env-a",
+    instanceId: "prime",
+    threadId: THREAD,
+  });
+  NodeFS.mkdirSync(layout.session, { recursive: true });
+  const scope = {
+    environmentId: "env-a",
+    providerInstanceId: "prime",
+    projectId: "project-a",
+    threadId: THREAD,
+    homeFingerprint: primeHomeFingerprint(root),
+  };
+  await writePrimeResumeCursor(
+    layout.resumeCursor,
+    makePrimeResumeCursor({
+      scope,
+      sessionPathToken: primeSessionPathToken(root, layout.session),
+      ownershipGeneration: 1,
+      compatibility: { agentVersion: "0.7.2", band: "compatible" },
+      capabilityDigest: CAPABILITIES,
+      recordedAt: "2026-08-16T00:00:00.000Z",
+    }),
+  );
+  const published = [];
+  const coordinator = makePrimeResumeCoordinator({
+    scopeForThread: async () => scope,
+    cursorPath: () => layout.resumeCursor,
+    sessionPathToken: () => primeSessionPathToken(root, layout.session),
+    sessionStorageExists: async () => true,
+    ownershipGeneration: async () => 1,
+    agentVersion: async () => "0.7.3",
+    capabilityDigest: () => CAPABILITIES,
+    liveSession: () => undefined,
+    acquireLease: async () => {},
+    releaseLease: async () => {},
+    publish: (_threadId, state) => published.push(state),
+    ...over,
+  });
+  return {
+    coordinator,
+    published,
+    cursorPath: layout.resumeCursor,
+    cleanup: () => NodeFS.rmSync(root, { recursive: true, force: true }),
+  };
+};
+
+/** Replays host states through the shared client model, as a client would. */
+const clientAfter = (states, choice) =>
+  states.reduce(
+    (acc, state) => primeResumeReduce(acc, { type: "state", state }),
+    primeResumeReduce(initialPrimeResumeModel, { type: "choice", intent: choice }),
+  );
+
+await checkAsync("a user-pressed retry is answered even when nothing changed", async () => {
+  const host = await hostFor();
+  NodeFS.writeFileSync(host.cursorPath, "{not json");
+  const first = await host.coordinator.resume(THREAD);
+  NodeAssert.deepEqual(first.plan, { kind: "unavailable", reason: "corrupt" });
+  host.published.length = 0;
+  host.coordinator.forget(THREAD);
+  const retried = await host.coordinator.resume(THREAD, { announce: true });
+  NodeAssert.deepEqual(retried.plan, { kind: "unavailable", reason: "corrupt" });
+  NodeAssert.deepEqual(host.published, [
+    { status: "reconnecting" },
+    { status: "unavailable", reason: "corrupt" },
+  ]);
+  const client = clientAfter(host.published, { kind: "retry" });
+  NodeAssert.equal(primeResumeAwaitingChoice(client), false);
+  NodeAssert.deepEqual(
+    primeResumeSurface("prime-agent", client).choices.map((choice) => choice.kind),
+    ["retry", "fork", "fresh"],
+  );
+  host.cleanup();
+});
+
+await checkAsync("a confirmed fresh start is not a silent, permanent block", async () => {
+  const host = await hostFor({
+    // The capability set moved on since the cursor was written: the
+    // capabilityMismatch brick whose only way out is a confirmed fresh start.
+    capabilityDigest: () => primeCapabilityDigest({ runtimeExtensions: { steer: false } }),
+  });
+  const refused = await host.coordinator.resume(THREAD);
+  NodeAssert.deepEqual(refused.plan, { kind: "unavailable", reason: "capabilityMismatch" });
+  host.published.length = 0;
+  NodeAssert.equal(await host.coordinator.discardCursor(THREAD), true);
+  const afterFresh = await host.coordinator.resume(THREAD, { announce: true });
+  NodeAssert.deepEqual(afterFresh.plan, { kind: "fresh" });
+  NodeAssert.deepEqual(host.published, [
+    { status: "reconnecting" },
+    { status: "unavailable", reason: "missing" },
+  ]);
+  const client = clientAfter(host.published, { kind: "fresh", discardCursor: true });
+  NodeAssert.equal(primeResumeSurface("prime-agent", client).kind, "missing");
+  NodeAssert.equal(primeResumeBlocksComposer("prime-agent", client), false);
+  host.cleanup();
+});
+
+await checkAsync("an ordinary first turn still publishes no recovery state", async () => {
+  const host = await hostFor();
+  NodeFS.rmSync(host.cursorPath, { force: true });
+  NodeAssert.deepEqual((await host.coordinator.resume(THREAD)).plan, { kind: "fresh" });
+  NodeAssert.deepEqual(host.published, []);
+  host.cleanup();
 });
 
 say("");

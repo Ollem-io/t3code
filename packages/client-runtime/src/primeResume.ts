@@ -243,11 +243,19 @@ export function primeResumeReduce(
       return { state: event.state, stalled: false, pending: undefined };
     case "choice":
       // Retrying re-enters reconnecting locally so the composer stays shut
-      // between the click and the host's answer.
+      // between the click and the host's answer. That answer always arrives:
+      // a user-requested attempt publishes `reconnecting` and then its terminal
+      // state, so even a refusal that repeats itself unchanged lands here as a
+      // `state` event and clears `pending`.
+      //
+      // A fork is the exception, and deliberately not pending: it publishes no
+      // resume state for *this* thread (it creates another one), so recording a
+      // wait for an answer that will never come would leave this thread's
+      // recovery buttons inert forever.
       return {
         state: event.intent.kind === "retry" ? { status: "reconnecting" } : model.state,
         stalled: false,
-        pending: event.intent,
+        pending: event.intent.kind === "fork" ? model.pending : event.intent,
       };
     case "sessionStatus":
       // Only a terminal session status can settle a reconnect that never got
@@ -302,7 +310,11 @@ export function primeResumeSurface(
       detail:
         "Reconnecting to the durable Prime Agent session did not finish, and no new session was started in its place. Retry, fork this thread, or start a new session.",
       composerBlocked: true,
-      choices: [RETRY, FORK, fresh(false)],
+      // `fresh(true)`: the button says the earlier session is left behind, so
+      // it has to actually stop this thread pointing at it. Offering a fresh
+      // start that quietly ran a retry made the label a lie, and a cursor that
+      // stalled once would stall again on the next attempt.
+      choices: [RETRY, FORK, fresh(true)],
     };
   return {
     kind: "reconnecting",
@@ -337,9 +349,7 @@ export const PRIME_RESUME_COMPOSER_BLOCKED_REASON = "Prime Agent resume unresolv
  * only two the host must arbitrate as resume, which is why the recover command
  * carries just those two.
  */
-export function primeResumeRecoveryRoute(
-  intent: PrimeResumeIntent,
-):
+export function primeResumeRecoveryRoute(intent: PrimeResumeIntent):
   | { readonly kind: "fork" }
   | {
       readonly kind: "recover";

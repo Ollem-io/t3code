@@ -5,6 +5,7 @@ import {
   PRIME_RESUME_FRESH_CONFIRM,
   PRIME_RESUME_STOP_NOTE,
   initialPrimeResumeModel,
+  primeResumeAwaitingChoice,
   primeResumeBlocksComposer,
   primeResumeFailureSurface,
   primeResumeIntentFor,
@@ -116,8 +117,74 @@ describe("prime resume client model", () => {
     expect(stalled.kind).toBe("stalled");
     expect(stalled.composerBlocked).toBe(true);
     expect(stalled.choices.map((choice) => choice.kind)).toEqual(["retry", "fork", "fresh"]);
-    // No cursor was proven bad here, so the fresh start does not discard one.
-    expect(primeResumeIntentFor(stalled, "fresh")).toEqual({ kind: "fresh", discardCursor: false });
+    // The button says the earlier session is left behind, so it discards the
+    // cursor for real; a "fresh start" that quietly retried would be a lie and
+    // would stall again on exactly the cursor that stalled the first time.
+    expect(primeResumeIntentFor(stalled, "fresh")).toEqual({ kind: "fresh", discardCursor: true });
+  });
+
+  // PA-B04 regression: the retry that answers with the *same* refusal.
+  // The host publishes `reconnecting` before it revalidates, so a refusal that
+  // repeats itself still arrives as a transition; without it the client sat on
+  // its locally-entered reconnecting state forever, composer shut and every
+  // recovery button disabled by `pending`.
+  it("re-offers recovery when a retry lands on the identical refusal", () => {
+    const refused = primeResumeReduce(model(), {
+      type: "state",
+      state: { status: "unavailable", reason: "corrupt" },
+    });
+    const retrying = primeResumeReduce(refused, { type: "choice", intent: { kind: "retry" } });
+    expect(primeResumeAwaitingChoice(retrying)).toBe(true);
+    const announced = primeResumeReduce(retrying, {
+      type: "state",
+      state: { status: "reconnecting" },
+    });
+    const answered = primeResumeReduce(announced, {
+      type: "state",
+      state: { status: "unavailable", reason: "corrupt" },
+    });
+    expect(primeResumeAwaitingChoice(answered)).toBe(false);
+    const surface = primeResumeSurface("prime-agent", answered);
+    expect(surface.kind).toBe("unavailable");
+    expect(surface.choices.map((choice) => choice.kind)).toEqual(["retry", "fork", "fresh"]);
+  });
+
+  // PA-B04 regression: a confirmed fresh start that the host honoured has to
+  // end the block. The terminal state is `missing` — there is genuinely no
+  // durable session left — and `missing` must not block the composer.
+  it("reopens the composer once a confirmed fresh start reports no session left", () => {
+    const refused = primeResumeReduce(model(), {
+      type: "state",
+      state: { status: "unavailable", reason: "capabilityMismatch" },
+    });
+    expect(primeResumeBlocksComposer("prime-agent", refused)).toBe(true);
+    const chosen = primeResumeReduce(refused, {
+      type: "choice",
+      intent: { kind: "fresh", discardCursor: true },
+    });
+    const announced = primeResumeReduce(chosen, {
+      type: "state",
+      state: { status: "reconnecting" },
+    });
+    const settled = primeResumeReduce(announced, {
+      type: "state",
+      state: { status: "unavailable", reason: "missing" },
+    });
+    expect(primeResumeAwaitingChoice(settled)).toBe(false);
+    expect(primeResumeSurface("prime-agent", settled).kind).toBe("missing");
+    expect(primeResumeBlocksComposer("prime-agent", settled)).toBe(false);
+  });
+
+  // A fork publishes no resume state for *this* thread, so waiting on one would
+  // leave the originating thread's buttons inert for good.
+  it("does not wait on an answer for a fork", () => {
+    const refused = primeResumeReduce(model(), {
+      type: "state",
+      state: { status: "unavailable", reason: "conflict" },
+    });
+    const forked = primeResumeReduce(refused, { type: "choice", intent: { kind: "fork" } });
+    expect(primeResumeAwaitingChoice(forked)).toBe(false);
+    expect(primeResumeSurface("prime-agent", forked).kind).toBe("conflict");
   });
 
   it("keeps the composer shut between a retry and the host's answer", () => {
