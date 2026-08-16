@@ -48,7 +48,7 @@ describe("prime command sheet", () => {
   it("fails actionably for a command the runtime no longer offers", () => {
     expect(resolvePrimeCommandInvocation(commands, "gone")).toEqual({
       ok: false,
-      reason: "/gone is no longer offered by this runtime. Reopen the list to refresh it.",
+      reason: "/gone is no longer offered by this runtime.",
     });
     expect(resolvePrimeCommandInvocation(undefined, "gone").ok).toBe(false);
   });

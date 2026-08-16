@@ -52,6 +52,29 @@ describe("prime command discovery", () => {
     expect(JSON.stringify(catalog)).not.toContain("/Users/");
   });
 
+  it("scrubs host paths out of free-text descriptions", () => {
+    const catalog = normalizePrimeCommands({
+      commands: [
+        { name: "descleak", description: "Edit /Users/someone/secret/config.toml to configure" },
+        { name: "homeleak", description: "Reads ~/.prime/commands/deploy.md first" },
+        { name: "winleak", description: "See C:\\Users\\someone\\prime\\notes.md." },
+        { name: "keeps", description: "Run /deploy on the current branch (staging and/or prod)" },
+      ],
+    });
+    const described = Object.fromEntries(
+      catalog.commands.map((entry) => [entry.name, entry.description]),
+    );
+    expect(described.descleak).toBe("Edit config.toml to configure");
+    expect(described.homeleak).toBe("Reads deploy.md first");
+    expect(described.winleak).toBe("See notes.md.");
+    // Only real paths are collapsed; a bare command mention survives intact.
+    expect(described.keeps).toBe("Run /deploy on the current branch (staging and/or prod)");
+    const serialized = JSON.stringify(catalog);
+    expect(serialized).not.toContain("/Users/");
+    expect(serialized).not.toContain("~/");
+    expect(serialized).not.toContain("C:\\");
+  });
+
   it("drops TUI-only entries so they can never be offered", () => {
     const catalog = normalizePrimeCommands({
       commands: [

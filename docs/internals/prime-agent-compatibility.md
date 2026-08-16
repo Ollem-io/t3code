@@ -67,7 +67,9 @@ for that session, and publishes it as the provider-neutral `session.commands.upd
   can offer one. An unrecognized response body yields an empty catalog and the feature stays hidden.
 - **No host path on the wire.** `location` is reduced to a bare file name. Absolute, home-relative,
   parent-traversing, and Windows drive paths are dropped outright rather than trimmed: the label is
-  worth less than the certainty that a remote client learns nothing about host layout.
+  worth less than the certainty that a remote client learns nothing about host layout. A path
+  embedded in a host-authored `description` gets the same treatment: it collapses to its bare file
+  name so the sentence still reads without disclosing where the file lives.
 - **Bounded and cached.** At most 128 entries, deduplicated by name with the first definition
   winning; discovery re-runs only on an explicit `command.discover`, and a byte-identical catalog
   produces neither a durable event nor a projection write. The cache dies with its session.
@@ -76,5 +78,6 @@ for that session, and publishes it as the provider-neutral `session.commands.upd
   runtime would reject.
 
 `packages/contracts/fixtures/pa-a04-prime-commands-transcript.mjs` builds a disposable
-extension/prompt/skill tree, verifies the filtering and sanitization rules against the shipped
-source, and fails if either drifts.
+extension/prompt/skill tree and runs it through the shipped `normalizePrimeCommands` and the shipped
+client resolver — it imports them rather than re-implementing them, so a regression in either fails
+the transcript. `PrimeCommandsTranscript.test.ts` keeps that wiring honest in CI.

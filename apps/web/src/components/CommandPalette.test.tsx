@@ -86,7 +86,7 @@ describe("prime command palette entries", () => {
     const stale = resolvePrimeCommandInvocation([], "review");
     expect(stale).toEqual({
       ok: false,
-      reason: "/review is no longer offered by this runtime. Reopen the list to refresh it.",
+      reason: "/review is no longer offered by this runtime.",
     });
     await items[0]!.run();
     expect(inserted).toEqual(["/review"]);

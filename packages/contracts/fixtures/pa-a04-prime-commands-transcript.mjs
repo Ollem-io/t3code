@@ -16,6 +16,18 @@ import * as NodeURL from "node:url";
  */
 const ROOT = new URL("../../../", import.meta.url);
 const read = (relative) => NodeFS.readFileSync(new URL(relative, ROOT), "utf8");
+const load = (relative) => import(new URL(relative, ROOT).href);
+
+/**
+ * The shipped implementations, executed — never re-implemented. If the mapper or
+ * the client resolver regresses, this transcript fails with it. (Node strips the
+ * TypeScript types natively; both modules are type-only at their imports.)
+ */
+const { normalizePrimeCommands, sanitizePrimeCommandLocation, PRIME_GET_COMMANDS_COMMAND } =
+  await load("apps/server/src/provider/prime/PrimeCommands.ts");
+const { resolvePrimeCommandInvocation } = await load(
+  "apps/web/src/components/chat/primeCommands.ts",
+);
 
 /**
  * Creates an isolated fixture tree under a disposable temp directory. Nothing is
@@ -57,7 +69,15 @@ export function nativeDiscoveryBody(root) {
         description: "Review the working diff",
         location: "prompts/review.md",
       },
-      { name: "refactor", kind: "skill", source: "user", location: "skills/refactor/SKILL.md" },
+      {
+        name: "refactor",
+        kind: "skill",
+        source: "user",
+        // A host-authored description that embeds an absolute path: the wire
+        // must carry the file name, never the layout it lives in.
+        description: `Refactor using ${NodePath.join(root, "skills/refactor/SKILL.md")} as the guide`,
+        location: "skills/refactor/SKILL.md",
+      },
       { name: "theme", kind: "command", source: "builtin", tuiOnly: true },
       { name: "login", kind: "command", source: "builtin" },
       { name: "review", kind: "prompt", source: "user", description: "shadowing duplicate" },
@@ -65,51 +85,14 @@ export function nativeDiscoveryBody(root) {
   };
 }
 
-/** Mirrors `sanitizePrimeCommandLocation` in PrimeCommands.ts; verified below. */
-const sanitizeLocation = (value) => {
-  if (typeof value !== "string") return undefined;
-  const raw = value.trim();
-  if (raw.length === 0 || raw.startsWith("~") || raw.includes("..")) return undefined;
-  if (raw.startsWith("/") || raw.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(raw)) return undefined;
-  const segments = raw.split(/[\\/]/u).filter((segment) => segment.length > 0);
-  const last = segments.at(-1);
-  return last === undefined || last.length > 64 ? undefined : last;
-};
+/** The shipped server mapper, executed as-is — never re-implemented here. */
+export const mapCommands = (body) => normalizePrimeCommands(body);
+
+/** The shipped client resolver, executed as-is. */
+export const invoke = (catalog, name, input) =>
+  resolvePrimeCommandInvocation(catalog.commands, name, input);
 
 const UNSAFE = new Set(["login", "logout", "exit", "quit", "new-session", "clear"]);
-
-/** Mirrors `normalizePrimeCommands`; the shipped rules are asserted below. */
-export function mapCommands(body) {
-  const byName = new Map();
-  for (const raw of body.commands) {
-    if (raw.tuiOnly === true || raw.hidden === true || raw.surface === "tui") continue;
-    const name = String(raw.name).replace(/^\//u, "").toLowerCase();
-    if (!/^[a-z0-9][a-z0-9:_-]{0,63}$/.test(name)) continue;
-    if (UNSAFE.has(name.replace(/[_:]/gu, "-"))) continue;
-    if (byName.has(name)) continue;
-    const location = sanitizeLocation(raw.location);
-    byName.set(name, {
-      name,
-      kind: raw.kind ?? "command",
-      source: raw.source ?? "builtin",
-      ...(raw.description === undefined ? {} : { description: raw.description }),
-      ...(location === undefined ? {} : { location }),
-    });
-  }
-  return { commands: [...byName.values()].sort((a, b) => a.name.localeCompare(b.name)) };
-}
-
-/** Mirrors `resolvePrimeCommandInvocation` on both clients. */
-export function invoke(catalog, name, input) {
-  const entry = catalog.commands.find((candidate) => candidate.name === name);
-  if (!entry)
-    return {
-      ok: false,
-      reason: `/${name} is no longer offered by this runtime. Reopen the list to refresh it.`,
-    };
-  const trimmed = (input ?? "").trim();
-  return { ok: true, prompt: trimmed.length > 0 ? `/${name} ${trimmed}` : `/${name}` };
-}
 
 /** A mapper that trusts the runtime: keeps every entry and every path as-is. */
 export const passthroughMapper = (body) => ({
@@ -137,8 +120,11 @@ export function verifyDiscovery(mapper = mapCommands) {
     // worth less than the certainty that no host layout is disclosed.
     if (catalog.commands.find((entry) => entry.name === "deploy").location !== undefined)
       throw new Error("an absolute location was published instead of dropped");
-    if (catalog.commands.find((entry) => entry.name === "refactor").location !== "SKILL.md")
+    const refactor = catalog.commands.find((entry) => entry.name === "refactor");
+    if (refactor.location !== "SKILL.md")
       throw new Error("location was not reduced to a bare file name");
+    if (refactor.description !== "Refactor using SKILL.md as the guide")
+      throw new Error(`description was not path-scrubbed: ${refactor.description}`);
     if (catalog.commands.find((entry) => entry.name === "review").source !== "project")
       throw new Error("first definition did not win the duplicate");
     return catalog;
@@ -171,19 +157,27 @@ export function verifyFalsifiable() {
   throw new Error("discovery check is not falsifiable");
 }
 
-/** The fixture is only trustworthy while it matches the shipped source. */
+/**
+ * Every property below is probed by *running* the shipped functions, so a
+ * regression in them fails this transcript instead of a source-text needle that
+ * a rewrite could satisfy while behaving differently.
+ */
 export function verifyDerivedFromSource() {
-  const mapper = read("apps/server/src/provider/prime/PrimeCommands.ts");
-  for (const needle of [
-    'export const PRIME_GET_COMMANDS_COMMAND = Object.freeze({ type: "get_commands" as const });',
-    'if (raw.startsWith("~") || raw.includes("..")) return undefined;',
-    'UNSAFE_NAMES.has(name.replace(/[_:]/gu, "-"))',
-    "const NAME_PATTERN = /^[a-z0-9][a-z0-9:_-]{0,63}$/;",
-  ]) {
-    if (!mapper.includes(needle)) throw new Error(`mapper drifted: ${needle}`);
+  if (JSON.stringify(PRIME_GET_COMMANDS_COMMAND) !== '{"type":"get_commands"}')
+    throw new Error("the native discovery command drifted");
+  for (const absolute of ["/etc/passwd", "~/notes/x.md", "C:\\Users\\dev\\x.md", "../x.md"]) {
+    if (sanitizePrimeCommandLocation(absolute) !== undefined)
+      throw new Error(`a host path survived location sanitization: ${absolute}`);
   }
+  if (sanitizePrimeCommandLocation("prompts/review.md") !== "review.md")
+    throw new Error("a relative location was not reduced to its file name");
   for (const name of UNSAFE) {
-    if (!mapper.includes(`"${name}"`)) throw new Error(`unsafe-name list drifted: ${name}`);
+    const spellings = [name, name.replace(/-/gu, "_"), `/${name.toUpperCase()}`];
+    for (const spelling of spellings) {
+      const mapped = mapCommands({ commands: [{ name: spelling }] });
+      if (mapped.commands.length !== 0)
+        throw new Error(`an auth/session-mutating entry survived: ${spelling}`);
+    }
   }
   const client = read("apps/web/src/components/chat/primeCommands.ts");
   if (!client.includes("is no longer offered by this runtime"))

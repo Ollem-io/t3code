@@ -15,7 +15,8 @@ import type {
  *    accident. An unrecognized shape yields nothing rather than a guess.
  *  - **No host path leaves the host.** `location` is reduced to a bare file
  *    name; anything absolute, parent-relative, or home-relative is dropped
- *    entirely rather than sanitized into something that still discloses layout.
+ *    entirely rather than sanitized into something that still discloses layout,
+ *    and a path embedded in a free-text `description` is collapsed the same way.
  */
 
 /** The native no-argument discovery command. Exact 0.7.2 shape, never inferred. */
@@ -55,6 +56,23 @@ const UNSAFE_NAMES = new Set([
 
 const KINDS = new Set(["command", "prompt", "skill"]);
 const SOURCES = new Set(["builtin", "user", "project", "extension"]);
+
+/**
+ * Absolute host paths anywhere in free text. Unix, home-relative, and Windows
+ * drive/UNC forms are all covered; a match is replaced by its bare file name so
+ * the sentence still reads while the host layout never leaves the host.
+ */
+const HOST_PATH_PATTERN =
+  /(?<![\w.~])(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)[^\s"'`;)\]}]*[\\/][^\s"'`,;)\]}]*/gu;
+
+const redactHostPaths = (text: string): string =>
+  text.replace(HOST_PATH_PATTERN, (match) => {
+    const trimmed = match.replace(/[.,;:!?]+$/u, "");
+    const segments = trimmed.split(/[\\/]/u).filter((segment) => segment !== "" && segment !== "~");
+    const last = segments.at(-1);
+    const tail = match.slice(trimmed.length);
+    return (last === undefined || last.length > MAX_LOCATION_CHARS ? "[path]" : last) + tail;
+  });
 
 const cleanText = (value: unknown, maximum: number): string | undefined => {
   if (typeof value !== "string") return undefined;
@@ -108,7 +126,11 @@ function mapEntry(value: unknown): ProviderSessionCommandEntry | undefined {
     return undefined;
   const kind = typeof raw.kind === "string" && KINDS.has(raw.kind) ? raw.kind : "command";
   const source = typeof raw.source === "string" && SOURCES.has(raw.source) ? raw.source : "builtin";
-  const description = cleanText(raw.description, MAX_DESCRIPTION_CHARS);
+  // Descriptions are host-authored free text, so they get the same host-path
+  // treatment as `location`: a path collapses to its bare file name.
+  const cleanedDescription = cleanText(raw.description, MAX_DESCRIPTION_CHARS);
+  const description =
+    cleanedDescription === undefined ? undefined : redactHostPaths(cleanedDescription);
   const location = sanitizePrimeCommandLocation(raw.location ?? raw.path ?? raw.file);
   return {
     name,

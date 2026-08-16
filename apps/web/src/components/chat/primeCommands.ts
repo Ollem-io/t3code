@@ -93,7 +93,7 @@ export function resolvePrimeCommandInvocation(
   if (!entry)
     return {
       ok: false,
-      reason: `/${name} is no longer offered by this runtime. Reopen the list to refresh it.`,
+      reason: `/${name} is no longer offered by this runtime.`,
     };
   return { ok: true, prompt: primeCommandPrompt(entry.name, input) };
 }
