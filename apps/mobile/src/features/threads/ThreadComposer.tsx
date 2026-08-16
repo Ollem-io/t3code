@@ -84,6 +84,15 @@ import {
   resolvePrimeSend,
   type PrimeActionMode,
 } from "./primeQueue";
+import {
+  PRIME_COMPACTION_NOT_CHECKPOINT,
+  hasPrimeContextControls,
+  hasPrimeRunningTurn,
+  primeCompactionCancelCopy,
+  renderPrimeContext,
+  resolvePrimeCompactionRequest,
+  resolvePrimeUsageRefresh,
+} from "./primeContext";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -126,6 +135,9 @@ export interface ThreadComposerProps {
   readonly onInterruptThread: () => void;
   readonly onStopThread: () => void;
   readonly onRuntimeAction?: (mode: "steer" | "followUp", text: string) => Promise<boolean>;
+  /** Runtime context management. Compaction is never a checkpoint or a revert. */
+  readonly onRequestCompaction?: () => Promise<boolean>;
+  readonly onRefreshUsage?: () => Promise<boolean>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -308,6 +320,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       props.selectedThread.session.runtimeCapabilities,
     );
   const primeQueue = renderPrimeQueue(props.selectedThread.session?.actionState);
+  const primeContextLines = renderPrimeContext(props.selectedThread.session?.contextState);
+  const primeHasRunningTurn = hasPrimeRunningTurn(props.selectedThread.session);
+  const primeCompactionDecision = resolvePrimeCompactionRequest(
+    props.selectedThread.session?.providerName,
+    props.selectedThread.session?.runtimeCapabilities,
+    props.selectedThread.session?.contextState,
+    primeHasRunningTurn,
+  );
+  const primeUsageDecision = resolvePrimeUsageRefresh(
+    props.selectedThread.session?.runtimeCapabilities,
+    primeHasRunningTurn,
+  );
   // Keep the runtime-action decision visible before send is pressed: a disabled
   // mode must explain how to proceed rather than silently dropping the draft.
   const primeSendDecision = primeRuntimeActive
@@ -1061,6 +1085,61 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             <Text className="mt-1 text-xs text-foreground-muted">
               {primeCancellationCopy(props.selectedThread.session?.runtimeCapabilities)}
             </Text>
+            {/* Compaction is the runtime's context management, never a checkpoint. */}
+            {hasPrimeContextControls(
+              props.selectedThread.session?.providerName,
+              props.selectedThread.session?.runtimeCapabilities,
+            ) ? (
+              <>
+                {primeContextLines.map((line) => (
+                  <Text key={line} className="mt-1 text-xs text-foreground-muted">
+                    {line}
+                  </Text>
+                ))}
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {PRIME_COMPACTION_NOT_CHECKPOINT}
+                </Text>
+                <Text className="mt-1 text-xs text-foreground-muted">
+                  {primeCompactionCancelCopy(props.selectedThread.session?.runtimeCapabilities)}
+                </Text>
+                <View className="mt-2 flex-row gap-2">
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Compact context"
+                    accessibilityState={{ disabled: !primeCompactionDecision.ok }}
+                    disabled={!primeCompactionDecision.ok}
+                    onPress={() => {
+                      void props.onRequestCompaction?.();
+                    }}
+                    className={`rounded-md border border-border px-2 py-1 ${primeCompactionDecision.ok ? "" : "opacity-50"}`}
+                  >
+                    <Text className="text-xs text-foreground">Compact context</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Refresh usage"
+                    accessibilityState={{ disabled: !primeUsageDecision.ok }}
+                    disabled={!primeUsageDecision.ok}
+                    onPress={() => {
+                      void props.onRefreshUsage?.();
+                    }}
+                    className={`rounded-md border border-border px-2 py-1 ${primeUsageDecision.ok ? "" : "opacity-50"}`}
+                  >
+                    <Text className="text-xs text-foreground">Refresh usage</Text>
+                  </Pressable>
+                </View>
+                {!primeCompactionDecision.ok ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeCompactionDecision.reason}
+                  </Text>
+                ) : null}
+                {!primeUsageDecision.ok ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeUsageDecision.reason}
+                  </Text>
+                ) : null}
+              </>
+            ) : null}
           </View>
         ) : null}
         {/* Queue count */}

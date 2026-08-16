@@ -217,6 +217,11 @@ function ThreadRouteContent(
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
   const steerThread = useAtomCommand(threadEnvironment.steer, "thread steer");
   const addThreadFollowUp = useAtomCommand(threadEnvironment.addFollowUp, "thread follow-up");
+  const requestThreadCompaction = useAtomCommand(
+    threadEnvironment.requestCompaction,
+    "thread compaction",
+  );
+  const refreshThreadUsage = useAtomCommand(threadEnvironment.refreshUsage, "thread usage refresh");
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -499,19 +504,52 @@ function ThreadRouteContent(
       },
     });
   }, [interruptThreadTurn, selectedThread]);
-    const handleRuntimeAction = useCallback(
+  const handleRuntimeAction = useCallback(
     async (mode: "steer" | "followUp", text: string): Promise<boolean> => {
       if (!selectedThread || !text.trim()) return false;
       const id = `${mode}-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
-      const result = mode === "steer"
-        ? await steerThread({ environmentId: selectedThread.environmentId, input: { threadId: selectedThread.id, steerId: id, text: text.trim() } })
-        : await addThreadFollowUp({ environmentId: selectedThread.environmentId, input: { threadId: selectedThread.id, followUpId: id, text: text.trim() } });
+      const result =
+        mode === "steer"
+          ? await steerThread({
+              environmentId: selectedThread.environmentId,
+              input: { threadId: selectedThread.id, steerId: id, text: text.trim() },
+            })
+          : await addThreadFollowUp({
+              environmentId: selectedThread.environmentId,
+              input: { threadId: selectedThread.id, followUpId: id, text: text.trim() },
+            });
       return result._tag !== "Failure";
     },
     [addThreadFollowUp, selectedThread, steerThread],
   );
 
-const handleStopThread = useCallback(() => {
+  // Runtime context management. Compaction shortens the agent's context; it is
+  // not a checkpoint and never reverts user work.
+  const handleRequestCompaction = useCallback(async (): Promise<boolean> => {
+    if (!selectedThread) return false;
+    const result = await requestThreadCompaction({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        compactionId: `compaction-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+      },
+    });
+    return result._tag !== "Failure";
+  }, [requestThreadCompaction, selectedThread]);
+
+  const handleRefreshUsage = useCallback(async (): Promise<boolean> => {
+    if (!selectedThread) return false;
+    const result = await refreshThreadUsage({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        requestId: `usage-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+      },
+    });
+    return result._tag !== "Failure";
+  }, [refreshThreadUsage, selectedThread]);
+
+  const handleStopThread = useCallback(() => {
     if (!selectedThread) return;
     return stopThreadSession({
       environmentId: selectedThread.environmentId,
@@ -823,6 +861,8 @@ const handleStopThread = useCallback(() => {
           onInterruptThread={handleInterruptThread}
           onStopThread={handleStopThread}
           onRuntimeAction={handleRuntimeAction}
+          onRequestCompaction={handleRequestCompaction}
+          onRefreshUsage={handleRefreshUsage}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

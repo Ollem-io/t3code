@@ -16,6 +16,8 @@ import {
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
   type OrchestrationSessionActionState,
+  EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
+  type OrchestrationSessionContextState,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -128,6 +130,18 @@ function sameId(left: string | null | undefined, right: string | null | undefine
     return false;
   }
   return left === right;
+}
+
+/**
+ * Structural equality for authoritative context snapshots. Context state has no
+ * identifiers, so the canonical comparison is the serialized snapshot itself;
+ * this exists only to drop repeats that would write identical visible state.
+ */
+function sameContextState(
+  current: OrchestrationSessionContextState | undefined,
+  next: OrchestrationSessionContextState,
+): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
 }
 
 /**
@@ -791,6 +805,46 @@ export function runtimeEventToActivities(
           payload: {
             state: event.payload.state,
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    // Runtime-side context compaction. This is explicitly not a T3 checkpoint:
+    // it shrinks the provider's context window and never reverts user work, so
+    // the activity is labelled as compaction and carries no revert affordance.
+    case "session.context.updated": {
+      const { compaction, retry, usage } = event.payload;
+      // A durable activity is a claim that compaction happened, so it requires a
+      // phase transition. Retry- and usage-only snapshots restate the last known
+      // compaction status; recording those would append "Context compacted" once
+      // per retry for a compaction that already ended.
+      if (compaction.status === "idle" || event.payload.compactionTransitioned !== true) {
+        return [];
+      }
+      const summary =
+        compaction.status === "running"
+          ? "Compacting context"
+          : compaction.status === "succeeded"
+            ? "Context compacted"
+            : compaction.status === "failed"
+              ? "Context compaction failed"
+              : "Context compaction cancelled";
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: compaction.status === "failed" ? "error" : "info",
+          kind: "context-compaction",
+          summary,
+          payload: {
+            status: compaction.status,
+            trigger: compaction.trigger,
+            ...(compaction.reason !== undefined ? { detail: compaction.reason } : {}),
+            ...(retry !== undefined ? { retry } : {}),
+            ...(usage !== undefined ? { usage } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1685,10 +1739,43 @@ const make = Effect.gen(function* () {
                 (event.payload.state === "ready" ||
                   event.payload.state === "error" ||
                   event.payload.state === "stopped"))
-                ? { actionState: { queuedCount: 0, steering: [], followUps: [] } }
-                : thread.session?.actionState
-                  ? { actionState: thread.session.actionState }
-                  : {}),
+                ? {
+                    actionState: { queuedCount: 0, steering: [], followUps: [] },
+                    // A terminated or idle session has no live context work.
+                    // Leaving the last snapshot would show a stale "Compacting".
+                    contextState: EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
+                  }
+                : {
+                    ...(thread.session?.actionState
+                      ? { actionState: thread.session.actionState }
+                      : {}),
+                    // A starting turn inherits no *in-flight* context work: a
+                    // "Compacting" that outlived the turn which produced it would
+                    // otherwise persist forever with nothing able to clear it,
+                    // permanently disabling the compaction control. Usage and a
+                    // finished compaction result are still current facts, so they
+                    // survive the turn boundary untouched. Tradeoff, accepted
+                    // deliberately: a session-level compaction that genuinely
+                    // spans a turn start reads as idle until its next phase
+                    // change, which is strictly better than a "Compacting" that
+                    // no event can ever clear.
+                    ...(thread.session?.contextState
+                      ? {
+                          contextState:
+                            event.type === "turn.started" &&
+                            thread.session.contextState.compaction.status === "running"
+                              ? {
+                                  // The retry belonged to the attempt that just
+                                  // lost its turn, so it goes with it.
+                                  compaction: { status: "idle", trigger: "automatic" },
+                                  ...(thread.session.contextState.usage === undefined
+                                    ? {}
+                                    : { usage: thread.session.contextState.usage }),
+                                }
+                              : thread.session.contextState,
+                        }
+                      : {}),
+                  }),
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -1743,6 +1830,93 @@ const make = Effect.gen(function* () {
               lastError: thread.session.lastError,
               updatedAt: now,
               actionState: nextActionState,
+              ...(thread.session.contextState ? { contextState: thread.session.contextState } : {}),
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Runtime context management state. This is a current-status projection,
+      // not scrollback: the snapshot replaces, so every attached client converges
+      // on the same value. It is explicitly not a T3 checkpoint.
+      if (
+        event.type === "session.context.updated" &&
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        // Authenticated to the persisted session binding, exactly like action
+        // snapshots: optional instance ids agree only when both are absent or equal.
+        thread.session.providerName !== null &&
+        thread.session.providerName === event.provider &&
+        thread.session.providerInstanceId === event.providerInstanceId
+        // Deliberately not fenced to a turn: compaction is session-level in
+        // Prime, so automatic compaction legitimately runs between turns and the
+        // user is entitled to see it. Staleness is handled at the turn boundary
+        // instead, where an in-flight status that outlived its turn is cleared.
+      ) {
+        const payload = event.payload;
+        const nextContextState: OrchestrationSessionContextState = {
+          compaction: {
+            status: payload.compaction.status,
+            trigger: payload.compaction.trigger,
+            ...(payload.compaction.reason === undefined
+              ? {}
+              : { reason: payload.compaction.reason }),
+          },
+          ...(payload.retry === undefined
+            ? {}
+            : {
+                retry: {
+                  attempt: payload.retry.attempt,
+                  ...(payload.retry.maxAttempts === undefined
+                    ? {}
+                    : { maxAttempts: payload.retry.maxAttempts }),
+                  ...(payload.retry.reason === undefined ? {} : { reason: payload.retry.reason }),
+                },
+              }),
+          ...(payload.usage === undefined
+            ? {}
+            : {
+                usage: {
+                  usedTokens: payload.usage.usedTokens,
+                  ...(payload.usage.maxTokens === undefined
+                    ? {}
+                    : { maxTokens: payload.usage.maxTokens }),
+                  ...(payload.usage.inputTokens === undefined
+                    ? {}
+                    : { inputTokens: payload.usage.inputTokens }),
+                  ...(payload.usage.outputTokens === undefined
+                    ? {}
+                    : { outputTokens: payload.usage.outputTokens }),
+                  ...(payload.usage.compactsAutomatically === undefined
+                    ? {}
+                    : { compactsAutomatically: payload.usage.compactsAutomatically }),
+                },
+              }),
+        };
+        // Bounded update frequency: an identical snapshot carries no new state,
+        // so it produces neither a durable event nor a projection write.
+        if (!sameContextState(thread.session.contextState, nextContextState)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-context-snapshot"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.actionState ? { actionState: thread.session.actionState } : {}),
+              contextState: nextContextState,
               ...(thread.session.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),
@@ -1997,6 +2171,7 @@ const make = Effect.gen(function* () {
               lastError: runtimeErrorMessage,
               updatedAt: now,
               actionState: { queuedCount: 0, steering: [], followUps: [] },
+              contextState: EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE,
               ...(thread.session?.runtimeCapabilities
                 ? { runtimeCapabilities: thread.session.runtimeCapabilities }
                 : {}),

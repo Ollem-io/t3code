@@ -1,8 +1,10 @@
 import {
   type ChatAttachment,
   CommandId,
+  CompactionId,
   EventId,
   FollowUpId,
+  RuntimeRequestId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -51,14 +53,29 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isFollowUpId = Schema.is(FollowUpId);
+const isCompactionId = Schema.is(CompactionId);
+const isRuntimeRequestId = Schema.is(RuntimeRequestId);
+/**
+ * Publishing `runtimeCapabilities` at all is gated on the provider advertising at
+ * least one runtime action. Every flag the session contract can carry is listed
+ * here, so a runtime that offers only context management is not silently stripped
+ * of its capabilities.
+ */
+const PUBLISHED_RUNTIME_CAPABILITY_KEYS = [
+  "steer",
+  "followUps",
+  "followUpCancel",
+  "compaction",
+  "compactionCancel",
+  "usageAndRetry",
+] as const;
 const hasRuntimeActionCapabilities = (
   capabilities:
-    | {
-        readonly steer?: boolean | undefined;
-        readonly followUps?: boolean | undefined;
-      }
+    | Partial<Record<(typeof PUBLISHED_RUNTIME_CAPABILITY_KEYS)[number], boolean | undefined>>
     | undefined,
-): boolean => capabilities?.steer === true || capabilities?.followUps === true;
+): boolean =>
+  capabilities !== undefined &&
+  PUBLISHED_RUNTIME_CAPABILITY_KEYS.some((key) => capabilities[key] === true);
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -70,6 +87,8 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.steer-add-requested"
       | "thread.follow-up-add-requested"
+      | "thread.compaction-requested"
+      | "thread.usage-refresh-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -364,7 +383,9 @@ const make = Effect.gen(function* () {
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
       | "provider.session.stop.failed"
-      | "provider.runtime-action.failed";
+      | "provider.runtime-action.failed"
+      | "provider.compaction.failed"
+      | "provider.usage-refresh.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -1378,6 +1399,86 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * Manual compaction and on-demand usage refresh. Both are capability-gated
+   * against the live negotiated capabilities rather than a stored flag, and both
+   * fail closed with a user-visible activity that never carries native text.
+   */
+  const processContextActionRequested = Effect.fn("processContextActionRequested")(function* (
+    event: Extract<
+      ProviderIntentEvent,
+      { type: "thread.compaction-requested" | "thread.usage-refresh-requested" }
+    >,
+  ) {
+    const isCompaction = event.type === "thread.compaction-requested";
+    const summary = isCompaction ? "Compaction failed" : "Context usage refresh failed";
+    const fail = (detail: string) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: isCompaction ? "provider.compaction.failed" : "provider.usage-refresh.failed",
+        summary,
+        detail,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (
+      !thread?.session ||
+      thread.session.status !== "running" ||
+      thread.session.activeTurnId === null
+    ) {
+      return yield* fail("No active running provider turn is bound to this thread.");
+    }
+    const providerInstanceId = thread.session.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      return yield* fail("This provider session cannot accept context actions.");
+    }
+    const capabilities = yield* providerService
+      .getCapabilities(providerInstanceId)
+      .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+    const runtimeExtensions = capabilities?.runtimeExtensions;
+    if (
+      isCompaction
+        ? runtimeExtensions?.compaction !== true
+        : runtimeExtensions?.usageAndRetry !== true
+    ) {
+      return yield* fail(
+        isCompaction
+          ? "This runtime does not support manual compaction."
+          : "This runtime does not report context usage on demand.",
+      );
+    }
+    // Identifiers are client-supplied, so they are validated to the branded
+    // runtime-extension shape before any native call. Never invent one.
+    const rawId = isCompaction ? event.payload.compactionId : event.payload.requestId;
+    const commandId = event.commandId ?? CommandId.make(`provider-context-action:${event.eventId}`);
+    let operation: ProviderRuntimeOperation;
+    if (isCompaction) {
+      if (!isCompactionId(rawId)) {
+        return yield* fail("The compaction identifier is invalid.");
+      }
+      operation = {
+        type: "compaction.request" as const,
+        commandId,
+        threadId: event.payload.threadId,
+        compactionId: rawId,
+      };
+    } else {
+      if (!isRuntimeRequestId(rawId)) {
+        return yield* fail("The usage refresh identifier is invalid.");
+      }
+      operation = {
+        type: "usage.snapshot.retry" as const,
+        commandId,
+        threadId: event.payload.threadId,
+        requestId: rawId,
+      };
+    }
+    yield* providerService
+      .executeRuntimeOperation(operation)
+      .pipe(Effect.catchCause(() => fail("The provider did not accept this context action.")));
+  });
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1572,6 +1673,10 @@ const make = Effect.gen(function* () {
       case "thread.follow-up-add-requested":
         yield* processRuntimeActionRequested(event);
         return;
+      case "thread.compaction-requested":
+      case "thread.usage-refresh-requested":
+        yield* processContextActionRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1622,6 +1727,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.steer-add-requested" ||
         event.type === "thread.follow-up-add-requested" ||
+        event.type === "thread.compaction-requested" ||
+        event.type === "thread.usage-refresh-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"

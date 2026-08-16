@@ -248,6 +248,8 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { PrimeContextStatus } from "./chat/PrimeContextStatus";
+import { hasPrimeRunningTurn } from "./chat/primeContext";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -1231,6 +1233,12 @@ function ChatViewContent(props: ChatViewProps) {
   });
   const steerThread = useAtomCommand(threadEnvironment.steer, { reportFailure: false });
   const addThreadFollowUp = useAtomCommand(threadEnvironment.addFollowUp, { reportFailure: false });
+  const requestThreadCompaction = useAtomCommand(threadEnvironment.requestCompaction, {
+    reportFailure: false,
+  });
+  const refreshThreadUsage = useAtomCommand(threadEnvironment.refreshUsage, {
+    reportFailure: false,
+  });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -5376,6 +5384,43 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
+  // Runtime context management. Compaction shortens the agent's context; it is
+  // not a T3 checkpoint and never reverts user work.
+  const onRequestCompaction = useCallback(async (): Promise<boolean> => {
+    if (!activeThread) return false;
+    // Prefixed to satisfy the runtime-extension id brand's leading-letter pattern.
+    const result = await requestThreadCompaction({
+      environmentId,
+      input: { threadId: activeThread.id, compactionId: `compaction-${randomUUID()}` },
+    });
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
+      setThreadError(
+        activeThread.id,
+        error instanceof Error ? error.message : "Compaction request failed.",
+      );
+      return false;
+    }
+    return true;
+  }, [activeThread, environmentId, requestThreadCompaction, setThreadError]);
+
+  const onRefreshUsage = useCallback(async (): Promise<boolean> => {
+    if (!activeThread) return false;
+    const result = await refreshThreadUsage({
+      environmentId,
+      input: { threadId: activeThread.id, requestId: `usage-${randomUUID()}` },
+    });
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
+      setThreadError(
+        activeThread.id,
+        error instanceof Error ? error.message : "Context usage refresh failed.",
+      );
+      return false;
+    }
+    return true;
+  }, [activeThread, environmentId, refreshThreadUsage, setThreadError]);
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -6373,6 +6418,14 @@ function ChatViewContent(props: ChatViewProps) {
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
                   ) : null}
+                  <PrimeContextStatus
+                    providerName={activeThread?.session?.providerName}
+                    capabilities={activeThread?.session?.runtimeCapabilities}
+                    state={activeThread?.session?.contextState}
+                    hasRunningTurn={hasPrimeRunningTurn(activeThread?.session)}
+                    onRequestCompaction={onRequestCompaction}
+                    onRefreshUsage={onRefreshUsage}
+                  />
                   <div
                     className="relative"
                     style={

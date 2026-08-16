@@ -47,7 +47,9 @@ const operations: ReadonlyArray<[unknown, string]> = [
   ],
   [
     { type: "compaction.cancel", commandId: "c1", threadId: "t1", compactionId: "x1" },
-    "compaction",
+    // Cancellation is independently negotiated: a runtime that can start
+    // compaction is not thereby claiming it can stop one.
+    "compactionCancel",
   ],
   [
     {

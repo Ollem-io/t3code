@@ -12,6 +12,7 @@ import {
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
   OrchestrationSessionActionState,
+  OrchestrationSessionContextState,
   ProviderRuntimeCapabilities,
   ProjectScript,
   TurnId,
@@ -96,7 +97,17 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   }),
 );
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
-  Struct.assign({ actionState: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSessionActionState))), runtimeCapabilities: Schema.optional(Schema.NullOr(Schema.fromJsonString(ProviderRuntimeCapabilities))) }),
+  Struct.assign({
+    actionState: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionActionState)),
+    ),
+    contextState: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionContextState)),
+    ),
+    runtimeCapabilities: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProviderRuntimeCapabilities)),
+    ),
+  }),
 );
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
@@ -307,8 +318,15 @@ function mapSessionRow(
     activeTurnId: row.activeTurnId,
     lastError: row.lastError,
     updatedAt: row.updatedAt,
-    ...(row.actionState !== null && row.actionState !== undefined ? { actionState: row.actionState } : {}),
-    ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined ? { runtimeCapabilities: row.runtimeCapabilities } : {}),
+    ...(row.actionState !== null && row.actionState !== undefined
+      ? { actionState: row.actionState }
+      : {}),
+    ...(row.contextState !== null && row.contextState !== undefined
+      ? { contextState: row.contextState }
+      : {}),
+    ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined
+      ? { runtimeCapabilities: row.runtimeCapabilities }
+      : {}),
   };
 }
 
@@ -602,6 +620,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error AS "lastError",
           updated_at AS "updatedAt",
           action_state_json AS "actionState",
+          context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -625,6 +644,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt",
           action_state_json AS "actionState",
+          context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -652,6 +672,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt",
           action_state_json AS "actionState",
+          context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -1051,6 +1072,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error AS "lastError",
           updated_at AS "updatedAt",
           action_state_json AS "actionState",
+          context_state_json AS "contextState",
           runtime_capabilities_json AS "runtimeCapabilities"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -1550,8 +1572,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   activeTurnId: row.activeTurnId,
                   lastError: row.lastError,
                   updatedAt: row.updatedAt,
-                  ...(row.actionState !== null && row.actionState !== undefined ? { actionState: row.actionState } : {}),
-                  ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined ? { runtimeCapabilities: row.runtimeCapabilities } : {}),
+                  ...(row.actionState !== null && row.actionState !== undefined
+                    ? { actionState: row.actionState }
+                    : {}),
+                  ...(row.contextState !== null && row.contextState !== undefined
+                    ? { contextState: row.contextState }
+                    : {}),
+                  ...(row.runtimeCapabilities !== null && row.runtimeCapabilities !== undefined
+                    ? { runtimeCapabilities: row.runtimeCapabilities }
+                    : {}),
                 });
               }
 

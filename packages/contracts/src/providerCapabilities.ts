@@ -49,6 +49,8 @@ export const ProviderRuntimeCapabilities = Schema.Struct({
   /** Cancellation is independent: some native runtimes expose enqueue but no action-id cancellation RPC. */
   followUpCancel: Schema.optional(Schema.Boolean),
   compaction: Schema.optional(Schema.Boolean),
+  /** Cancellation is independent: a runtime may start compaction with no cancel RPC. */
+  compactionCancel: Schema.optional(Schema.Boolean),
   commandDiscovery: Schema.optional(Schema.Boolean),
   interactions: Schema.optional(Schema.Boolean),
   tasks: Schema.optional(Schema.Boolean),
@@ -219,6 +221,7 @@ export function capabilityForRuntimeOperation(
   if (operation.type.startsWith("steer.")) return "steer";
   if (operation.type === "follow-up.cancel") return "followUpCancel";
   if (operation.type.startsWith("follow-up.")) return "followUps";
+  if (operation.type === "compaction.cancel") return "compactionCancel";
   if (operation.type.startsWith("compaction.")) return "compaction";
   if (operation.type.startsWith("command.") || operation.type.startsWith("skill."))
     return "commandDiscovery";
@@ -340,6 +343,7 @@ const RuntimeOperationCapability = Schema.Literals([
   "followUps",
   "followUpCancel",
   "compaction",
+  "compactionCancel",
   "commandDiscovery",
   "interactions",
   "tasks",

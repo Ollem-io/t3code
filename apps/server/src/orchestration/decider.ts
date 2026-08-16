@@ -1028,14 +1028,73 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     case "thread.follow-up.add": {
       const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
       if (thread.session?.status !== "running" || thread.session.activeTurnId === null) {
-        return yield* Effect.fail(new OrchestrationCommandInvariantError({ commandType: command.type, detail: "Runtime actions require an active running provider turn." }));
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Runtime actions require an active running provider turn.",
+          }),
+        );
       }
       return {
-        ...(yield* withEventBase({ aggregateKind: "thread", aggregateId: command.threadId, occurredAt: command.createdAt, commandId: command.commandId })),
-        type: command.type === "thread.steer.add" ? "thread.steer-add-requested" : "thread.follow-up-add-requested",
-        payload: command.type === "thread.steer.add"
-          ? { threadId: command.threadId, steerId: command.steerId, createdAt: command.createdAt }
-          : { threadId: command.threadId, followUpId: command.followUpId, createdAt: command.createdAt },
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type:
+          command.type === "thread.steer.add"
+            ? "thread.steer-add-requested"
+            : "thread.follow-up-add-requested",
+        payload:
+          command.type === "thread.steer.add"
+            ? { threadId: command.threadId, steerId: command.steerId, createdAt: command.createdAt }
+            : {
+                threadId: command.threadId,
+                followUpId: command.followUpId,
+                createdAt: command.createdAt,
+              },
+      };
+    }
+
+    // Runtime context management. Like the runtime actions above these require a
+    // live running turn, but they carry no native text, so nothing is redacted
+    // and nothing is held ephemerally.
+    case "thread.compaction.request":
+    case "thread.usage.refresh": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session?.status !== "running" || thread.session.activeTurnId === null) {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Context runtime actions require an active running provider turn.",
+          }),
+        );
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        ...(command.type === "thread.compaction.request"
+          ? {
+              type: "thread.compaction-requested" as const,
+              payload: {
+                threadId: command.threadId,
+                compactionId: command.compactionId,
+                createdAt: command.createdAt,
+              },
+            }
+          : {
+              type: "thread.usage-refresh-requested" as const,
+              payload: {
+                threadId: command.threadId,
+                requestId: command.requestId,
+                createdAt: command.createdAt,
+              },
+            }),
       };
     }
 

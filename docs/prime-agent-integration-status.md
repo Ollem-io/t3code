@@ -136,12 +136,95 @@ Every accepted non-blocker from the PA-A02 rounds is closed:
     server, open the running thread, and screenshot the composer runtime-action
     block in the same two capability states.
 
+## PA-A03 (implemented, in review)
+
+**PA-A03 — Context usage, compaction, retry, and bounded status UI** is implemented on
+`dev/prime-agent-perfect-integration-20260813/pa-a03`.
+
+Implemented:
+
+- Exact Prime 0.7.2 `get_session_stats` and `compact` commands, plus bounded `compaction_update`
+  and `retry_update` status events at the RPC boundary (`onExcessProperty: error`, so an
+  unrecognized shape is incompatible rather than silently reinterpreted).
+- Provider-neutral `session.context.updated` snapshot with compaction status/trigger/reason,
+  retry attempt, and optional usage. Null post-compaction usage is valid and never guessed.
+- `PrimeContextTracker` publishes only on real change: byte-identical snapshots are dropped and
+  streamed usage churn never publishes a context snapshot, so the status UI is a short list of
+  discrete states with nothing to animate.
+- `compaction.request` maps to native `compact`; `usage.snapshot.retry` re-reads
+  `get_session_stats`. Compaction cancellation is **not** claimed: the independent
+  `compactionCancel` capability stays false rather than mapping cancel onto the turn-wide `abort`.
+- Activity projection labels compaction as compaction and carries no checkpoint/revert
+  vocabulary; mobile composer copy states explicitly that compacting is not a checkpoint and does
+  not revert work.
+- Runnable artifact `packages/contracts/fixtures/pa-a03-prime-context-transcript.mjs`, which
+  verifies its mapping tables against the shipped source, proves coalescing, proves its own
+  convergence check is falsifiable, and walks the whole client-to-adapter chain so the two
+  operations cannot silently become dead paths again.
+
+Round-2 review repairs (both reviews rejected the first round):
+
+- **Manual compaction and usage refresh are reachable end to end.** New client commands
+  `thread.compaction.request` and `thread.usage.refresh` flow through the decider
+  (`thread.compaction-requested` / `thread.usage-refresh-requested`) into the provider command
+  reactor, which builds the `compaction.request` / `usage.snapshot.retry` operations. Both
+  require a live running turn and are gated on the _negotiated_ capability read at dispatch time,
+  never on a stored flag; a runtime that does not advertise the capability produces a
+  user-visible failure activity and no native call. Client-supplied identifiers are validated
+  against the branded runtime-extension shape, so no identifier is ever invented.
+- **Context state is projected as current status.** `session.context.updated` now folds into
+  `OrchestrationSession.contextState` (new nullable `context_state_json` column, migration 042).
+  Snapshots replace, so attached clients converge; byte-identical snapshots write nothing; and
+  terminal turn/session/runtime-error transitions clear the snapshot so a stale "Compacting" can
+  never survive.
+- **Both clients render it.** Web mounts `PrimeContextStatus` above the composer with the
+  context/compaction/retry lines and the Compact context / Refresh usage controls; mobile renders
+  the same lines and controls in the composer runtime block. Controls are disabled with a stated
+  reason rather than hidden, and the not-a-checkpoint copy is shared source on both surfaces.
+- **Retry status no longer outlives its attempt**, and a partial `compaction_update` merges over
+  the last known usage instead of dropping a `maxTokens` the runtime never retracted.
+- **The runtime-capability publication gate** now covers every flag the session contract can
+  carry, so a runtime advertising only context management is no longer stripped.
+- Focused-verification test paths now match the frozen contract exactly:
+  `apps/web/src/components/chat/prime-context.test.tsx` and
+  `apps/mobile/src/features/threads/prime-context.test.tsx`.
+
+Round-3 review repairs (both reviews rejected round 2):
+
+- **A retry no longer restates a compaction that already ended.** A `retry_update` (or an
+  on-demand usage refresh) republishes the snapshot with the last known compaction status, which
+  the activity projection was reading as a fresh compaction event — appending a durable
+  "Context compacted" once per retry, unbounded. The published snapshot now carries
+  `compactionTransitioned`, set only when the compaction status actually changes, and a durable
+  compaction activity requires it. Retry and usage snapshots still show the last compaction
+  result in the status panel; they just no longer claim it happened again.
+- **An in-flight "Compacting" cannot outlive its turn.** A late `session.context.updated` arriving
+  after the turn terminal used to persist forever with nothing in the session able to clear it,
+  permanently disabling the Compact context control. `turn.started` now clears an in-flight
+  compaction and its retry while preserving usage and any finished compaction result. Compaction
+  is session level in Prime, so between-turn automatic compaction is deliberately still accepted
+  and visible; the turn boundary is what drops a status that outlived its turn. Known tradeoff:
+  a compaction genuinely spanning a turn start reads as idle until its next phase change.
+- **Controls state the real precondition.** The server accepts context actions only during a live
+  running turn, so both clients now gate on turn liveness before capability status and say
+  "Context actions are available while a turn is running." instead of leaving an enabled button
+  that fails, or reporting the misleading "Compaction is already running." on an idle thread.
+- **The review artifact stopped overstating itself.** Its reducer now mirrors the shipped
+  retry-retention rule, and it checks the shipped transition-marker and activity-gate sources.
+- The two client `primeContext.ts` copies are asserted byte-identical by the mobile suite, so the
+  comment claiming they cannot drift is now enforced.
+
+Visual evidence is truthfully **not captured**: UI-launch permission was not granted. Exact steps
+once granted — web: `vp run dev` in a worktree, open the printed `pairingUrl:`, start a Prime
+Agent thread, run a turn, press **Compact context** in the status row above the composer, and
+screenshot the context/compaction status rows; mobile: `test-t3-mobile` against the same server and screenshot the composer
+runtime block with `compaction` on and off.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                           |
 | --------- | ---------------------------------------------------------------- | ------------------------------- |
-| PA-A03    | Context usage, compaction, retry, bounded status UI              | Next                            |
-| PA-A04    | Prime commands, skills, prompt templates                         | Pending                         |
+| PA-A04    | Prime commands, skills, prompt templates                         | Next                            |
 | PA-A05    | Rich extension UI and transient status integration               | Pending                         |
 | PA-A06    | Subagents, observation, Agents-surface controls                  | Pending                         |
 | PA-A07    | T3-owned goals and heartbeats with daemon-promotion disclosure   | Pending                         |

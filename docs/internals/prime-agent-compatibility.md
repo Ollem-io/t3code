@@ -29,3 +29,26 @@ maps to provider `warning` because the provider snapshot contract has no checkin
 `apps/server/integration/fixtures/prime-rpc/prime-agent-isolated-report.mjs` is a dependency-free isolated report runner. Its default lane gives an installed binary a fresh disposable `HOME`, T3 home, XDG config/data/cache, workspace, session and daemon roots; it uses only an allowlist environment and records exact spawned PID/start-token manifests. It performs `--version` and bounded `get_state`/`get_available_models`; an unauthenticated result is **setup required**, never a reason to borrow live auth. The canonical transcript is hash-only and cleanup is reported.
 
 `--fake` covers deterministic streaming, tools, interactions, interrupt/race, crash and multi-request ordering fixtures. `--authenticated` is separately named and skips unless both `PRIME_AGENT_AUTHENTICATED_TEST=1` and `PRIME_AGENT_AUTHENTICATED_PERMISSION=I_GRANT_READ_ONLY_SMOKE` are supplied; it is not run in this repository/current host. No browser, simulator, or authenticated current-host lane is part of this proof.
+
+## PA-A03 context, compaction, and retry
+
+Prime 0.7.2 exposes two no-argument context commands, `get_session_stats` and `compact`, and
+reports progress as bounded `compaction_update` / `retry_update` status snapshots. T3 maps them to
+the provider-neutral `session.context.updated` event.
+
+- **Compaction is not a checkpoint.** It shrinks the provider's context window and never reverts
+  user work. No compaction path produces a revert, rollback, or checkpoint concept, on the wire or
+  in client copy.
+- **Absent usage is valid.** Prime may report no usage until it recomputes after compacting; T3
+  keeps the previous usage rather than publishing an invented zero.
+- **Cancellation is negotiated separately.** `compaction` and `compactionCancel` are independent
+  capability flags. Prime 0.7.2 advertises `compaction: true, compactionCancel: false`: there is no
+  compaction-cancel RPC, and T3 does not map cancellation onto the turn-wide `abort`.
+- **Bounded updates.** Snapshots byte-identical to the last published one are dropped, and streamed
+  token usage keeps its own canonical event instead of republishing context status. The status
+  surface is a short list of discrete states with nothing to animate.
+- **Usage metadata only.** Context events carry counts, status, trigger, and a bounded runtime
+  reason string — never transcript content.
+
+`packages/contracts/fixtures/pa-a03-prime-context-transcript.mjs` verifies the phase/status and
+activity-summary tables against the shipped source and fails if either drifts.

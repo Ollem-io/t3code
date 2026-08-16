@@ -308,16 +308,55 @@ const SourceProposedPlanReference = Schema.Struct({
 
 export const OrchestrationSessionActionState = Schema.Struct({
   queuedCount: NonNegativeInt.check(Schema.isLessThanOrEqualTo(32)),
-  steering: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(Schema.isMaxLength(32)),
-  followUps: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(Schema.isMaxLength(32)),
-  active: Schema.optional(Schema.Struct({
-    kind: Schema.Literals(["turn", "session_command"]),
-    phase: Schema.Literals(["preparing", "committing", "running"]),
-    label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))),
-  })),
+  steering: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(
+    Schema.isMaxLength(32),
+  ),
+  followUps: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(
+    Schema.isMaxLength(32),
+  ),
+  active: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literals(["turn", "session_command"]),
+      phase: Schema.Literals(["preparing", "committing", "running"]),
+      label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))),
+    }),
+  ),
 });
 export type OrchestrationSessionActionState = typeof OrchestrationSessionActionState.Type;
-export const EMPTY_ORCHESTRATION_SESSION_ACTION_STATE: OrchestrationSessionActionState = Object.freeze({ queuedCount: 0, steering: Object.freeze([]), followUps: Object.freeze([]) });
+export const EMPTY_ORCHESTRATION_SESSION_ACTION_STATE: OrchestrationSessionActionState =
+  Object.freeze({ queuedCount: 0, steering: Object.freeze([]), followUps: Object.freeze([]) });
+
+/**
+ * Runtime context management state. Deliberately mirrors the canonical
+ * `session.context.updated` snapshot: replacement is the only reconciliation,
+ * and compaction here is never a T3 checkpoint.
+ */
+export const OrchestrationSessionContextState = Schema.Struct({
+  compaction: Schema.Struct({
+    status: Schema.Literals(["idle", "running", "succeeded", "failed", "cancelled"]),
+    trigger: Schema.Literals(["manual", "automatic"]),
+    reason: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+  }),
+  retry: Schema.optional(
+    Schema.Struct({
+      attempt: NonNegativeInt.check(Schema.isLessThanOrEqualTo(64)),
+      maxAttempts: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(64))),
+      reason: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+    }),
+  ),
+  usage: Schema.optional(
+    Schema.Struct({
+      usedTokens: NonNegativeInt,
+      maxTokens: Schema.optional(PositiveInt),
+      inputTokens: Schema.optional(NonNegativeInt),
+      outputTokens: Schema.optional(NonNegativeInt),
+      compactsAutomatically: Schema.optional(Schema.Boolean),
+    }),
+  ),
+});
+export type OrchestrationSessionContextState = typeof OrchestrationSessionContextState.Type;
+export const EMPTY_ORCHESTRATION_SESSION_CONTEXT_STATE: OrchestrationSessionContextState =
+  Object.freeze({ compaction: Object.freeze({ status: "idle", trigger: "automatic" }) });
 
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
@@ -341,7 +380,18 @@ export const OrchestrationSession = Schema.Struct({
   updatedAt: IsoDateTime,
   /** Native authoritative action snapshot; absent means this runtime has not supplied one. */
   actionState: Schema.optional(OrchestrationSessionActionState),
-  runtimeCapabilities: Schema.optional(Schema.Struct({ steer: Schema.optional(Schema.Boolean), followUps: Schema.optional(Schema.Boolean), followUpCancel: Schema.optional(Schema.Boolean) })),
+  /** Native authoritative context/compaction/retry snapshot; absent means none supplied. */
+  contextState: Schema.optional(OrchestrationSessionContextState),
+  runtimeCapabilities: Schema.optional(
+    Schema.Struct({
+      steer: Schema.optional(Schema.Boolean),
+      followUps: Schema.optional(Schema.Boolean),
+      followUpCancel: Schema.optional(Schema.Boolean),
+      compaction: Schema.optional(Schema.Boolean),
+      compactionCancel: Schema.optional(Schema.Boolean),
+      usageAndRetry: Schema.optional(Schema.Boolean),
+    }),
+  ),
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
 
@@ -900,12 +950,39 @@ const ClientThreadTurnStartCommand = Schema.Struct({
 });
 
 const ThreadSteerAddCommand = Schema.Struct({
-  type: Schema.Literal("thread.steer.add"), commandId: CommandId, threadId: ThreadId,
-  steerId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime,
+  type: Schema.Literal("thread.steer.add"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  steerId: TrimmedNonEmptyString,
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)),
+  createdAt: IsoDateTime,
 });
 const ThreadFollowUpAddCommand = Schema.Struct({
-  type: Schema.Literal("thread.follow-up.add"), commandId: CommandId, threadId: ThreadId,
-  followUpId: TrimmedNonEmptyString, text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)), createdAt: IsoDateTime,
+  type: Schema.Literal("thread.follow-up.add"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  followUpId: TrimmedNonEmptyString,
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)),
+  createdAt: IsoDateTime,
+});
+/**
+ * Manual runtime compaction. This is the runtime's own context management and
+ * never a T3 checkpoint, so it carries no revert target.
+ */
+const ThreadCompactionRequestCommand = Schema.Struct({
+  type: Schema.Literal("thread.compaction.request"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  compactionId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+/** On-demand re-read of the runtime's authoritative usage snapshot. */
+const ThreadUsageRefreshCommand = Schema.Struct({
+  type: Schema.Literal("thread.usage.refresh"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
 });
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
@@ -975,6 +1052,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnStartCommand,
   ThreadSteerAddCommand,
   ThreadFollowUpAddCommand,
+  ThreadCompactionRequestCommand,
+  ThreadUsageRefreshCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1005,6 +1084,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnStartCommand,
   ThreadSteerAddCommand,
   ThreadFollowUpAddCommand,
+  ThreadCompactionRequestCommand,
+  ThreadUsageRefreshCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1127,6 +1208,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-interrupt-requested",
   "thread.steer-add-requested",
   "thread.follow-up-add-requested",
+  "thread.compaction-requested",
+  "thread.usage-refresh-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1314,8 +1397,26 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-export const ThreadSteerAddRequestedPayload = Schema.Struct({ threadId: ThreadId, steerId: TrimmedNonEmptyString, createdAt: IsoDateTime });
-export const ThreadFollowUpAddRequestedPayload = Schema.Struct({ threadId: ThreadId, followUpId: TrimmedNonEmptyString, createdAt: IsoDateTime });
+export const ThreadSteerAddRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  steerId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadFollowUpAddRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  followUpId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadCompactionRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  compactionId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadUsageRefreshRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
 
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -1495,8 +1596,26 @@ export const OrchestrationEvent = Schema.Union([
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
   }),
-  Schema.Struct({ ...EventBaseFields, type: Schema.Literal("thread.steer-add-requested"), payload: ThreadSteerAddRequestedPayload }),
-  Schema.Struct({ ...EventBaseFields, type: Schema.Literal("thread.follow-up-add-requested"), payload: ThreadFollowUpAddRequestedPayload }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.steer-add-requested"),
+    payload: ThreadSteerAddRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.follow-up-add-requested"),
+    payload: ThreadFollowUpAddRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.compaction-requested"),
+    payload: ThreadCompactionRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.usage-refresh-requested"),
+    payload: ThreadUsageRefreshRequestedPayload,
+  }),
   Schema.Struct({
     ...EventBaseFields,
     type: Schema.Literal("thread.approval-response-requested"),
