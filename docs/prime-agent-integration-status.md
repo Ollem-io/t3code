@@ -62,7 +62,7 @@ The MVP and the Alpha contract foundation are merged to `main` at `c96593463ff4a
 | PA-B04    | Web/desktop/mobile resume and recovery-choice UI                   | Done — `f6f3b1b5` |
 | PA-B05    | Durable cleanup, retention, migrations, rollback safety            | Done — `4f9f94a9` |
 
-Completed total: **30 of 31 milestones** (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; only `PA-B06` remains before the closing audit.
+Completed total: **30 of 31 milestones** merged (PA-A02.1 added to the original 30). The MVP and Alpha phases are complete; `PA-B06` is implemented and in review, after which only the closing audit remains.
 
 **PA-B05 (merged).** Dual-approved on exact SHA `87003e19` (two workflow rounds: round 1 rejected for host paths and base64 scope identifiers leaking through cleanup warning details into the durable journal and the "redacted" report — repaired with closed reason codes; final round dual APPROVE, Luna-verified watches) and merged at `4f9f94a9` on 2026-08-16. Delivered: journaled, crash-resumable, at-most-once durable cleanup (migration 050) with retention refusals, scope-fenced destructive runs proven against sentinels and a second home, prime-agent-scoped rollback preserving version-keyed sidecars, redacted opaque-digest reporting, and a 79-assertion deterministic artifact. No user-visible surface ships in this milestone, so no visual evidence applies.
 
@@ -359,12 +359,34 @@ callback until PA-B04 renders them.
 
 ## Pending milestones
 
-| Milestone | Planned scope                                                    | State |
-| --------- | ---------------------------------------------------------------- | ----- |
-| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Next  |
+| Milestone | Planned scope                                                    | State                                                                                      |
+| --------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| PA-B06    | Full Beta recovery matrix, remote gate, documentation graduation | Implemented on `dev/prime-agent-perfect-integration-20260813/pa-b06`; awaiting dual review |
+
+**PA-B06 (implemented, round 2 repair in review).** Adds `apps/server/integration/primeAgentBeta.integration.test.ts`:
+thirteen scenarios composing B01–B05 against real subprocesses and disposable T3 homes — graceful stop
+and abrupt loss, disable/re-enable, compatible-advisory upgrade and incompatible downgrade, a missing
+runtime binary, two environments on one host, a two-client race, retention across every lifecycle
+event, a newer-build cursor read back as `unsupportedVersion` with its bytes intact, the shared
+client refusal surfaces (including the web composer gate), Alpha capability gating on a
+capability-limited build, the fork/fresh row (a forked thread is durable and exact-resumes on its
+own while its source thread's cursor is untouched), and a documentation interlock that fails if
+`docs/usage.md` promises a durable-cleanup control no client, desktop, mobile or contract source
+reaches — and that will fail again, demanding the warning be removed, once one does. The review
+artifact is
+`apps/server/src/provider/prime/prime-beta-artifact.mjs` (78 source-derived assertions, deterministic
+regeneration via `generate-prime-beta-artifact.sh --check`). Documentation graduates only what is
+reachable: `docs/usage.md` records Beta durable resume, recovery and arbitration as shipped, while
+section 20's permanent-deletion controls stay explicitly **proposed and not yet shipped** — the
+round-1 product review's blocker, since no product control deletes durable Prime data and the
+runbook said so in the same commit. `docs/operations/prime-agent-cleanup.md` likewise no longer
+promises a PA-B06 confirmation UI (the milestone deliberately adds no capability). **Evidence gaps, stated
+truthfully:** the real-binary lane is opt-in through `PRIME_AGENT_BIN` and was **not executed** —
+`prime-agent` is not installed in this environment — and no browser, Electron process or simulator
+was launched, so the milestone's UI evidence clause stays on the standing visual-evidence debt.
 
 ## Immediate next steps
 
-1. Capture the standing visual-evidence debt (PA-A02 through PA-A08 surfaces) when UI-launch permission is granted (exact steps recorded above).
-2. Implement remaining Beta in dependency order: `PA-B06`.
+1. Capture the standing visual-evidence debt (PA-A02 through PA-A08 and the PA-B04 resume surfaces) when UI-launch permission is granted (exact steps recorded above).
+2. Run the PA-B06 real-binary lane on a host with `prime-agent` installed: `PRIME_AGENT_BIN=$(command -v prime-agent) vp test run apps/server/integration/primeAgentBeta.integration.test.ts`.
 3. Audit all milestones, security constraints, artifacts, operations/user documentation, and remote behavior before completing the goal.

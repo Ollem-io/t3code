@@ -37,9 +37,10 @@ Be precise about which parts of this page are automatic and which are not:
 - **Not yet a user-facing surface.** There is no button, command-palette entry or CLI
   subcommand that starts a _new_ deletion. Planning, confirming and executing a scoped
   cleanup is a server-side API (`planPrimeCleanup` / `executePrimeCleanup`) with no
-  operator entry point yet; the confirmation UI lands with `PA-B06`. Until then no
-  product action deletes durable Prime data at all, which is the safe direction to be
-  incomplete in.
+  operator entry point. `PA-B06` certified the behavior that exists; it deliberately
+  added no new capability, so there is still no confirmation UI and no product action
+  deletes durable Prime data at all — which is the safe direction to be incomplete in.
+  A future milestone owns the operator surface.
 
 ## Dry run first
 
