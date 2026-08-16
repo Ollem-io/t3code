@@ -426,6 +426,89 @@ describe("ProviderRuntimeIngestion", () => {
     expect(cleared?.session?.actionState).toEqual({ queuedCount: 0, steering: [], followUps: [] });
   });
 
+  it("coalesces byte-identical repeated action snapshots and converges two independent client reads", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-coalesce");
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-coalesce-start"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: now,
+    });
+    await waitForThread(harness.readModel, (entry) => entry.session?.activeTurnId === turnId);
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("evt-coalesce-first"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: {
+        queuedCount: 1,
+        steering: ["only steer"],
+        followUps: [],
+        active: { kind: "turn", phase: "running", label: "only steer" },
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.actionState?.queuedCount === 1,
+    );
+    const applied = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    // A byte-identical repeat writes nothing: the persisted updatedAt is the
+    // observable proof that no durable event or projection write happened.
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("evt-coalesce-repeat"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: {
+        queuedCount: 1,
+        steering: ["only steer"],
+        followUps: [],
+        active: { kind: "turn", phase: "running", label: "only steer" },
+      },
+    });
+    await harness.drain();
+    const afterRepeat = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(afterRepeat?.session?.updatedAt).toBe(applied?.session?.updatedAt);
+    expect(afterRepeat?.session?.actionState).toEqual(applied?.session?.actionState);
+
+    // Any differing snapshot still replaces state, so coalescing cannot stick.
+    harness.emit({
+      type: "session.actions.updated",
+      eventId: asEventId("evt-coalesce-changed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: { queuedCount: 2, steering: ["only steer"], followUps: ["next"] },
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.actionState?.queuedCount === 2,
+    );
+
+    // Two clients, two independent reads through the read model, one state.
+    const [clientA, clientB] = await Promise.all([harness.readModel(), harness.readModel()]);
+    const projectionA = clientA.threads.find((entry) => entry.id === threadId)?.session
+      ?.actionState;
+    const projectionB = clientB.threads.find((entry) => entry.id === threadId)?.session
+      ?.actionState;
+    expect(projectionA).toEqual({
+      queuedCount: 2,
+      steering: ["only steer"],
+      followUps: ["next"],
+    });
+    expect(projectionB).toEqual(projectionA);
+  });
+
   it("fails closed for action snapshots with mismatched bound provider identity", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -322,6 +322,53 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("redacts session action text from orchestration logs", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "events.log");
+      try {
+        const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+        const logger = store.logger("orchestration");
+        yield* logger.write(
+          {
+            type: "thread.session-set",
+            eventId: "session-set",
+            payload: {
+              session: {
+                threadId: "thread-1",
+                status: "running",
+                actionState: {
+                  queuedCount: 2,
+                  steering: ["SECRET_STEER"],
+                  followUps: ["SECRET_FOLLOW_UP"],
+                  active: { kind: "turn", phase: "running", label: "SECRET_LABEL" },
+                },
+              },
+            },
+          },
+          ThreadId.make("thread-1"),
+        );
+        yield* store.close();
+        const [actionFile] = NodeFS.readdirSync(tempDir).filter(
+          (name) => name.startsWith("events.") && name.endsWith(".log"),
+        );
+        assert.exists(actionFile);
+        if (!actionFile) return;
+        const contents = NodeFS.readFileSync(NodePath.join(tempDir, actionFile), "utf8");
+        assert.notInclude(contents, "SECRET_STEER");
+        assert.notInclude(contents, "SECRET_FOLLOW_UP");
+        assert.notInclude(contents, "SECRET_LABEL");
+        assert.include(contents, '"steeringCount":1');
+        assert.include(contents, '"followUpCount":1');
+        assert.include(contents, '"label":"[REDACTED]"');
+        // Non-action orchestration payloads pass through unchanged.
+        assert.include(contents, '"status":"running"');
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("redacts session action text from canonical logs", () =>
     Effect.gen(function* () {
       const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
@@ -347,7 +394,9 @@ describe("EventNdjsonLogger", () => {
         );
         yield* logger.write({ type: "item.completed", id: "flush" }, ThreadId.make("thread-1"));
         yield* store.close();
-        const [actionFile] = NodeFS.readdirSync(tempDir).filter((name) => name.startsWith("events.") && name.endsWith(".log"));
+        const [actionFile] = NodeFS.readdirSync(tempDir).filter(
+          (name) => name.startsWith("events.") && name.endsWith(".log"),
+        );
         assert.exists(actionFile);
         if (!actionFile) return;
         const contents = NodeFS.readFileSync(NodePath.join(tempDir, actionFile), "utf8");

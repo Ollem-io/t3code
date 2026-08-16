@@ -17,6 +17,7 @@ import {
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -993,6 +994,67 @@ const make = Effect.gen(function* () {
       ...(input.title !== undefined ? { title: input.title } : {}),
     });
   });
+  /**
+   * Startup/recovery sweep: a persisted action snapshot only describes work
+   * held inside a live provider process. After a restart (or any recovery where
+   * the process is gone) that queue can never progress, so displaying it would
+   * promise work nobody owns. Healthy sessions with a live provider process are
+   * left untouched — their next authoritative snapshot still governs.
+   */
+  const clearStaleRuntimeActionState = Effect.fn("clearStaleRuntimeActionState")(function* () {
+    const readModel = yield* projectionSnapshotQuery.getCommandReadModel();
+    const stale = readModel.threads.filter((thread) => {
+      const actionState = thread.session?.actionState;
+      return (
+        actionState !== undefined &&
+        (actionState.queuedCount > 0 ||
+          actionState.steering.length > 0 ||
+          actionState.followUps.length > 0 ||
+          actionState.active !== undefined)
+      );
+    });
+    if (stale.length === 0) {
+      return;
+    }
+    const liveThreadIds = new Set(
+      (yield* providerService.listSessions()).map((session) => String(session.threadId)),
+    );
+    const now = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+    yield* Effect.forEach(
+      stale.filter((thread) => !liveThreadIds.has(String(thread.id))),
+      (thread) => {
+        const session = thread.session;
+        if (!session) {
+          return Effect.void;
+        }
+        return setThreadSession({
+          threadId: thread.id,
+          session: {
+            ...session,
+            actionState: { queuedCount: 0, steering: [], followUps: [] },
+            updatedAt: now,
+          },
+          createdAt: now,
+        }).pipe(
+          Effect.tap(() =>
+            Effect.logInfo("provider command reactor cleared stale runtime action state", {
+              threadId: thread.id,
+            }),
+          ),
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) {
+              return Effect.interrupt;
+            }
+            return Effect.logWarning(
+              "provider command reactor failed to clear stale runtime action state",
+              { threadId: thread.id, cause: Cause.pretty(cause) },
+            );
+          }),
+        );
+      },
+      { discard: true },
+    );
+  });
   const findInterruptedThreadTitleRegenerations = Effect.fn(
     "findInterruptedThreadTitleRegenerations",
   )(function* () {
@@ -1342,6 +1404,12 @@ const make = Effect.gen(function* () {
       threadId: event.payload.threadId,
       session: {
         ...thread.session,
+        // Deliberate exception to "only an authoritative provider snapshot may
+        // change the visible queue": the interrupt has already been accepted by
+        // the provider, so every pending action is being discarded and showing
+        // them until the next snapshot arrives would be a lie. Any later
+        // authoritative snapshot for this still-running turn replaces this
+        // optimistic empty state, so the exception cannot mask real queue state.
         // Remain running until the terminal runtime event arrives.
         actionState: { queuedCount: 0, steering: [], followUps: [] },
         updatedAt: event.payload.createdAt,
@@ -1582,11 +1650,24 @@ const make = Effect.gen(function* () {
         );
       }),
     );
+    const clearStale = clearStaleRuntimeActionState().pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.interrupt;
+        }
+        return Effect.logWarning(
+          "provider command reactor failed to sweep stale runtime action state",
+          { cause: Cause.pretty(cause) },
+        );
+      }),
+    );
     const activation = yield* ServerActivation;
     if (activation === undefined) {
       yield* clearInterrupted;
+      yield* clearStale;
     } else {
       yield* forkParked(clearInterrupted);
+      yield* forkParked(clearStale);
     }
   });
 

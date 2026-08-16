@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { hasPrimeRuntimeActions, renderPrimeQueue, resolvePrimeSend } from "./primeQueue";
+import {
+  hasPrimeRuntimeActions,
+  primeCancellationCopy,
+  renderPrimeQueue,
+  resolvePrimeSend,
+} from "./primeQueue";
 describe("prime queue", () => {
   it("requires explicit choice and capability", () => {
     expect(resolvePrimeSend("prime-agent", null, { steer: true }, 0).ok).toBe(false);
@@ -20,4 +25,18 @@ describe("prime queue", () => {
       "Steering: a",
       "Queued: b",
     ]));
+  it("renders the runtime-reported active action ahead of the queue", () => {
+    expect(
+      renderPrimeQueue({ steering: ["a"], followUps: ["b"], active: { label: "running now" } }),
+    ).toEqual(["Active: running now", "Steering: a", "Queued: b"]);
+    // An active entry without a label carries nothing truthful to display.
+    expect(renderPrimeQueue({ steering: [], followUps: [], active: {} })).toEqual([]);
+  });
+  it("derives cancellation copy from the negotiated capability", () => {
+    expect(primeCancellationCopy({ followUps: true })).toContain("cannot be cancelled");
+    expect(primeCancellationCopy(undefined)).toContain("cannot be cancelled");
+    expect(primeCancellationCopy({ followUps: true, followUpCancel: true })).toContain(
+      "can be cancelled individually",
+    );
+  });
 });

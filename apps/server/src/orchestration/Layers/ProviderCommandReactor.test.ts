@@ -162,6 +162,10 @@ describe("ProviderCommandReactor", () => {
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
     readonly interruptShouldFail?: boolean;
+    /** Seeds a persisted queue snapshot before the reactor starts recovery. */
+    readonly staleActionStateBeforeStart?: boolean;
+    /** Keeps a live provider session bound to thread-1 across reactor start. */
+    readonly liveSessionBeforeStart?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -506,6 +510,39 @@ describe("ProviderCommandReactor", () => {
           regenerateTitle: true,
         }),
       );
+    }
+
+    if (input?.staleActionStateBeforeStart === true) {
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-stale-action-state-session"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "prime-agent",
+            runtimeMode: "approval-required",
+            activeTurnId: asTurnId("turn-stale"),
+            lastError: null,
+            updatedAt: now,
+            actionState: { queuedCount: 2, steering: ["dead steer"], followUps: ["dead queue"] },
+          },
+          createdAt: now,
+        }),
+      );
+    }
+
+    if (input?.liveSessionBeforeStart === true) {
+      runtimeSessions.push({
+        provider: ProviderDriverKind.make("prime-agent"),
+        status: "running",
+        runtimeMode: "approval-required",
+        threadId: ThreadId.make("thread-1"),
+        cwd: "/tmp/provider-project",
+        createdAt: now,
+        updatedAt: now,
+      });
     }
 
     scope = await Effect.runPromise(Scope.make("sequential"));
@@ -2741,6 +2778,77 @@ describe("ProviderCommandReactor", () => {
       activeTurnId: "turn-1",
     });
     expect(thread?.session?.actionState).toEqual({ queuedCount: 0, steering: [], followUps: [] });
+  });
+
+  it("fails closed on an invalid runtime action identifier without leaking its text", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-invalid-action-id-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "prime-agent",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-invalid-action-id"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.steer.add",
+        commandId: CommandId.make("cmd-invalid-action-id"),
+        threadId,
+        // Not a RuntimeExtensionId: never send it to the provider, and never
+        // invent a replacement id on the user's behalf.
+        steerId: "1 invalid id!",
+        text: "secret invalid id text",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+    expect(harness.executeRuntimeOperation).not.toHaveBeenCalled();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    const failure = thread?.activities.find(
+      (activity) => activity.kind === "provider.runtime-action.failed",
+    );
+    expect(failure).toBeDefined();
+    expect(JSON.stringify(failure)).toContain("identifier is invalid");
+    expect(JSON.stringify(thread)).not.toContain("secret invalid id text");
+  });
+
+  it("clears stale runtime action state for sessions whose provider process is gone", async () => {
+    const harness = await createHarness({ staleActionStateBeforeStart: true });
+    await waitFor(
+      async () =>
+        (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"))
+          ?.session?.actionState?.queuedCount === 0,
+    );
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.session?.actionState).toEqual({ queuedCount: 0, steering: [], followUps: [] });
+    // Recovery must not terminalize an otherwise healthy session record.
+    expect(thread?.session).toMatchObject({ status: "running", activeTurnId: "turn-stale" });
+  });
+
+  it("keeps action state for sessions whose provider process is still live", async () => {
+    const harness = await createHarness({
+      staleActionStateBeforeStart: true,
+      liveSessionBeforeStart: true,
+    });
+    await harness.drain();
+    expect(
+      (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"))
+        ?.session?.actionState,
+    ).toEqual({ queuedCount: 2, steering: ["dead steer"], followUps: ["dead queue"] });
   });
 
   it("preserves action state when provider interrupt fails", async () => {

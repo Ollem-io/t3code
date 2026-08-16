@@ -91,6 +91,49 @@ Visual evidence remains truthfully not captured across all rounds because UI-lau
 
 Accepted non-blocker debt carried into **PA-A02.1** (see `docs/prime-agent-remaining-execution-plan.md`): falsifiable artifact convergence assertion; genuine two-client convergence evidence; capability-derived cancellation copy; inline send-decision reason on web; mobile disabled-button styling; rendering `PrimeActionState.active`; snapshot coalescing; crash-restart stale action-state display; a regression test for the invalid-ID fail-closed path; documenting the interrupt handler's optimistic action-state clear as an explicit invariant exception; a guard or warning comment on the writer-less orchestration log stream; and visual evidence capture.
 
+## PA-A02.1 (implemented, awaiting review)
+
+Every accepted non-blocker from the PA-A02 rounds is now closed on
+`dev/prime-agent-perfect-integration-20260813/pa-a02.1`:
+
+1. Cancellation copy is derived from the negotiated `followUpCancel` capability
+   (`primeCancellationCopy`) on web and mobile instead of hard-coded text.
+2. The web composer renders `primeSendDecision.reason` inline while typing,
+   matching the mobile composer.
+3. Disabled mobile runtime-action buttons carry disabled styling and
+   `accessibilityState`.
+4. `renderPrimeQueue` renders `PrimeActionState.active` ahead of the lanes on
+   both clients (an unlabeled active entry stays invisible — nothing truthful to
+   show).
+5. `ProviderCommandReactor.test.ts` covers the invalid-runtime-action-ID
+   fail-closed path: the "identifier is invalid" failure activity appears, the
+   provider is never called, and the action text never reaches the projection.
+6. `packages/contracts/fixtures/pa-a02-prime-runtime-transcript.mjs` now derives
+   each client's projection independently from one shared broadcast and proves
+   on every run that a divergent client reducer fails the convergence check;
+   `ProviderRuntimeIngestion.test.ts` adds a two-client convergence assertion
+   through the read model.
+7. Byte-identical consecutive `session_action_update` snapshots are coalesced on
+   the write path, so repeats produce no durable event and no projection write.
+8. On reactor start, sessions holding a queue snapshot whose provider process is
+   no longer live have their action state cleared; healthy live sessions are
+   left untouched.
+9. The interrupt handler's optimistic action-state clear is documented at its
+   call site as an explicit, bounded exception to the authoritative-snapshot
+   invariant.
+10. The `"orchestration"` log stream now redacts `actionState` steering,
+    follow-up, and active-label text at the writer boundary, so attaching a
+    writer later cannot start persisting queued native text.
+11. Visual evidence is still **not captured**: UI-launch permission was not
+    granted for this milestone either, and the runtime-action panel has never
+    been observed rendered. Exact steps once permission is granted — web:
+    `vp run dev` in a worktree, open the printed `pairingUrl:`, start a Prime
+    Agent thread, send a turn, and screenshot the composer panel marked
+    `data-prime-runtime-actions` while the turn runs (before/after with
+    `followUpCancel` off and on); mobile: `test-t3-mobile` against the same
+    server, open the running thread, and screenshot the composer runtime-action
+    block in the same two capability states.
+
 ## Pending milestones
 
 | Milestone | Planned scope                                                    | State                           |

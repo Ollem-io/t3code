@@ -15,6 +15,7 @@ import {
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
+  type OrchestrationSessionActionState,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -127,6 +128,42 @@ function sameId(left: string | null | undefined, right: string | null | undefine
     return false;
   }
   return left === right;
+}
+
+/**
+ * Structural equality for authoritative action snapshots. Used only to drop
+ * repeats that would write the exact same visible state.
+ */
+function sameActionState(
+  current: OrchestrationSessionActionState | undefined,
+  next: OrchestrationSessionActionState,
+): boolean {
+  if (current === undefined) {
+    return false;
+  }
+  if (
+    current.queuedCount !== next.queuedCount ||
+    current.steering.length !== next.steering.length ||
+    current.followUps.length !== next.followUps.length
+  ) {
+    return false;
+  }
+  if (current.steering.some((text, index) => text !== next.steering[index])) {
+    return false;
+  }
+  if (current.followUps.some((text, index) => text !== next.followUps[index])) {
+    return false;
+  }
+  if ((current.active === undefined) !== (next.active === undefined)) {
+    return false;
+  }
+  return (
+    current.active === undefined ||
+    next.active === undefined ||
+    (current.active.kind === next.active.kind &&
+      current.active.phase === next.active.phase &&
+      current.active.label === next.active.label)
+  );
 }
 
 function hasAssistantMessageForTurn(
@@ -1678,33 +1715,41 @@ const make = Effect.gen(function* () {
       ) {
         // Replacement only: native event is the authoritative bounded snapshot.
         // Preserve bound identity rather than accepting it from this event.
-        yield* orchestrationEngine.dispatch({
-          type: "thread.session.set",
-          commandId: yield* providerCommandId(event, "session-actions-snapshot"),
-          threadId: thread.id,
-          session: {
+        const nextActionState = {
+          queuedCount: event.payload.queuedCount,
+          steering: [...event.payload.steering],
+          followUps: [...event.payload.followUps],
+          ...(event.payload.active ? { active: event.payload.active } : {}),
+        };
+        // Prime re-emits the same snapshot for unrelated session activity. A
+        // byte-identical repeat carries no new authoritative state, so dropping
+        // it here avoids a durable event and a projection write per repeat.
+        // Coalescing is write-path only: replay of the retained events is
+        // unchanged, and any differing snapshot still replaces state.
+        if (!sameActionState(thread.session.actionState, nextActionState)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "session-actions-snapshot"),
             threadId: thread.id,
-            status: thread.session.status,
-            providerName: thread.session.providerName,
-            ...(thread.session.providerInstanceId !== undefined
-              ? { providerInstanceId: thread.session.providerInstanceId }
-              : {}),
-            runtimeMode: thread.session.runtimeMode,
-            activeTurnId: thread.session.activeTurnId,
-            lastError: thread.session.lastError,
-            updatedAt: now,
-            actionState: {
-              queuedCount: event.payload.queuedCount,
-              steering: [...event.payload.steering],
-              followUps: [...event.payload.followUps],
-              ...(event.payload.active ? { active: event.payload.active } : {}),
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              actionState: nextActionState,
+              ...(thread.session.runtimeCapabilities
+                ? { runtimeCapabilities: thread.session.runtimeCapabilities }
+                : {}),
             },
-            ...(thread.session.runtimeCapabilities
-              ? { runtimeCapabilities: thread.session.runtimeCapabilities }
-              : {}),
-          },
-          createdAt: now,
-        });
+            createdAt: now,
+          });
+        }
       }
 
       const assistantDelta =

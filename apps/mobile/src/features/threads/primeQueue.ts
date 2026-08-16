@@ -1,4 +1,9 @@
 export type PrimeActionMode = "steer" | "followUp" | null;
+export type PrimeRuntimeCapabilities = {
+  readonly steer?: boolean | undefined;
+  readonly followUps?: boolean | undefined;
+  readonly followUpCancel?: boolean | undefined;
+};
 export type PrimeActionState = {
   readonly steering: ReadonlyArray<string>;
   readonly followUps: ReadonlyArray<string>;
@@ -7,19 +12,29 @@ export type PrimeActionState = {
 /** True only when the runtime advertises an actionable PA-A02 extension. */
 export function hasPrimeRuntimeActions(
   providerName: string | null | undefined,
-  capabilities:
-    | { readonly steer?: boolean | undefined; readonly followUps?: boolean | undefined; readonly followUpCancel?: boolean | undefined }
-    | undefined,
+  capabilities: PrimeRuntimeCapabilities | undefined,
 ): boolean {
-  return providerName === "prime-agent" && (capabilities?.steer === true || capabilities?.followUps === true);
+  return (
+    providerName === "prime-agent" &&
+    (capabilities?.steer === true || capabilities?.followUps === true)
+  );
+}
+
+/**
+ * Cancellation copy is derived from the negotiated capability, never assumed: a
+ * runtime that gains `followUpCancel` must not keep telling users the queue is
+ * uncancellable.
+ */
+export function primeCancellationCopy(capabilities: PrimeRuntimeCapabilities | undefined): string {
+  return capabilities?.followUpCancel === true
+    ? "Interrupt stops the current turn; Stop ends the session. Queued actions can be cancelled individually."
+    : "Interrupt stops the current turn; Stop ends the session. Queued actions cannot be cancelled by this runtime.";
 }
 
 export function resolvePrimeSend(
   providerName: string | null | undefined,
   mode: PrimeActionMode,
-  capabilities:
-    | { readonly steer?: boolean | undefined; readonly followUps?: boolean | undefined }
-    | undefined,
+  capabilities: PrimeRuntimeCapabilities | undefined,
   attachmentCount: number,
 ): { ok: boolean; reason?: string } {
   if (attachmentCount > 0)
@@ -41,9 +56,15 @@ export function resolvePrimeSend(
     };
   return { ok: true };
 }
+/**
+ * Authoritative snapshot rendering: the action the runtime reports as running
+ * first, then steering, then queued follow-ups.
+ */
 export function renderPrimeQueue(state: PrimeActionState | undefined): string[] {
   if (!state) return [];
+  const activeLabel = state.active?.label;
   return [
+    ...(activeLabel !== undefined && activeLabel.length > 0 ? [`Active: ${activeLabel}`] : []),
     ...state.steering.map((text) => `Steering: ${text}`),
     ...state.followUps.map((text) => `Queued: ${text}`),
   ];
