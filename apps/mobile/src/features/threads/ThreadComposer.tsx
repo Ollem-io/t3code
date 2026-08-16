@@ -105,6 +105,7 @@ import {
   PRIME_NOTICES_ARE_TRANSIENT,
   hasPrimeExtensionUi,
   primeNoticeFingerprint,
+  renderPrimeDialogStatus,
   renderPrimeNotice,
   visiblePrimeNotices,
 } from "./primeExtensionUi";
@@ -139,6 +140,8 @@ export interface ThreadComposerProps {
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
+  /** Typed Prime dialogs still waiting on this viewer; 0 hides the dialog copy. */
+  readonly pendingDialogCount?: number;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -347,6 +350,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session,
     dismissedPrimeNotices,
   );
+  const primeDialogStatus = renderPrimeDialogStatus(props.pendingDialogCount ?? 0);
   const primeCommands = props.selectedThread.session?.commandCatalog?.commands;
   const primeCommandCatalogRef = useRef(primeCommands);
   primeCommandCatalogRef.current = primeCommands;
@@ -1275,10 +1279,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   </Text>
                 ) : null}
                 {/* The pending dialog itself is the questionnaire card above;
-                    this line only explains what cancellation means there. */}
-                <Text className="mt-1 text-xs text-foreground-muted">
-                  {PRIME_DIALOG_CANCELLED_NOTE}
-                </Text>
+                    these lines name how many are waiting and what cancellation
+                    means there. With nothing pending they would be clutter, so
+                    they render only alongside a live dialog — same rule as web. */}
+                {primeDialogStatus ? (
+                  <Text className="mt-1 text-xs text-foreground-muted">
+                    {primeDialogStatus} {PRIME_DIALOG_CANCELLED_NOTE}
+                  </Text>
+                ) : null}
               </>
             ) : null}
           </View>

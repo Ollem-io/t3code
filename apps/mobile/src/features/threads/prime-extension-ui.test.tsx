@@ -13,6 +13,7 @@ import {
   visiblePrimeNotices,
   type PrimeNotice,
 } from "./primeExtensionUi";
+import { derivePendingUserInputs } from "../../lib/threadActivity";
 
 const status: PrimeNotice = {
   key: "status:index",
@@ -54,6 +55,35 @@ describe("prime extension UI status (mobile)", () => {
     expect(renderPrimeNotice({ ...status, severity: "error" })).toBe("Error: Indexing 40%");
   });
 
+  // Blocker regression: a cancelled dialog closes on mobile too, and the row
+  // the server sends for it states the cancellation instead of an answer.
+  it("drops the pending dialog when the runtime cancels it", () => {
+    const activities = [
+      {
+        id: "evt-requested",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        turnId: null,
+        payload: {
+          requestId: "req-1",
+          questions: [{ id: "q", header: "Q", question: "Which?", options: [{ label: "one" }] }],
+        },
+      },
+      {
+        id: "evt-cancelled",
+        kind: "user-input.resolved",
+        summary: "User input cancelled",
+        tone: "info",
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId: null,
+        payload: { requestId: "req-1", answers: {}, cancelled: true },
+      },
+    ] as unknown as Parameters<typeof derivePendingUserInputs>[0];
+    expect(derivePendingUserInputs(activities)).toEqual([]);
+  });
+
   // The two client copies of this module must stay byte-identical; the comment
   // in the source claims exactly that.
   it("keeps the web and mobile copies byte-identical", () => {
@@ -79,6 +109,16 @@ describe("prime extension UI wiring", () => {
     expect(composer).toContain("renderPrimeNotice(notice)");
     expect(composer).toContain("setDismissedPrimeNotices");
     expect(composer).toContain("Dismiss status");
+  });
+
+  // Product review: the dialog copy is about a dialog. With none pending it was
+  // permanent composer clutter on mobile while web gated it on the count, so
+  // mobile now states the same count and gates on it the same way.
+  it("states the pending dialog count and shows the copy only with one pending", () => {
+    expect(composer).toContain("renderPrimeDialogStatus(props.pendingDialogCount ?? 0)");
+    expect(composer).toContain("{primeDialogStatus ? (");
+    const detail = readFileSync(new URL("./ThreadDetailScreen.tsx", import.meta.url), "utf8");
+    expect(detail).toContain("pendingDialogCount={props.activePendingUserInput ? 1 : 0}");
   });
 
   it("says what the status is and what cancellation means", () => {

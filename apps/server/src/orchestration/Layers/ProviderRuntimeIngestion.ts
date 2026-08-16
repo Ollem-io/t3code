@@ -597,16 +597,27 @@ export function runtimeEventToActivities(
     }
 
     case "user-input.resolved": {
+      // A runtime-closed request (cancelled, superseded, timed out) carries no
+      // user answer. Saying "submitted" for it would credit the user with input
+      // they never gave, so the cancellation travels into the read model and
+      // the row states it plainly on every surface.
+      const cancelled = event.payload.cancelled === true;
+      const reason =
+        typeof event.payload.reason === "string" && event.payload.reason.trim().length > 0
+          ? truncateDetail(event.payload.reason)
+          : undefined;
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "user-input.resolved",
-          summary: "User input submitted",
+          summary: cancelled ? "User input cancelled" : "User input submitted",
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             answers: event.payload.answers,
+            ...(cancelled ? { cancelled: true } : {}),
+            ...(cancelled && reason ? { detail: reason } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

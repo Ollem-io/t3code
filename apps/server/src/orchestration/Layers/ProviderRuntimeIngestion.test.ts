@@ -3246,6 +3246,63 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resolvedPayload?.requestType).toBe("command_execution_approval");
   });
 
+  // PA-A05 blocker regression: a dialog the runtime closed without an answer
+  // (timeout, cancellation, supersede) used to reach every client as
+  // "User input submitted", crediting the user with input they never gave. The
+  // cancellation now travels into the read model and the row says so.
+  it("says a cancelled user-input request was cancelled, not submitted", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-user-input-answered"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      requestId: ApprovalRequestId.make("req-answered"),
+      payload: { answers: { "req-answered": "Alice" } },
+    });
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-user-input-cancelled"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      requestId: ApprovalRequestId.make("req-cancelled"),
+      payload: {
+        answers: {},
+        cancelled: true,
+        reason: "Prime Agent interactive request timed out after 1000ms.",
+      },
+    });
+
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-cancelled",
+      ),
+    );
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const answered = thread?.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-answered",
+    );
+    const cancelled = thread?.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-cancelled",
+    );
+
+    expect(answered?.summary).toBe("User input submitted");
+    expect((answered?.payload as Record<string, unknown> | undefined)?.cancelled).toBeUndefined();
+
+    expect(cancelled?.summary).toBe("User input cancelled");
+    const cancelledPayload = cancelled?.payload as Record<string, unknown> | undefined;
+    expect(cancelledPayload?.cancelled).toBe(true);
+    expect(cancelledPayload?.detail).toBe(
+      "Prime Agent interactive request timed out after 1000ms.",
+    );
+  });
+
   it("maps runtime.error into errored session state", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -17,6 +17,8 @@ import {
   type PrimeNotice,
 } from "./primeExtensionUi";
 import { PrimeExtensionStatus } from "./PrimeExtensionStatus";
+import { derivePendingUserInputs, deriveWorkLogEntries } from "../../session-logic";
+import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 
 const status: PrimeNotice = {
   key: "status:index",
@@ -88,6 +90,52 @@ describe("prime extension UI status", () => {
     expect(renderPrimeDialogStatus(1)).toContain("1 agent request.");
     expect(renderPrimeDialogStatus(3)).toContain("3 agent requests.");
     expect(PRIME_DIALOG_CANCELLED_NOTE).toContain("without an answer");
+  });
+});
+
+/**
+ * Blocker regression: a dialog the runtime closed without an answer used to
+ * reach the timeline as "User input submitted". The cancellation is carried on
+ * the activity itself, so the surface that renders it says cancelled and shows
+ * the runtime's reason — while the pending dialog still disappears.
+ */
+describe("cancelled dialogs on the timeline", () => {
+  const activity = (
+    id: string,
+    kind: string,
+    summary: string,
+    payload: Record<string, unknown>,
+  ): OrchestrationThreadActivity =>
+    ({
+      id,
+      kind,
+      summary,
+      tone: "info",
+      payload,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: null,
+    }) as unknown as OrchestrationThreadActivity;
+
+  const activities = [
+    activity("evt-requested", "user-input.requested", "User input requested", {
+      requestId: "req-1",
+      questions: [{ id: "q", header: "Q", question: "Which?", options: [{ label: "one" }] }],
+    }),
+    activity("evt-cancelled", "user-input.resolved", "User input cancelled", {
+      requestId: "req-1",
+      answers: {},
+      cancelled: true,
+      detail: "Prime Agent interactive request timed out after 1000ms.",
+    }),
+  ];
+
+  it("renders the row as cancelled with its reason and clears the pending dialog", () => {
+    expect(derivePendingUserInputs(activities)).toEqual([]);
+    const entry = deriveWorkLogEntries(activities).find(
+      (candidate) => candidate.sourceActivityKind === "user-input.resolved",
+    );
+    expect(entry?.label).toBe("User input cancelled");
+    expect(entry?.detail).toBe("Prime Agent interactive request timed out after 1000ms.");
   });
 });
 

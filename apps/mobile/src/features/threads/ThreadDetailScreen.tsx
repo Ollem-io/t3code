@@ -731,6 +731,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 selectedThread={props.selectedThread}
                 serverConfig={props.serverConfig}
                 queueCount={props.selectedThreadQueueCount}
+                pendingDialogCount={props.activePendingUserInput ? 1 : 0}
                 activeThreadBusy={props.activeThreadBusy}
                 environmentId={props.environmentId}
                 projectCwd={props.projectWorkspaceRoot}

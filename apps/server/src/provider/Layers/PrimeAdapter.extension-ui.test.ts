@@ -1,6 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { assert, describe, it } from "@effect/vitest";
-import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  ApprovalRequestId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +34,9 @@ const out=x=>process.stdout.write(JSON.stringify(x)+"\\n");
 const emit=x=>setTimeout(()=>out({type:"extension_ui_request",...x}),5);
 createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{const c=JSON.parse(line);log(c);
  if(c.type==="get_available_models") return out({type:"response",id:c.id,command:c.type,success:true,data:models});
+ // A deliberately slow acknowledgement, so the dialog's own timeout fires
+ // while our answer is still in flight.
+ if(c.type==="extension_ui_response"&&String(c.id).startsWith("sa-")) return setTimeout(()=>out({type:"response",id:c.id,command:c.type,success:true,data:{state:"idle"}}),1500);
  out({type:"response",id:c.id,command:c.type,success:true,data:{state:"idle"}}); if(c.type!=="prompt") return; out({type:"turn_start"}); const m=c.message;
  if(m.includes("notify")){emit({id:"n-1",method:"notify",message:"Indexing failed",notifyType:"error"});}
  else if(m.includes("status")){emit({id:"s-1",method:"setStatus",statusKey:"index",statusText:"Indexing 40%"});emit({id:"s-2",method:"setStatus",statusKey:"index",statusText:"Indexing 90%"});}
@@ -39,6 +47,7 @@ createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{const
  else if(m.includes("flood")){for(let i=0;i<20;i++)emit({id:"f-"+i,method:"setStatus",statusKey:"k"+i,statusText:"line "+i});}
  else if(m.includes("future")){emit({id:"x-1",method:"quantumPrompt",title:"From the future"});}
  else if(m.includes("timeout")){emit({id:"to-1",method:"input",title:"Name",timeout:1});}
+ else if(m.includes("slowanswer")){emit({id:"sa-1",method:"input",title:"Name",timeout:1});}
  else if(m.includes("hang")){emit({id:"h-1",method:"confirm",title:"Approve",message:"Run it?"});}
 });`;
 
@@ -280,6 +289,43 @@ describe("PrimeAdapter extension UI status", () => {
           id: "to-1",
           cancelled: true,
         });
+      }),
+    ),
+  );
+
+  // Review regression: the request timeout used to be able to fire while the
+  // user's answer was still on the wire, putting a second extension_ui_response
+  // on one correlation id and emitting a resolution contradicting the first.
+  it.effect("lets an in-flight answer win the race against its own timeout", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup;
+        const adapter = yield* start(f);
+        yield* turn(adapter, "slowanswer");
+        const opened = yield* collect(adapter, 3);
+        assert.equal(opened[2].type, "user-input.requested");
+        // The acknowledgement takes 1.5s; the clamped dialog timeout is 1s.
+        const answering = yield* Effect.forkChild(
+          adapter.respondToUserInput(THREAD, ApprovalRequestId.make("sa-1"), { "sa-1": "Alice" }),
+        );
+        // Let the forked answer reach its native round trip.
+        yield* Effect.yieldNow;
+        // A second client answering the same dialog is refused, not sent: the
+        // first answer owns the correlation id.
+        const second = yield* Effect.exit(
+          adapter.respondToUserInput(THREAD, ApprovalRequestId.make("sa-1"), { "sa-1": "Bob" }),
+        );
+        assert.equal(second._tag, "Failure");
+        yield* Fiber.join(answering);
+        const resolved = yield* collect(adapter, 1);
+        assert.equal(resolved[0].type, "user-input.resolved");
+        assert.equal(resolved[0].payload.cancelled, undefined);
+        assert.deepStrictEqual(resolved[0].payload.answers, { "sa-1": "Alice" });
+        const sent = yield* commands(f.marker);
+        const responses = sent.filter((c) => c.type === "extension_ui_response");
+        assert.deepStrictEqual(responses, [
+          { type: "extension_ui_response", id: "sa-1", value: "Alice" },
+        ]);
       }),
     ),
   );

@@ -90,6 +90,15 @@ type SessionContext = {
       readonly title: string;
       readonly options: ReadonlyArray<string>;
       readonly timeout: ReturnType<typeof setTimeout> | undefined;
+      /**
+       * A native response for this id is in flight. The request timeout can
+       * fire during that round trip; answering it then would put a second
+       * `extension_ui_response` on the wire for one correlation id and emit a
+       * contradicting resolution, so the timeout only records itself here and
+       * the responder applies it if its own attempt failed.
+       */
+      responding: boolean;
+      timedOutReason: string | undefined;
     }
   >;
   /** Bounded transient status, insertion-ordered and replaced by key. */
@@ -180,16 +189,29 @@ export const makePrimeAdapter = (
      * teardown, where the child is already gone and a response would be a lie
      * about a channel that no longer exists.
      */
+    const dropPendingRequest = (context: SessionContext, id: string) => {
+      const pending = context.pendingRequests.get(id);
+      if (!pending) return undefined;
+      context.pendingRequests.delete(id);
+      if (pending.timeout !== undefined) clearTimeout(pending.timeout);
+      return pending;
+    };
     const cancelPendingRequest = async (
       context: SessionContext,
       id: string,
       reason: string,
       answerNative = true,
     ) => {
-      const pending = context.pendingRequests.get(id);
+      const inFlight = context.pendingRequests.get(id);
+      if (inFlight?.responding) {
+        // A response is already on the wire for this id. Record the reason and
+        // let the responder apply it only if its own attempt failed, so one
+        // correlation id never receives two answers or two resolutions.
+        inFlight.timedOutReason = reason;
+        return;
+      }
+      const pending = dropPendingRequest(context, id);
       if (!pending) return;
-      context.pendingRequests.delete(id);
-      if (pending.timeout !== undefined) clearTimeout(pending.timeout);
       if (answerNative)
         await context.client
           .command({ type: "extension_ui_response", cancelled: true }, { requestId: id })
@@ -400,6 +422,8 @@ export const makePrimeAdapter = (
                           .map((x) => cleanNative(x, "Option"))
                       : [],
                   timeout: armRequestTimeout(context, request.id, nativeTimeout),
+                  responding: false,
+                  timedOutReason: undefined,
                 });
               }
             }
@@ -879,16 +903,29 @@ export const makePrimeAdapter = (
           const pending = context.pendingRequests.get(id);
           if (!pending || pending.method !== "confirm")
             throw new Error("Interactive request is not a confirmation.");
+          // Two clients can answer the same dialog. The first answer owns the
+          // correlation id; a second would be a second native response.
+          if (pending.responding) throw new Error("Interactive request is already being answered.");
           const value = decision === "accept" || decision === "acceptForSession";
-          await expectSuccess(
-            context,
-            value
-              ? { type: "extension_ui_response", confirmed: true }
-              : { type: "extension_ui_response", cancelled: true },
-            { requestId: id },
-          );
-          context.pendingRequests.delete(id);
-          if (pending.timeout !== undefined) clearTimeout(pending.timeout);
+          pending.responding = true;
+          try {
+            await expectSuccess(
+              context,
+              value
+                ? { type: "extension_ui_response", confirmed: true }
+                : { type: "extension_ui_response", cancelled: true },
+              { requestId: id },
+            );
+          } catch (cause) {
+            pending.responding = false;
+            // The dialog stays pending so the user can retry — unless the
+            // timeout fired meanwhile, in which case it is closed truthfully.
+            const timedOut = pending.timedOutReason;
+            pending.timedOutReason = undefined;
+            if (timedOut !== undefined) await cancelPendingRequest(context, id, timedOut);
+            throw cause;
+          }
+          dropPendingRequest(context, id);
           for (const event of context.normalizer.resolved(id, "request", {
             decision: value ? decision : "cancel",
           }))
@@ -915,6 +952,7 @@ export const makePrimeAdapter = (
           const pending = context.pendingRequests.get(id);
           if (!pending || pending.method === "confirm")
             throw new Error("Interactive request is not user input.");
+          if (pending.responding) throw new Error("Interactive request is already being answered.");
           if (!Object.prototype.hasOwnProperty.call(answers, id))
             throw new Error("Prime Agent input response must name the request id.");
           const raw = answers[id];
@@ -924,13 +962,21 @@ export const makePrimeAdapter = (
           const clean = cleanNative(value);
           if (pending.method === "select" && !pending.options.includes(clean))
             throw new Error("Prime Agent select answer is invalid.");
-          await expectSuccess(
-            context,
-            { type: "extension_ui_response", value: clean },
-            { requestId: id },
-          );
-          context.pendingRequests.delete(id);
-          if (pending.timeout !== undefined) clearTimeout(pending.timeout);
+          pending.responding = true;
+          try {
+            await expectSuccess(
+              context,
+              { type: "extension_ui_response", value: clean },
+              { requestId: id },
+            );
+          } catch (cause) {
+            pending.responding = false;
+            const timedOut = pending.timedOutReason;
+            pending.timedOutReason = undefined;
+            if (timedOut !== undefined) await cancelPendingRequest(context, id, timedOut);
+            throw cause;
+          }
+          dropPendingRequest(context, id);
           for (const event of context.normalizer.resolved(id, "user-input", {
             answers: { [id]: clean },
           }))

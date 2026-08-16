@@ -28,28 +28,335 @@ createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{const
  else if(m.includes("crash")){emit({id:"r-crash",method:"input",title:"Crash"});setTimeout(()=>process.exit(19),15);}
  else if(m.includes("select")) emit({id:"r-select",method:"select",title:"Pick",options:["one","two"]}); else if(m.includes("confirm")) emit({id:"r-confirm",method:"confirm",title:"Approve",message:"Run it?"}); else if(m.includes("input")) emit({id:"r-input",method:"input",title:"Name"}); else if(m.includes("editor")) emit({id:"r-editor",method:"editor",title:"Edit",prefill:"old"}); else if(m.includes("unsupported")) emit({id:"r-unsupported",method:"notify",message:"no"});
 });`;
-const setup = Effect.acquireRelease(Effect.promise(async()=>{const root=await mkdtemp(join(tmpdir(),"prime-interactive-"));const cwd=join(root,"cwd"),binary=join(root,"fake.mjs"),marker=join(root,"commands");await mkdir(cwd);await writeFile(binary,fakeSource);await chmod(binary,0o755);return {root,cwd,binary,marker};}), f=>Effect.promise(()=>rm(f.root,{recursive:true,force:true})));
-const mkdir = async (x:string) => (await import("node:fs/promises")).mkdir(x);
-const input=(f:{cwd:string})=>({threadId:THREAD,provider:PROVIDER,providerInstanceId:INSTANCE,cwd:f.cwd,runtimeMode:"approval-required" as const});
-const make= (f:any) => makePrimeAdapter({binaryPath:f.binary},{instanceId:INSTANCE,environmentId:"env",home:join(f.root,"home"),enabled:true,launch:(c,a,o)=>spawnPrimeRpcTransport(c,a,{...(o??{}),env:{...(o?.env??{}),MARKER:f.marker,...(f.failOnce?{FAIL_ONCE:"1"}:{})}})});
-const commands=(file:string)=>Effect.promise(async()=> (await readFile(file,"utf8").catch(()=>"")).trim().split("\n").filter(Boolean).map(x=>JSON.parse(x)));
-const start=(f:any)=>Effect.gen(function*(){const a=yield* make(f);yield* a.startSession(input(f));return a;});
-const turn=(a:any,f:any,word:string)=>a.sendTurn({threadId:THREAD,input:word,modelSelection:{instanceId:INSTANCE,model:"model",nativeIdentity:{provider:"provider",modelId:"model"}}});
-const next=(a:any)=>Stream.runHead(a.streamEvents).pipe(Effect.map((x:any)=>x._tag==="Some"?x.value:undefined));
-const eventPair=(a:any,f:any,word:string)=>Effect.gen(function*(){yield* turn(a,f,word);let e=yield* next(a);if(e.type==="turn.started") e=yield* next(a);return e;});
+const setup = Effect.acquireRelease(
+  Effect.promise(async () => {
+    const root = await mkdtemp(join(tmpdir(), "prime-interactive-"));
+    const cwd = join(root, "cwd"),
+      binary = join(root, "fake.mjs"),
+      marker = join(root, "commands");
+    await mkdir(cwd);
+    await writeFile(binary, fakeSource);
+    await chmod(binary, 0o755);
+    return { root, cwd, binary, marker };
+  }),
+  (f) => Effect.promise(() => rm(f.root, { recursive: true, force: true })),
+);
+const mkdir = async (x: string) => (await import("node:fs/promises")).mkdir(x);
+const input = (f: { cwd: string }) => ({
+  threadId: THREAD,
+  provider: PROVIDER,
+  providerInstanceId: INSTANCE,
+  cwd: f.cwd,
+  runtimeMode: "approval-required" as const,
+});
+const make = (f: any) =>
+  makePrimeAdapter(
+    { binaryPath: f.binary },
+    {
+      instanceId: INSTANCE,
+      environmentId: "env",
+      home: join(f.root, "home"),
+      enabled: true,
+      launch: (c, a, o) =>
+        spawnPrimeRpcTransport(c, a, {
+          ...(o ?? {}),
+          env: { ...(o?.env ?? {}), MARKER: f.marker, ...(f.failOnce ? { FAIL_ONCE: "1" } : {}) },
+        }),
+    },
+  );
+const commands = (file: string) =>
+  Effect.promise(async () =>
+    (await readFile(file, "utf8").catch(() => ""))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((x) => JSON.parse(x)),
+  );
+const start = (f: any) =>
+  Effect.gen(function* () {
+    const a = yield* make(f);
+    yield* a.startSession(input(f));
+    return a;
+  });
+const turn = (a: any, f: any, word: string) =>
+  a.sendTurn({
+    threadId: THREAD,
+    input: word,
+    modelSelection: {
+      instanceId: INSTANCE,
+      model: "model",
+      nativeIdentity: { provider: "provider", modelId: "model" },
+    },
+  });
+// Session snapshot events (command catalog, actions, context, notice board) are
+// latest-state republished on their own cadence. These cases are about the
+// dialog lifecycle, so they read a stream with the snapshots filtered out and
+// assert the board explicitly where it is the subject.
+const SNAPSHOT_EVENTS = new Set([
+  "session.commands.updated",
+  "session.actions.updated",
+  "session.context.updated",
+  "session.notices.updated",
+]);
+const dialogEvents = (a: any) =>
+  Stream.filter(
+    a.streamEvents as Stream.Stream<any, never, never>,
+    (e: any) => !SNAPSHOT_EVENTS.has(e.type),
+  );
+const next = (a: any) =>
+  Stream.runHead(dialogEvents(a)).pipe(
+    Effect.map((x: any) => (x._tag === "Some" ? x.value : undefined)),
+  );
+const eventPair = (a: any, f: any, word: string) =>
+  Effect.gen(function* () {
+    yield* turn(a, f, word);
+    let e = yield* next(a);
+    if (e.type === "turn.started") e = yield* next(a);
+    return e;
+  });
 
-describe("PrimeAdapter extension UI end-to-end",()=>{
- it.effect("projects select and resolves with the exact value command",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);const e=yield* eventPair(a,f,"select");assert.equal(e.type,"user-input.requested");yield* a.respondToUserInput(THREAD,"r-select",{ "r-select":"two"});const r=yield* next(a);assert.equal(r.type,"user-input.resolved");const cs=yield* commands(f.marker);assert.deepStrictEqual(cs.at(-1),{type:"extension_ui_response",id:"r-select",value:"two"});})));
- it.effect("projects confirm and resolves accept",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);const e=yield* eventPair(a,f,"confirm");assert.equal(e.type,"request.opened");yield* a.respondToRequest(THREAD,"r-confirm","accept");const r=yield* next(a);assert.equal(r.type,"request.resolved");const cs=yield* commands(f.marker);assert.deepStrictEqual(cs.at(-1),{type:"extension_ui_response",id:"r-confirm",confirmed:true});})));
- it.effect("projects input and resolves its canonical answer",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);assert.equal((yield* eventPair(a,f,"input")).type,"user-input.requested");yield* a.respondToUserInput(THREAD,"r-input",{"r-input":"Alice"});assert.equal((yield* next(a)).type,"user-input.resolved");const cs=yield* commands(f.marker);assert.deepStrictEqual(cs.at(-1),{type:"extension_ui_response",id:"r-input",value:"Alice"});})));
- it.effect("projects editor as canonical user input and responds exactly",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);assert.equal((yield* eventPair(a,f,"editor")).type,"user-input.requested");yield* a.respondToUserInput(THREAD,"r-editor",{"r-editor":"new text"});assert.equal((yield* next(a)).type,"user-input.resolved");const cs=yield* commands(f.marker);assert.deepStrictEqual(cs.at(-1),{type:"extension_ui_response",id:"r-editor",value:"new text"});})));
- it.effect("cancels unsupported requests and emits canonical warning",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);const e=yield* eventPair(a,f,"unsupported");assert.equal(e.type,"runtime.warning");const cs=yield* commands(f.marker);assert.deepStrictEqual(cs.at(-1),{type:"extension_ui_response",id:"r-unsupported",cancelled:true});})));
- it.effect("rejects an invalid select without sending a response",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);yield* eventPair(a,f,"select");const x=yield* Effect.exit(a.respondToUserInput(THREAD,"r-select",{"r-select":"bad"}));assert.equal(x._tag,"Failure");const cs=yield* commands(f.marker);assert.equal(cs.filter((c:any)=>c.type==="extension_ui_response").length,0);})));
- it.effect("aborts once and remains reusable for a subsequent prompt",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);yield* turn(a,f,"input");yield* next(a);yield* a.interruptTurn(THREAD);const aborted=yield* next(a);assert.equal(aborted.type,"turn.aborted");yield* a.interruptTurn(THREAD).pipe(Effect.ignore);assert.equal((yield* eventPair(a,f,"select")).type,"user-input.requested");})));
- it.effect("stop emits exact terminal sequence and preserves the child sentinel",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);yield* turn(a,f,"input");yield* next(a);const fiber=yield* Effect.forkChild(Stream.runCollect(Stream.take(a.streamEvents,3)));yield* a.stopSession(THREAD);const es=Array.from(yield* Fiber.join(fiber));assert.deepStrictEqual(es.map((e:any)=>e.type),["turn.completed","runtime.error","session.exited"]);assert.equal(yield* a.hasSession(THREAD),false);})));
- it.effect("fails closed on duplicate active correlation ids without mis-cancelling the original",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);const fiber=yield* Effect.forkChild(Stream.runCollect(Stream.take(a.streamEvents,6)));yield* turn(a,f,"duplicate");const es=Array.from(yield* Fiber.join(fiber));assert.deepStrictEqual(es.map((e:any)=>e.type),["turn.started","user-input.requested","runtime.warning","turn.completed","runtime.error","session.exited"]);const cs=yield* commands(f.marker);assert.equal(cs.filter((c:any)=>c.type==="extension_ui_response").length,0);assert.equal(yield* a.hasSession(THREAD),false);})));
- it.effect("retains pending request after failed response for retry",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup; (f as any).failOnce=true; const a=yield* start(f);assert.equal((yield* eventPair(a,f,"input")).type,"user-input.requested");const first=yield* Effect.exit(a.respondToUserInput(THREAD,"r-input",{"r-input":"Alice"}));assert.equal(first._tag,"Failure");yield* a.respondToUserInput(THREAD,"r-input",{"r-input":"Alice"}); })));
- it.effect("crash clears pending session and emits terminal once",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);assert.equal((yield* eventPair(a,f,"crash")).type,"user-input.requested");const es=yield* Stream.runCollect(Stream.take(a.streamEvents,3));assert.equal(yield* a.hasSession(THREAD),false);assert.equal(Array.from(es).filter((e:any)=>e.type==="session.exited").length,1);})));
- it.effect("bounds pending requests and cancels overflow without losing canonical records",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* start(f);yield* turn(a,f,"overflow");const es=Array.from(yield* Stream.runCollect(Stream.take(a.streamEvents,130)));assert.equal(es.filter((e:any)=>e.type==="user-input.requested").length,128);assert.equal(es.filter((e:any)=>e.type==="runtime.warning").length,1);const cs=yield* commands(f.marker);assert.equal(cs.filter((c:any)=>c.type==="extension_ui_response"&&c.cancelled===true).length,1);})));
- it.effect("stopAll terminates every exact child and leaves no sessions",()=>Effect.scoped(Effect.gen(function*(){const f=yield* setup,a=yield* make(f);const t2=ThreadId.make("second");yield* a.startSession(input(f));yield* a.startSession({...input(f),threadId:t2});yield* a.stopAll();assert.equal((yield* a.listSessions()).length,0);assert.equal((yield* commands(f.marker)).filter((c:any)=>c.type==="get_state").length,2);})));
+describe("PrimeAdapter extension UI end-to-end", () => {
+  it.effect("projects select and resolves with the exact value command", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        const e = yield* eventPair(a, f, "select");
+        assert.equal(e.type, "user-input.requested");
+        yield* a.respondToUserInput(THREAD, "r-select", { "r-select": "two" });
+        const r = yield* next(a);
+        assert.equal(r.type, "user-input.resolved");
+        const cs = yield* commands(f.marker);
+        assert.deepStrictEqual(cs.at(-1), {
+          type: "extension_ui_response",
+          id: "r-select",
+          value: "two",
+        });
+      }),
+    ),
+  );
+  it.effect("projects confirm and resolves accept", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        const e = yield* eventPair(a, f, "confirm");
+        assert.equal(e.type, "request.opened");
+        yield* a.respondToRequest(THREAD, "r-confirm", "accept");
+        const r = yield* next(a);
+        assert.equal(r.type, "request.resolved");
+        const cs = yield* commands(f.marker);
+        assert.deepStrictEqual(cs.at(-1), {
+          type: "extension_ui_response",
+          id: "r-confirm",
+          confirmed: true,
+        });
+      }),
+    ),
+  );
+  it.effect("projects input and resolves its canonical answer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        assert.equal((yield* eventPair(a, f, "input")).type, "user-input.requested");
+        yield* a.respondToUserInput(THREAD, "r-input", { "r-input": "Alice" });
+        assert.equal((yield* next(a)).type, "user-input.resolved");
+        const cs = yield* commands(f.marker);
+        assert.deepStrictEqual(cs.at(-1), {
+          type: "extension_ui_response",
+          id: "r-input",
+          value: "Alice",
+        });
+      }),
+    ),
+  );
+  it.effect("projects editor as canonical user input and responds exactly", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        assert.equal((yield* eventPair(a, f, "editor")).type, "user-input.requested");
+        yield* a.respondToUserInput(THREAD, "r-editor", { "r-editor": "new text" });
+        assert.equal((yield* next(a)).type, "user-input.resolved");
+        const cs = yield* commands(f.marker);
+        assert.deepStrictEqual(cs.at(-1), {
+          type: "extension_ui_response",
+          id: "r-editor",
+          value: "new text",
+        });
+      }),
+    ),
+  );
+  // notify is fire-and-forget presentation: it owes the runtime no response, so
+  // it lands on the transient notice board and no extension_ui_response is sent.
+  it.effect("routes a fire-and-forget notify to the notice board without answering it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        const fiber = yield* Effect.forkChild(
+          Stream.runCollect(
+            Stream.take(
+              Stream.filter(a.streamEvents, (e: any) => e.type === "session.notices.updated"),
+              1,
+            ),
+          ),
+        );
+        yield* turn(a, f, "unsupported");
+        const es = Array.from(yield* Fiber.join(fiber));
+        assert.equal(es.length, 1);
+        assert.deepStrictEqual(
+          (es[0] as any).payload.notices.map((n: any) => [n.kind, n.text]),
+          [["notification", "no"]],
+        );
+        const cs = yield* commands(f.marker);
+        assert.equal(cs.filter((c: any) => c.type === "extension_ui_response").length, 0);
+      }),
+    ),
+  );
+  it.effect("rejects an invalid select without sending a response", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        yield* eventPair(a, f, "select");
+        const x = yield* Effect.exit(
+          a.respondToUserInput(THREAD, "r-select", { "r-select": "bad" }),
+        );
+        assert.equal(x._tag, "Failure");
+        const cs = yield* commands(f.marker);
+        assert.equal(cs.filter((c: any) => c.type === "extension_ui_response").length, 0);
+      }),
+    ),
+  );
+  it.effect("aborts once and remains reusable for a subsequent prompt", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        yield* turn(a, f, "input");
+        yield* next(a);
+        yield* a.interruptTurn(THREAD);
+        const aborted = yield* next(a);
+        assert.equal(aborted.type, "turn.aborted");
+        yield* a.interruptTurn(THREAD).pipe(Effect.ignore);
+        assert.equal((yield* eventPair(a, f, "select")).type, "user-input.requested");
+      }),
+    ),
+  );
+  it.effect("stop emits exact terminal sequence and preserves the child sentinel", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        yield* turn(a, f, "input");
+        yield* next(a);
+        const fiber = yield* Effect.forkChild(Stream.runCollect(Stream.take(dialogEvents(a), 3)));
+        yield* a.stopSession(THREAD);
+        const es = Array.from(yield* Fiber.join(fiber));
+        assert.deepStrictEqual(
+          es.map((e: any) => e.type),
+          ["turn.completed", "runtime.error", "session.exited"],
+        );
+        assert.equal(yield* a.hasSession(THREAD), false);
+      }),
+    ),
+  );
+  it.effect(
+    "fails closed on duplicate active correlation ids without mis-cancelling the original",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const f = yield* setup,
+            a = yield* start(f);
+          const fiber = yield* Effect.forkChild(Stream.runCollect(Stream.take(dialogEvents(a), 8)));
+          yield* turn(a, f, "duplicate");
+          const es = Array.from(yield* Fiber.join(fiber));
+          // The duplicate id fails the session closed, and teardown closes the dialog
+          // the first id had already opened rather than leaving it pending on clients.
+          assert.deepStrictEqual(
+            es.map((e: any) => e.type),
+            [
+              "turn.started",
+              "user-input.requested",
+              "runtime.warning",
+              "user-input.resolved",
+              "runtime.warning",
+              "turn.completed",
+              "runtime.error",
+              "session.exited",
+            ],
+          );
+          assert.equal(
+            es.find((e: any) => e.type === "user-input.resolved")?.payload?.cancelled,
+            true,
+          );
+          const cs = yield* commands(f.marker);
+          assert.equal(cs.filter((c: any) => c.type === "extension_ui_response").length, 0);
+          assert.equal(yield* a.hasSession(THREAD), false);
+        }),
+      ),
+  );
+  it.effect("retains pending request after failed response for retry", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup;
+        (f as any).failOnce = true;
+        const a = yield* start(f);
+        assert.equal((yield* eventPair(a, f, "input")).type, "user-input.requested");
+        const first = yield* Effect.exit(
+          a.respondToUserInput(THREAD, "r-input", { "r-input": "Alice" }),
+        );
+        assert.equal(first._tag, "Failure");
+        yield* a.respondToUserInput(THREAD, "r-input", { "r-input": "Alice" });
+      }),
+    ),
+  );
+  it.effect("crash clears pending session and emits terminal once", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        assert.equal((yield* eventPair(a, f, "crash")).type, "user-input.requested");
+        const es = yield* Stream.runCollect(Stream.take(dialogEvents(a), 5));
+        assert.equal(yield* a.hasSession(THREAD), false);
+        assert.equal(Array.from(es).filter((e: any) => e.type === "session.exited").length, 1);
+      }),
+    ),
+  );
+  it.effect("bounds pending requests and cancels overflow without losing canonical records", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* start(f);
+        yield* turn(a, f, "overflow");
+        const es = Array.from(yield* Stream.runCollect(Stream.take(dialogEvents(a), 130)));
+        assert.equal(es.filter((e: any) => e.type === "user-input.requested").length, 128);
+        assert.equal(es.filter((e: any) => e.type === "runtime.warning").length, 1);
+        const cs = yield* commands(f.marker);
+        assert.equal(
+          cs.filter((c: any) => c.type === "extension_ui_response" && c.cancelled === true).length,
+          1,
+        );
+      }),
+    ),
+  );
+  it.effect("stopAll terminates every exact child and leaves no sessions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* setup,
+          a = yield* make(f);
+        const t2 = ThreadId.make("second");
+        yield* a.startSession(input(f));
+        yield* a.startSession({ ...input(f), threadId: t2 });
+        yield* a.stopAll();
+        assert.equal((yield* a.listSessions()).length, 0);
+        assert.equal(
+          (yield* commands(f.marker)).filter((c: any) => c.type === "get_state").length,
+          2,
+        );
+      }),
+    ),
+  );
 });
