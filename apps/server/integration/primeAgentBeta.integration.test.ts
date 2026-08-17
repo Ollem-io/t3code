@@ -816,6 +816,18 @@ describe("PA-B06 Beta gate: durable continuity matrix", () => {
           }),
         );
         assert.deepStrictEqual(yield* Effect.promise(() => cursorIdentity(input)), seeded);
+        // Sweep the fixture's resident daemons inline too: the finalizer runs
+        // once, but a daemon that spawned while the last child was closing
+        // would survive it and outlive the deleted fixture home.
+        yield* Effect.promise(async () => {
+          const { execFile } = await import("node:child_process");
+          for (let round = 0; round < 3; round += 1) {
+            await new Promise<void>((resolve) => {
+              execFile("pkill", ["-f", input.root], () => resolve());
+            });
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          }
+        });
       }),
     ),
   );
